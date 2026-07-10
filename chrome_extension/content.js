@@ -766,6 +766,52 @@ function isNormalizedPrefix(a, b, minLen = 6) {
   return bb.startsWith(aa) && bb.length > aa.length;
 }
 
+function dedupPreparedSentenceSegments(segments) {
+  if (!Array.isArray(segments) || segments.length < 2) return segments || [];
+  const out = [];
+  for (const seg of segments) {
+    const prev = out[out.length - 1];
+    if (!prev) {
+      out.push(seg);
+      continue;
+    }
+    const gap = (seg.start || 0) - (prev.end || prev.start || 0);
+    const sameNorm = normalizeCaptionCompareText(seg.text) === normalizeCaptionCompareText(prev.text);
+    const segExpandsPrev = isNormalizedPrefix(prev.text, seg.text, 4);
+    const prevExpandsSeg = isNormalizedPrefix(seg.text, prev.text, 4);
+    const close = gap < 1.2;
+    const startupWindow = Math.min(prev.start || 0, seg.start || 0) < 12;
+    if (close && (sameNorm || segExpandsPrev || prevExpandsSeg)) {
+      if (segExpandsPrev) {
+        out[out.length - 1] = { ...seg, start: prev.start, end: Math.max(prev.end || 0, seg.end || 0) };
+      } else {
+        prev.end = Math.max(prev.end || 0, seg.end || 0);
+      }
+      continue;
+    }
+    // 开头阶段更保守：即使中间被 groupChineseSentences 重新切了一次，只要两句规范化后高度重合，
+    // 仍按同一句处理，避免“第一句读两遍”。
+    if (startupWindow) {
+      const a = normalizeCaptionCompareText(prev.text);
+      const b = normalizeCaptionCompareText(seg.text);
+      if (a && b) {
+        const short = a.length <= b.length ? a : b;
+        const long = a.length > b.length ? a : b;
+        if (short.length >= 8 && long.includes(short) && gap < 2.2) {
+          if (b.length > a.length) {
+            out[out.length - 1] = { ...seg, start: prev.start, end: Math.max(prev.end || 0, seg.end || 0) };
+          } else {
+            prev.end = Math.max(prev.end || 0, seg.end || 0);
+          }
+          continue;
+        }
+      }
+    }
+    out.push(seg);
+  }
+  return out;
+}
+
 function parseTimedText(body) {
   if (!body || !body.trim()) return [];
   const t = body.trim();
@@ -1181,7 +1227,9 @@ function prepareSegmentsForBackgroundDub(segments) {
   prepared = prepared
     .map((s) => ({ ...s, text: s.text.replace(fillerRe, '').trim() }))
     .filter((s) => s.text);
-  return groupChineseSentences(prepared);
+  prepared = groupChineseSentences(prepared);
+  prepared = dedupPreparedSentenceSegments(prepared);
+  return prepared;
 }
 
 // 解析 WebVTT 文本（<track> 用）
