@@ -748,6 +748,24 @@ function sanitizeDubbingText(text) {
     .trim();
 }
 
+function normalizeCaptionCompareText(text) {
+  return String(text || '')
+    .normalize('NFKC')
+    .replace(/\s+/g, '')
+    .replace(/[“”"‘’'`´]/g, '')
+    .replace(/[，,、；;：:。！？!?…~～\-—_]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function isNormalizedPrefix(a, b, minLen = 6) {
+  const aa = normalizeCaptionCompareText(a);
+  const bb = normalizeCaptionCompareText(b);
+  if (!aa || !bb) return false;
+  if (aa.length < minLen || bb.length < minLen) return false;
+  return bb.startsWith(aa) && bb.length > aa.length;
+}
+
 function parseTimedText(body) {
   if (!body || !body.trim()) return [];
   const t = body.trim();
@@ -871,16 +889,19 @@ function isCueLineExpansion(prev, seg) {
   while (i < prevLines.length && i < segLines.length) {
     const a = prevLines[i];
     const b = segLines[i];
-    if (a === b) {
+    if (a === b || normalizeCaptionCompareText(a) === normalizeCaptionCompareText(b)) {
       i++;
       continue;
     }
-    if (i === prevLines.length - 1 && b.startsWith(a) && b.length > a.length) {
+    if (i === prevLines.length - 1
+      && (b.startsWith(a) && b.length > a.length || isNormalizedPrefix(a, b, 4))) {
       return true;
     }
     return false;
   }
-  return segLines.length > prevLines.length || seg.text.startsWith(prev.text);
+  return segLines.length > prevLines.length
+    || seg.text.startsWith(prev.text)
+    || isNormalizedPrefix(prev.text, seg.text, 4);
 }
 
 // 相邻字幕 cue 在换行时经常在边界留下 1～几个字重叠（如「随着天」+「天蝎座」→
@@ -916,7 +937,8 @@ function dedupRollingCaptions(segments) {
     if (prev) {
       const closeInTime = (seg.start - prev.end) < 1.5;
       if (closeInTime) {
-        if (seg.text === prev.text) {
+        if (seg.text === prev.text
+          || normalizeCaptionCompareText(seg.text) === normalizeCaptionCompareText(prev.text)) {
           prev.end = Math.max(prev.end, seg.end);
           continue;   // 完全相同的紧邻重复 cue：合并时间窗，不重复保留
         }
@@ -924,7 +946,9 @@ function dedupRollingCaptions(segments) {
           out[out.length - 1] = { ...seg, start: prev.start };  // 后一条是更完整的渐进版本
           continue;
         }
-        if (isCueLineExpansion(seg, prev) || prev.text.startsWith(seg.text)) {
+        if (isCueLineExpansion(seg, prev)
+          || prev.text.startsWith(seg.text)
+          || isNormalizedPrefix(seg.text, prev.text, 4)) {
           continue;   // 这一条是前一条的截断残留，跳过
         }
         // 换行滚动时常见「前条尾字 = 后条首字」的部分重叠（非整句前缀），合并去重，
