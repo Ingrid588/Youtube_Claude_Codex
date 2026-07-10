@@ -3335,8 +3335,38 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
   // 长视频只合成播放点之后这段窗口。无限制地一次生成3小时以上全部音频会让浏览器
   // 同时持有数千段Base64并让服务器堆积大量进度对象，是旧机器静默断配音的主因。
   const SYNTH_AHEAD_SECONDS = 20 * 60;
+  const STARTUP_PREROLL_SECONDS = 60;
+  const STARTUP_PREROLL_MAX_SEGMENTS = 24;
   let firstDone = false;
   console.log('[配音插件] 开始配音流程，字幕总数:', rawSegments.length, 'upcoming:', upcoming.length, 'past:', past.length);
+
+  const startupPrerollSegments = () => {
+    const target = t0 + STARTUP_PREROLL_SECONDS;
+    const segs = upcoming
+      .filter((s) => s.end >= t0 - 0.5 && s.start <= target)
+      .slice(0, STARTUP_PREROLL_MAX_SEGMENTS);
+    return segs.length ? segs : upcoming.slice(0, Math.min(1, upcoming.length));
+  };
+
+  const isStartupPrerollReady = () => {
+    const required = startupPrerollSegments();
+    if (!required.length) return !!sess.dubSegments?.length;
+    const have = new Set((sess.dubSegments || [])
+      .filter((s) => s.audio_url || s.web_speech)
+      .map(_segKey));
+    return required.every((s) => have.has(_segKey(s)));
+  };
+
+  const maybeMarkFirstReady = () => {
+    if (firstDone || !isStartupPrerollReady()) return;
+    firstDone = true;
+    recordDiagnostic(sess, 'startup_preroll_ready', {
+      currentTime: +(video.currentTime || 0).toFixed(3),
+      required: startupPrerollSegments().length,
+      maxReady: +(sess._maxSynthedTime || 0).toFixed(3),
+    });
+    if (onFirstChunkReady) onFirstChunkReady();
+  };
 
   async function runStream(queue, isPrimary) {
     let idx = 0, chunkNo = 0;
@@ -3407,10 +3437,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
           hideBufferIndicator();
           video.play().catch(() => {});
         }
-        if (!firstDone && sess.dubSegments.length) {
-          firstDone = true;
-          if (onFirstChunkReady) onFirstChunkReady();
-        }
+        maybeMarkFirstReady();
       };
       // 真正的本地持久缓存优先于任何网络请求。只有整批未完整命中时才访问服务器；
       // 已完整配过的视频会在这里立即返回，不等待TTS或健康检查。
@@ -3551,10 +3578,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
         if (sess._onChunkProgress) sess._onChunkProgress(maxSec);
         console.log(`[配音插件] 第${chunkNo}批返回${got.length}段`);
       }
-      if (!firstDone && sess.dubSegments.length) {
-        firstDone = true;
-        if (onFirstChunkReady) onFirstChunkReady();
-      }
+      maybeMarkFirstReady();
     }
   }
 
