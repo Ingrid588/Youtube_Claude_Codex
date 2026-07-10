@@ -1,0 +1,23 @@
+# 部署到 Hugging Face Spaces 步骤（Docker SDK）：
+#   1. 在 huggingface.co 新建一个 Space，SDK 选 "Docker"
+#   2. 把这 3 个文件原样传上去——只有这一个文件名必须改：
+#        Dockerfile.read_aloud_tts -> 改名为 Dockerfile（HF 靠这个文件名识别 Docker 构建，必须改）
+#      requirements_read_aloud_tts.txt 和 read_aloud_tts_server.py 文件名不用改，
+#      下面 COPY 命令里写的就是原始文件名。
+#   3. Space 会自动构建并启动，监听 7860 端口（HF Spaces 的默认约定）
+#
+# 本地测试不用这个文件，本地用 run_read_aloud_tts.bat 直接跑 Python 即可。
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements_read_aloud_tts.txt .
+RUN pip install --no-cache-dir -r requirements_read_aloud_tts.txt
+
+COPY read_aloud_tts_server.py .
+
+EXPOSE 7860
+ENV PORT=7860
+
+CMD ["python", "read_aloud_tts_server.py"]

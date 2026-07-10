@@ -1,0 +1,72 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube\u5b9e\u65f6\u4e2d\u6587\u914d\u97f3 Codex",
+  "version": "0.70",
+  "version_name": "0.70",
+  "description": "\u8bfb\u53d6YouTube\u5b57\u5e55\uff0c\u8c03\u7528\u7ffb\u8bd1\u4e0e\u914d\u97f3\u670d\u52a1\uff0c\u5b9e\u73b0\u5b9e\u65f6\u4e2d\u6587\u914d\u97f3\u3002",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs",
+    "alarms",
+    "downloads",
+    "tabCapture",
+    "offscreen",
+    "cookies"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "http://127.0.0.1:8766/*",
+    "http://localhost:8765/*",
+    "http://localhost:8766/*",
+    "https://dub-server-921963653375.us-central1.run.app/*",
+    "https://ingrid919-dub-server.hf.space/*",
+    "https://ingrid919-read-video-tts.hf.space/*",
+    "https://www.youtube.com/*",
+    "https://api.bilibili.com/*",
+    "https://www.bilibili.com/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "\u5b9e\u65f6\u914d\u97f3 Codex \u8bbe\u7f6e"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://www.bilibili.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "inject.js",
+        "inject_youtube.js"
+      ],
+      "matches": [
+        "https://www.youtube.com/*"
+      ]
+    },
+    {
+      "resources": [
+        "inject_bilibili.js"
+      ],
+      "matches": [
+        "https://www.bilibili.com/*"
+      ]
+    }
+  ]
+}

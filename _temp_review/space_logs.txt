@@ -1,0 +1,402 @@
+===== Application Startup at 2026-06-24 13:31:04 =====
+
+2026-06-24 13:31:22,427 INFO live_dub_server 启动，监听 0.0.0.0:7860
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:7860 (Press CTRL+C to quit)
+2026-06-24 13:31:35,961 INFO 收到配音请求 video_id=tm4HkSmU8eg title="(16380) there's something u need to know" 字幕条数=2
+2026-06-24 13:31:35,961 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:35,961 INFO 配音模式：中文字幕 2 段，术语校正已应用
+2026-06-24 13:31:35,961 INFO 📊 自动计算基准语速: -30%（全程匀速配音）
+合成配音:   0%|          | 0/2 [00:00<?, ?条/s]合成配音:  50%|█████     | 1/2 [00:01<00:01,  1.04s/条]合成配音: 100%|██████████| 2/2 [00:01<00:00,  2.05条/s]合成配音: 100%|██████████| 2/2 [00:01<00:00,  1.75条/s]
+  [(16380) there's something u need to know] 合成配音进度：1/2（50%）
+  [(16380) there's something u need to know] 合成配音进度：2/2（100%）
+2026-06-24 13:31:37,119 INFO   段0: start=1.28s end=3.88s text=并非每个季节都注定喧闹。
+2026-06-24 13:31:37,119 INFO   段1: start=4.56s end=8.68s text=有时候，你最大的成长是在沉默中发生的。
+2026-06-24 13:31:37,119 INFO 配音完成 video_id=tm4HkSmU8eg 返回片段=2
+INFO:     10.16.4.68:3134 - "POST /dub HTTP/1.1" 200 OK
+INFO:     10.16.4.68:3134 - "GET /audio/tm4HkSmU8eg/seg_4560.mp3 HTTP/1.1" 200 OK
+2026-06-24 13:31:37,427 INFO 收到配音请求 video_id=tm4HkSmU8eg title="(16380) there's something u need to know" 字幕条数=6
+2026-06-24 13:31:37,427 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:37,428 INFO 配音模式：中文字幕 6 段，术语校正已应用
+2026-06-24 13:31:37,428 INFO 📊 自动计算基准语速: -25%（全程匀速配音）
+INFO:     10.16.47.7:40583 - "GET /audio/tm4HkSmU8eg/seg_1280.mp3 HTTP/1.1" 200 OK
+INFO:     10.16.36.201:14778 - "GET /audio/tm4HkSmU8eg/seg_4560.mp3 HTTP/1.1" 304 Not Modified
+INFO:     10.16.36.201:44532 - "GET /audio/tm4HkSmU8eg/seg_1280.mp3 HTTP/1.1" 304 Not Modified
+INFO:     10.16.36.201:14778 - "GET /audio/tm4HkSmU8eg/seg_4560.mp3 HTTP/1.1" 304 Not Modified
+  [(16380) there's something u need to know] 合成配音进度：1/6（16%）
+INFO:     10.16.47.7:40583 - "GET /audio/tm4HkSmU8eg/seg_1280.mp3 HTTP/1.1" 304 Not Modified
+  [(16380) there's something u need to know] 合成配音进度：2/6（33%）
+  [(16380) there's something u need to know] 合成配音进度：3/6（50%）
+INFO:     10.16.4.68:3134 - "GET /asr_results/tm4HkSmU8eg HTTP/1.1" 200 OK
+  [(16380) there's something u need to know] 合成配音进度：4/6（66%）
+INFO:     10.16.47.7:13116 - "GET /asr_results/tm4HkSmU8eg HTTP/1.1" 200 OK
+2026-06-24 13:31:39,517 INFO 收到配音请求 video_id=XWL-J5NcX6Y title='ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀' 字幕条数=2
+2026-06-24 13:31:39,517 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:39,518 INFO 配音模式：中文字幕 2 段，术语校正已应用
+2026-06-24 13:31:39,518 INFO 📊 自动计算基准语速: -15%（全程匀速配音）
+合成配音:   0%|          | 0/6 [00:00<?, ?条/s]合成配音:  17%|█▋        | 1/6 [00:00<00:04,  1.11条/s]合成配音:  33%|███▎      | 2/6 [00:01<00:01,  2.24条/s]合成配音:  50%|█████     | 3/6 [00:01<00:01,  2.09条/s]合成配音:  67%|██████▋   | 4/6 [00:01<00:00,  2.49条/s]
+2026-06-24 13:31:39,518 INFO 收到配音请求 video_id=XWL-J5NcX6Y title='(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀' 字幕条数=8
+2026-06-24 13:31:39,518 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:39,518 INFO 配音模式：中文字幕 8 段，术语校正已应用
+2026-06-24 13:31:39,519 INFO 📊 自动计算基准语速: -9%（全程匀速配音）
+合成配音:   0%|          | 0/2 [00:00<?, ?条/s][A
+
+2026-06-24 13:31:39,519 INFO 收到配音请求 video_id=XWL-J5NcX6Y title='(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀' 字幕条数=2
+2026-06-24 13:31:39,519 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:39,519 INFO 配音模式：中文字幕 2 段，术语校正已应用
+2026-06-24 13:31:39,519 INFO 📊 自动计算基准语速: -15%（全程匀速配音）
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A
+
+
+2026-06-24 13:31:39,520 INFO 收到配音请求 video_id=XWL-J5NcX6Y title='(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀' 字幕条数=8
+2026-06-24 13:31:39,520 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:39,520 INFO 配音模式：中文字幕 8 段，术语校正已应用
+2026-06-24 13:31:39,520 INFO 📊 自动计算基准语速: -21%（全程匀速配音）
+合成配音:   0%|          | 0/2 [00:00<?, ?条/s][A[A[A
+
+
+
+2026-06-24 13:31:39,526 INFO 收到配音请求 video_id=XWL-J5NcX6Y title='(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀' 字幕条数=8
+2026-06-24 13:31:39,526 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:39,527 INFO 配音模式：中文字幕 8 段，术语校正已应用
+2026-06-24 13:31:39,527 INFO 📊 自动计算基准语速: -30%（全程匀速配音）
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A[A[A
+
+
+
+
+2026-06-24 13:31:39,532 INFO 收到配音请求 video_id=XWL-J5NcX6Y title='(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀' 字幕条数=8
+2026-06-24 13:31:39,532 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:39,532 INFO 配音模式：中文字幕 8 段，术语校正已应用
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A[A[A[A
+
+
+
+
+
+2026-06-24 13:31:39,532 INFO 📊 自动计算基准语速: -4%（全程匀速配音）
+2026-06-24 13:31:39,534 INFO 收到配音请求 video_id=XWL-J5NcX6Y title='(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀' 字幕条数=8
+2026-06-24 13:31:39,534 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:39,535 INFO 配音模式：中文字幕 8 段，术语校正已应用
+2026-06-24 13:31:39,535 INFO 📊 自动计算基准语速: -30%（全程匀速配音）
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A[A[A[A[A
+
+
+
+
+
+
+  [(16380) there's something u need to know] 合成配音进度：5/6（83%）
+2026-06-24 13:31:39,835 INFO 收到配音请求 video_id=XWL-J5NcX6Y title='(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀' 字幕条数=8
+2026-06-24 13:31:39,835 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:39,835 INFO 配音模式：中文字幕 8 段，术语校正已应用
+2026-06-24 13:31:39,835 INFO 📊 自动计算基准语速: -8%（全程匀速配音）
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A[A[A[A[A[A合成配音:  83%|████████▎ | 5/6 [00:02<00:00,  2.16条/s]
+
+
+
+
+
+
+
+2026-06-24 13:31:39,843 INFO 收到配音请求 video_id=XWL-J5NcX6Y title='(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀' 字幕条数=8
+2026-06-24 13:31:39,843 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:39,843 INFO 配音模式：中文字幕 8 段，术语校正已应用
+2026-06-24 13:31:39,843 INFO 📊 自动计算基准语速: -4%（全程匀速配音）
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A[A[A[A[A[A[A[A合成配音: 100%|██████████| 6/6 [00:03<00:00,  1.45条/s]合成配音: 100%|██████████| 6/6 [00:04<00:00,  1.42条/s]
+  [(16380) there's something u need to know] 合成配音进度：6/6（100%）
+  [(16380) there's something u need to know] TTS 补做第1轮：6 段空/失败，重试
+INFO:     10.16.10.14:26037 - "GET /asr_results/tm4HkSmU8eg HTTP/1.1" 200 OK
+
+
+
+
+
+
+
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：1/8（12%）
+INFO:     10.16.36.201:50216 - "GET /asr_results/tm4HkSmU8eg HTTP/1.1" 200 OK
+合成配音:  12%|█▎        | 1/8 [00:02<00:20,  2.97s/条][A[A[A[A[A[A[A
+
+合成配音:  12%|█▎        | 1/8 [00:03<00:23,  3.36s/条][A[A
+
+
+合成配音:  50%|█████     | 1/2 [00:03<00:03,  3.49s/条][A[A[A
+
+合成配音:  25%|██▌       | 2/8 [00:03<00:09,  1.52s/条][A[A
+
+
+
+合成配音:  12%|█▎        | 1/8 [00:03<00:25,  3.68s/条][A[A[A[A
+
+
+
+
+
+
+
+合成配音:  12%|█▎        | 1/8 [00:03<00:24,  3.57s/条][A[A[A[A[A[A[A[A
+
+合成配音:  38%|███▊      | 3/8 [00:03<00:05,  1.00s/条][A[A
+
+
+
+
+
+
+合成配音:  25%|██▌       | 2/8 [00:04<00:11,  1.87s/条][A[A[A[A[A[A[A
+
+
+
+合成配音:  25%|██▌       | 2/8 [00:04<00:11,  1.87s/条][A[A[A[A
+
+
+
+
+
+合成配音:  12%|█▎        | 1/8 [00:04<00:30,  4.39s/条][A[A[A[A[A[A
+
+
+
+
+
+
+
+合成配音:  25%|██▌       | 2/8 [00:04<00:10,  1.83s/条][A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+合成配音:  12%|█▎        | 1/8 [00:04<00:29,  4.27s/条][A[A[A[A[A[A[A[A[A
+
+
+
+
+合成配音:  12%|█▎        | 1/8 [00:04<00:32,  4.69s/条][A[A[A[A[A
+
+
+
+
+
+
+合成配音:  38%|███▊      | 3/8 [00:04<00:06,  1.34s/条][A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+合成配音:  25%|██▌       | 2/8 [00:04<00:11,  1.94s/条][A[A[A[A[A[A[A[A[A
+
+
+
+
+
+合成配音:  25%|██▌       | 2/8 [00:05<00:13,  2.22s/条][A[A[A[A[A[A
+
+
+
+
+
+
+
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：1/8（12%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：1/2（50%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：2/8（25%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：1/8（12%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：1/8（12%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：3/8（37%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：2/8（25%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：2/8（25%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：1/8（12%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：2/8（25%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：1/8（12%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：1/8（12%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：3/8（37%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：2/8（25%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：2/8（25%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：3/8（37%）
+INFO:     10.16.4.68:22194 - "GET /asr_results/tm4HkSmU8eg HTTP/1.1" 200 OK
+合成配音:  38%|███▊      | 3/8 [00:04<00:06,  1.32s/条][A[A[A[A[A[A[A[A
+
+
+合成配音: 100%|██████████| 2/2 [00:05<00:00,  2.52s/条][A[A[A
+
+
+
+
+
+
+
+
+合成配音:  38%|███▊      | 3/8 [00:05<00:06,  1.29s/条][A[A[A[A[A[A[A[A[A
+
+
+
+
+
+合成配音:  38%|███▊      | 3/8 [00:05<00:07,  1.43s/条][A[A[A[A[A[A合成配音: 100%|██████████| 2/2 [00:05<00:00,  2.81s/条]
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：2/2（100%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：3/8（37%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：3/8（37%）
+2026-06-24 13:31:45,132 INFO   段0: start=0.00s end=1.52s text=这是怎么回事？
+2026-06-24 13:31:45,132 INFO   段1: start=11.28s end=17.35s text=我和这破事儿总是透着一股歪风邪气。我是想
+2026-06-24 13:31:45,132 INFO 配音完成 video_id=XWL-J5NcX6Y 返回片段=2
+INFO:     10.16.36.201:14778 - "POST /dub HTTP/1.1" 200 OK
+INFO:     10.16.4.68:22194 - "GET /asr_results/tm4HkSmU8eg HTTP/1.1" 200 OK
+
+
+
+
+
+
+
+
+合成配音:  50%|█████     | 4/8 [00:06<00:05,  1.30s/条][A[A[A[A[A[A[A[A
+
+
+
+
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：4/8（50%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：2/8（25%）
+2026-06-24 13:31:46,793 INFO 收到配音请求 video_id=XWL-J5NcX6Y title='(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀' 字幕条数=6
+2026-06-24 13:31:46,794 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:46,794 INFO 配音模式：中文字幕 6 段，术语校正已应用
+2026-06-24 13:31:46,794 INFO 📊 自动计算基准语速: -30%（全程匀速配音）
+合成配音:  25%|██▌       | 2/8 [00:06<00:18,  3.02s/条][A[A[A[A[A合成配音:   0%|          | 0/6 [00:00<?, ?条/s]
+
+
+
+
+
+
+合成配音:  50%|█████     | 4/8 [00:07<00:07,  1.84s/条][A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：4/8（50%）
+  [(16380) ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：4/8（50%）
+INFO:     10.16.10.14:34412 - "GET /asr_results/tm4HkSmU8eg HTTP/1.1" 200 OK
+2026-06-24 13:31:47,703 INFO 收到配音请求 video_id=tm4HkSmU8eg title="(16380) there's something u need to know" 字幕条数=8
+2026-06-24 13:31:47,703 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:47,704 INFO 配音模式：中文字幕 8 段，术语校正已应用
+2026-06-24 13:31:47,704 INFO 📊 自动计算基准语速: -30%（全程匀速配音）
+合成配音:  50%|█████     | 4/8 [00:07<00:07,  1.87s/条][A[A[A[A[A[A[A[A[A
+
+
+2026-06-24 13:31:47,709 INFO 收到配音请求 video_id=tm4HkSmU8eg title="(16380) there's something u need to know" 字幕条数=8
+2026-06-24 13:31:47,709 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:47,710 INFO 配音模式：中文字幕 8 段，术语校正已应用
+2026-06-24 13:31:47,710 INFO 📊 自动计算基准语速: -30%（全程匀速配音）
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A[A
+
+
+
+
+
+
+
+
+
+2026-06-24 13:31:47,716 INFO 收到配音请求 video_id=tm4HkSmU8eg title="(16380) there's something u need to know" 字幕条数=8
+2026-06-24 13:31:47,717 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:47,717 INFO 配音模式：中文字幕 8 段，术语校正已应用
+2026-06-24 13:31:47,717 INFO 📊 自动计算基准语速: -26%（全程匀速配音）
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A[A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+
+
+2026-06-24 13:31:47,824 INFO 收到配音请求 video_id=tm4HkSmU8eg title="(16380) there's something u need to know" 字幕条数=8
+2026-06-24 13:31:47,824 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:47,824 INFO 配音模式：中文字幕 8 段，术语校正已应用
+2026-06-24 13:31:47,824 INFO 📊 自动计算基准语速: -24%（全程匀速配音）
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A[A[A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+
+
+
+2026-06-24 13:31:47,845 INFO 收到配音请求 video_id=tm4HkSmU8eg title="(16380) there's something u need to know" 字幕条数=8
+2026-06-24 13:31:47,845 INFO 字幕语言: 'zh-CN' → 完整匹配=zh-CN-XiaoxiaoNeural 前缀匹配=zh-CN-XiaoxiaoNeural → TTS: zh-CN-XiaoxiaoNeural
+2026-06-24 13:31:47,845 INFO 配音模式：中文字幕 8 段，术语校正已应用
+2026-06-24 13:31:47,845 INFO 📊 自动计算基准语速: -30%（全程匀速配音）
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A[A[A[A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+
+
+
+
+合成配音:   0%|          | 0/8 [00:00<?, ?条/s][A[A[A[A[A[A[A[A[A[A[A[A[A
+  [ALL SIGNS! LATE NIGHT TAROT: WHATS GOING ON BEHIND YOUR BACK? 👀👀👀] 合成配音进度：1/2（50%）
+INFO:     10.16.36.201:14026 - "GET /asr_results/tm4HkSmU8eg HTTP/1.1" 200 OK
+合成配音:  50%|█████     | 1/2 [00:08<00:08,  8.48s/条][A
+
+
+
+
+
+
+
+合成配音:  62%|██████▎   | 5/8 [00:08<00:05,  1.75s/条][A[A[A[A[A[A[A[A
+
+
+
+
+合成配音:  38%|███▊      | 3/8 [00:09<00:14,  2.81s/条][A[A[A[A[A
+合成配音: 100%|██████████| 2/2 [00:09<00:00,  3.92s/条][A
+
+
+
+
+
+合成配音:  50%|█████     | 4/8 [00:09<00:09,  2.36s/条][A[A[A[A[A[A合成配音: 100%|██████████| 2/2 [00:09<00:00,  4.71s/条]
+
+
+
+
+
+
+合成配音:  62%|██████▎   | 5/8 [00:09<00:04,  1.59s/条][A[A[A[A[A[A
+

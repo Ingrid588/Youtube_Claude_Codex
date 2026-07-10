@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic
+edge-tts
+yt-dlp
+tqdm
+google-genai
+curl_cffi

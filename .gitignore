@@ -1,0 +1,51 @@
+# ===== 敏感文件（绝不提交）=====
+# config.json 含 hf_token
+config.json
+cookies.txt
+secrets.json
+*.token
+*.key
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+venv_sep/
+venv/
+.venv/
+
+# ===== 模型 / 数据 / 缓存 =====
+_sep_models/
+Youtube_Claude_data/
+cache/
+*.pt
+*.bin
+*.onnx
+
+# ===== 日志 / 临时输出 =====
+*.log
+srv_err.txt
+srv_out.txt
+startup_err.txt
+import_err.txt
+test_import.log
+_tid_check.txt
+_parse_check.txt
+
+# ===== 媒体文件 =====
+*.mp4
+*.mp3
+*.wav
+*.webm
+*.m4a
+*.png
+*.jpg
+*.jpeg
+
+# ===== 编辑器 / 工具 =====
+.claude/
+.vscode/
+.idea/
+
+# ===== cookie 文件 =====
+*cookies*.txt

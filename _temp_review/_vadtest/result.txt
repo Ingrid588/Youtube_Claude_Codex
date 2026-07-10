@@ -1,0 +1,923 @@
+Using cache found in C:\Users\a/.cache\torch\hub\snakers4_silero-vad_master
+
+===== 1-Every Argument is With a GHOST_dubbed.m4a (abhmtkqnW7s) =====
+共 79 句，VAD检测到 147 段语音, chars_per_sec=5.00
+重叠 4 句，留白 4 句，超字数上限 37 句
+  [OVERLAP] #  4 dur= 10.9s target/cap/译=54/54/26 overlap=3.7s | a ghost that wasn't in the room. So I wa
+  [OVERLAP] # 15 dur=  8.2s target/cap/译=41/41/81 overlap=5.4s | There's one signal and I think that once
+  [OVERLAP] # 40 dur=  1.0s target/cap/译=5/5/59 overlap=0.8s | installation.
+  [OVERLAP] # 44 dur=  4.1s target/cap/译=21/15/76 overlap=0.3s | I am only worth what I produce.
+  [GAP]     # 36 dur=  7.8s target/cap/译=39/39/13 gap=4.5s | That's what makes it work. So if you sta
+  [GAP]     # 65 dur=  3.0s target/cap/译=15/15/6 gap=1.8s | &gt;&gt; The world is breathing.
+  [GAP]     # 67 dur=  3.5s target/cap/译=18/16/10 gap=1.7s | No echoes here on sacred ground.
+  [GAP]     # 75 dur=  4.1s target/cap/译=21/21/14 gap=1.7s | on the light. Another beautiful quiet ni
+  [OVERFLOW-CACHED] #  0 target/cap/译=66/66/80 | The last argument you had with your spou
+  [OVERFLOW-CACHED] #  1 target/cap/译=67/67/70 | to persuade you or maybe influence you t
+  [OVERFLOW-CACHED] #  2 target/cap/译=23/23/66 | of bothered me a little bit about this i
+  [OVERFLOW-CACHED] #  5 target/cap/译=11/11/69 | Most people think that our reactions are
+  [OVERFLOW-CACHED] #  6 target/cap/译=63/63/73 | Somebody says something, you feel someth
+  [OVERFLOW-CACHED] #  7 target/cap/译=61/61/74 | that trigger your emotions are not about
+  [OVERFLOW-CACHED] # 10 target/cap/译=29/29/75 | between an offense that happened today a
+  [OVERFLOW-CACHED] # 11 target/cap/译=67/67/80 | It's the exact same brain pathways, same
+  [OVERFLOW-CACHED] # 12 target/cap/译=68/68/73 | again. It's just happening. There's no a
+  [OVERFLOW-CACHED] # 14 target/cap/译=36/36/39 | the phone. So there's a way to catch thi
+  [OVERFLOW-CACHED] # 16 target/cap/译=71/71/78 | This is the signal. The signal is when t
+  [OVERFLOW-CACHED] # 18 target/cap/译=64/64/76 | between those things is pointing it's a 
+  [OVERFLOW-CACHED] # 19 target/cap/译=66/66/68 | coming from the old file. So, I work wit
+  [OVERFLOW-CACHED] # 21 target/cap/译=35/35/69 | all the way down to the floor because I 
+  [OVERFLOW-CACHED] # 24 target/cap/译=68/68/76 | understanding what you've been noticing 
+  [OVERFLOW-CACHED] # 26 target/cap/译=22/22/90 | in behavior profiling and the link is ri
+  [OVERFLOW-CACHED] # 31 target/cap/译=6/6/8 | &gt;&gt; You need to listen to me.
+  [OVERFLOW-CACHED] # 32 target/cap/译=8/8/9 | &gt;&gt; No, you listen.
+  [OVERFLOW-CACHED] # 33 target/cap/译=14/14/57 | &gt;&gt; Hit the pause button right ther
+  [OVERFLOW-CACHED] # 35 target/cap/译=35/35/38 | And every word of that is just cover sto
+  [OVERFLOW-CACHED] # 37 target/cap/译=11/11/60 | You think I do nothing around here.
+  [OVERFLOW-CACHED] # 38 target/cap/译=51/51/63 | Okay, why does that land so hard? Plenty
+  [OVERFLOW-CACHED] # 46 target/cap/译=14/14/31 | a calendar. There's no happening again.
+  [OVERFLOW-CACHED] # 48 target/cap/译=12/11/58 | Old code, new hardware.
+  [OVERFLOW-CACHED] # 52 target/cap/译=61/61/75 | next time it happens. The next time a re
+  [OVERFLOW-CACHED] # 56 target/cap/译=69/69/71 | Social media is broken." None of them ar
+  [OVERFLOW-CACHED] # 58 target/cap/译=36/36/39 | model. And it's the same with food, the 
+  [OVERFLOW-CACHED] # 59 target/cap/译=31/31/36 | Incentives don't point at your growth. T
+  [OVERFLOW-CACHED] # 60 target/cap/译=65/65/76 | But I want to tell you that that's actua
+  [OVERFLOW-CACHED] # 62 target/cap/译=70/70/82 | authority, the influence. I want to give
+  [OVERFLOW-CACHED] # 64 target/cap/译=15/15/17 | &gt;&gt; Authorities are reporting a cit
+  [OVERFLOW-CACHED] # 68 target/cap/译=22/22/28 | A quiet pose, a steady beat. The truth w
+  [OVERFLOW-CACHED] # 76 target/cap/译=5/1/2 | Oh.
+  [OVERFLOW-CACHED] # 77 target/cap/译=24/23/29 | &gt;&gt; &gt;&gt; This quiet night life 
+
+===== 2-How To Think SO CLEARLY People Assume You're A Genius_dubbed.m4a (mjTgkm-h__M) =====
+共 112 句，VAD检测到 248 段语音, chars_per_sec=4.69
+重叠 6 句，留白 1 句，超字数上限 54 句
+  [OVERLAP] #  8 dur= 13.8s target/cap/译=65/65/70 overlap=0.6s | order flow. The customer chooses, the ca
+  [OVERLAP] # 11 dur= 14.5s target/cap/译=68/68/75 overlap=0.3s | if you don't know what system you're in,
+  [OVERLAP] # 15 dur= 13.5s target/cap/译=63/63/69 overlap=0.4s | Why? Because some people figured out how
+  [OVERLAP] # 43 dur= 13.2s target/cap/译=62/62/49 overlap=0.5s | adjustable rates, the right terms and du
+  [OVERLAP] # 44 dur= 12.6s target/cap/译=59/59/65 overlap=0.4s | aircraft repair, acquisition diligence e
+  [OVERLAP] # 49 dur= 14.6s target/cap/译=68/68/4 overlap=0.5s | first 60 days, it was obvious that the t
+  [GAP]     #111 dur=  9.3s target/cap/译=44/42/24 gap=4.1s | The world will meet you at your level of
+  [OVERFLOW-CACHED] #  0 target/cap/译=61/61/65 | Every week someone smart makes an expens
+  [OVERFLOW-CACHED] #  2 target/cap/译=62/62/72 | in training, eventually a CEO and board 
+  [OVERFLOW-CACHED] #  3 target/cap/译=65/65/67 | there's a huge fire burning, the firefig
+  [OVERFLOW-CACHED] #  6 target/cap/译=62/62/78 | observe. The simplest way to understand 
+  [OVERFLOW-CACHED] # 10 target/cap/译=57/57/58 | for that. First, they don't know what ki
+  [OVERFLOW-CACHED] # 17 target/cap/译=56/56/62 | ignore the goal that the system was made
+  [OVERFLOW-CACHED] # 18 target/cap/译=59/59/66 | feedback loops that are delayed. So you 
+  [OVERFLOW-CACHED] # 22 target/cap/译=53/53/56 | So those are the three confusing aspects
+  [OVERFLOW-CACHED] # 23 target/cap/译=31/31/34 | What patterns keep repeating? And once y
+  [OVERFLOW-CACHED] # 25 target/cap/译=57/57/72 | about that band was not about them. It w
+  [OVERFLOW-CACHED] # 26 target/cap/译=24/24/60 | stage setup and the electrical requireme
+  [OVERFLOW-CACHED] # 30 target/cap/译=64/64/68 | M&amp;M's, the band could figure out the
+  [OVERFLOW-CACHED] # 33 target/cap/译=32/32/60 | scrubbing in before the operations is no
+  [OVERFLOW-CACHED] # 35 target/cap/译=55/55/63 | pilot in action. They will all have a ch
+  [OVERFLOW-CACHED] # 39 target/cap/译=9/9/36 | That is a complicated system.
+  [OVERFLOW-CACHED] # 41 target/cap/译=24/24/75 | effect. What you need is analysis or exp
+  [OVERFLOW-CACHED] # 46 target/cap/译=43/43/62 | expert. Also, not just any expert, but t
+  [OVERFLOW-CACHED] # 51 target/cap/译=55/55/57 | the first 90 days. We had to shut down s
+  [OVERFLOW-CACHED] # 54 target/cap/译=66/66/74 | Now you hire the right consultants, the 
+  [OVERFLOW-CACHED] # 55 target/cap/译=33/33/39 | have to ask your people to change how th
+  [OVERFLOW-CACHED] # 58 target/cap/译=65/65/66 | and every dad knows this. You cannot rai
+  [OVERFLOW-CACHED] # 60 target/cap/译=21/21/28 | Their body is changing. Their brain is c
+  [OVERFLOW-CACHED] # 61 target/cap/译=64/64/80 | It's not a clear system. You cannot rais
+  [OVERFLOW-CACHED] # 63 target/cap/译=64/64/73 | is a system where none of your experimen
+  [OVERFLOW-CACHED] # 65 target/cap/译=9/9/14 | Nobody knew which bottles were safe.
+  [OVERFLOW-CACHED] # 66 target/cap/译=23/23/29 | Nobody knew if there were more deaths co
+  [OVERFLOW-CACHED] # 68 target/cap/译=58/58/61 | None of that. All they could do was go i
+  [OVERFLOW-CACHED] # 70 target/cap/译=67/67/128 | to act first, stabilize first, and then 
+  [OVERFLOW-CACHED] # 71 target/cap/译=58/58/65 | paralysis. People want the full picture 
+  [OVERFLOW-CACHED] # 73 target/cap/译=12/12/24 | system. Cause and effect are obvious.
+  [OVERFLOW-CACHED] # 75 target/cap/译=22/22/51 | What do you do? You slow down, take time
+  [OVERFLOW-CACHED] # 76 target/cap/译=21/21/40 | Complex systems. Here the cause and effe
+  [OVERFLOW-CACHED] # 77 target/cap/译=59/59/68 | So run a lot of tests, stay adaptable, c
+  [OVERFLOW-CACHED] # 78 target/cap/译=45/45/78 | stabilize first, create safety, and then
+  [OVERFLOW-CACHED] # 79 target/cap/译=66/66/70 | Nobody walks into your door and says, "C
+  [OVERFLOW-CACHED] # 82 target/cap/译=11/11/26 | Is it discoverable through analysis?
+  [OVERFLOW-CACHED] # 83 target/cap/译=9/9/95 | Then it would be a complicated system.
+  [OVERFLOW-CACHED] # 84 target/cap/译=19/19/37 | Is it emergent and constantly changing a
+  [OVERFLOW-CACHED] # 85 target/cap/译=63/63/70 | That could be a complex system. Or is it
+  [OVERFLOW-CACHED] # 86 target/cap/译=33/33/57 | this before? Even if you haven't seen th
+  [OVERFLOW-CACHED] # 88 target/cap/译=55/55/62 | system, there is no time to test. And on
+  [OVERFLOW-CACHED] # 93 target/cap/译=31/31/57 | see your train from the platform. Second
+  [OVERFLOW-CACHED] # 94 target/cap/译=35/35/37 | Your biggest asset is data that shows yo
+  [OVERFLOW-CACHED] # 98 target/cap/译=12/12/19 | trained to become a monk in an ashram.
+  [OVERFLOW-CACHED] #102 target/cap/译=66/66/69 | for systems thinking. The conventional w
+  [OVERFLOW-CACHED] #103 target/cap/译=69/69/76 | product. Most of these binary choices ar
+  [OVERFLOW-CACHED] #104 target/cap/译=50/50/59 | mass market scale that shouldn't exist b
+  [OVERFLOW-CACHED] #105 target/cap/译=11/11/14 | They refuse to make that binary choice.
+  [OVERFLOW-CACHED] #106 target/cap/译=64/64/75 | By the way, if you're thinking about imp
+  [OVERFLOW-CACHED] #109 target/cap/译=26/26/27 | what limits you put on yourself, that st
+
+===== 3-Sand Reading⏳😍Divine Guidance ♥️_dubbed.m4a (BGoPKA-8n2Q) =====
+共 97 句，VAD检测到 257 段语音, chars_per_sec=4.32
+重叠 41 句，留白 2 句，超字数上限 44 句
+  [OVERLAP] #  5 dur=  8.9s target/cap/译=38/38/27 overlap=2.0s | So, let's begin. Let's see why are you h
+  [OVERLAP] #  6 dur=  5.3s target/cap/译=23/23/61 overlap=3.3s | And just take whichever u message resona
+  [OVERLAP] #  9 dur= 11.5s target/cap/译=50/50/55 overlap=1.9s | else, as I see it for most of you, okay,
+  [OVERLAP] # 10 dur= 12.8s target/cap/译=55/55/48 overlap=0.6s | something. And don't be surprised that i
+  [OVERLAP] # 12 dur= 12.0s target/cap/译=52/52/14 overlap=1.1s | they will try one way or the other to ma
+  [OVERLAP] # 13 dur= 12.1s target/cap/译=52/52/10 overlap=0.9s | here in the picture. So just stay calm a
+  [OVERLAP] # 15 dur=  3.0s target/cap/译=13/13/14 overlap=0.8s | Continue going with your path.
+  [OVERLAP] # 16 dur= 14.0s target/cap/译=60/60/32 overlap=0.8s | I also see that soon you will encounter 
+  [OVERLAP] # 20 dur=  8.0s target/cap/译=35/35/56 overlap=0.4s | something out of heart. Okay? And I see 
+  [OVERLAP] # 21 dur=  3.5s target/cap/译=15/12/29 overlap=3.8s | Let me see more for you.
+  [OVERLAP] # 23 dur= 12.2s target/cap/译=53/53/22 overlap=1.8s | But uh it's not fully coming to fruition
+  [OVERLAP] # 27 dur=  9.4s target/cap/译=40/40/55 overlap=1.4s | like you you are tested to like will you
+  [OVERLAP] # 30 dur=  3.0s target/cap/译=13/13/51 overlap=3.9s | one literally one step away
+  [OVERLAP] # 31 dur=  3.5s target/cap/译=15/15/65 overlap=6.4s | from accomplishing something from gettin
+  [OVERLAP] # 32 dur= 13.9s target/cap/译=60/60/12 overlap=1.5s | For some of you, um, you may suddenly be
+  [OVERLAP] # 34 dur= 12.8s target/cap/译=55/55/15 overlap=0.8s | but why is this happening because you yo
+  [OVERLAP] # 38 dur=  8.2s target/cap/译=36/36/17 overlap=2.3s | There will be people that will get attra
+  [OVERLAP] # 39 dur=  9.2s target/cap/译=40/40/51 overlap=0.9s | It doesn't mean the whole world needs to
+  [OVERLAP] # 41 dur=  3.2s target/cap/译=14/14/26 overlap=0.6s | Hopefully you subscribed. If not, please
+  [OVERLAP] # 44 dur=  5.5s target/cap/译=24/24/59 overlap=1.6s | are triggered and this is your lesson li
+  [OVERLAP] # 46 dur=  4.6s target/cap/译=20/20/64 overlap=7.1s | popular famous or like uh seen seen by o
+  [OVERLAP] # 48 dur= 14.2s target/cap/译=61/61/53 overlap=3.6s | show you who they are like their ego is 
+  [OVERLAP] # 50 dur=  8.6s target/cap/译=37/37/31 overlap=0.3s | there could be someone who uh intentiona
+  [OVERLAP] # 53 dur=  3.5s target/cap/译=15/13/9 overlap=2.3s | Even if you do it quietly,
+  [OVERLAP] # 57 dur=  5.7s target/cap/译=24/24/17 overlap=2.4s | Okay. Uh but also I see that there will 
+  [OVERLAP] # 59 dur= 12.7s target/cap/译=55/55/54 overlap=2.2s | your reality while changing or shifting 
+  [OVERLAP] # 61 dur= 12.0s target/cap/译=52/52/40 overlap=1.9s | mountain or rock or something like that 
+  [OVERLAP] # 65 dur=  6.3s target/cap/译=27/21/19 overlap=2.3s | Um, or this is part of your career or jo
+  [OVERLAP] # 67 dur=  1.0s target/cap/译=4/2/2 overlap=1.1s | Maybe
+  [OVERLAP] # 69 dur=  5.4s target/cap/译=23/23/27 overlap=2.5s | You're right. Because there is a certain
+  [OVERLAP] # 70 dur=  5.0s target/cap/译=21/21/19 overlap=2.6s | Okay. Uh I also hear the word countless 
+  [OVERLAP] # 72 dur=  2.4s target/cap/译=10/10/7 overlap=1.5s | What about this person?
+  [OVERLAP] # 73 dur=  9.0s target/cap/译=39/39/46 overlap=1.1s | I hear they're trying to do the same thi
+  [OVERLAP] # 75 dur=  1.0s target/cap/译=4/4/3 overlap=2.3s | Anyways,
+  [OVERLAP] # 77 dur=  2.7s target/cap/译=12/12/11 overlap=1.7s | good or bad for you, but like pay attent
+  [OVERLAP] # 78 dur=  3.1s target/cap/译=13/13/32 overlap=3.4s | If you've been hurt by someone, they may
+  [OVERLAP] # 79 dur=  8.9s target/cap/译=38/38/60 overlap=1.0s | Uh final message that I see here or I wi
+  [OVERLAP] # 80 dur=  3.1s target/cap/译=13/13/12 overlap=0.6s | And soon you will get important messages
+  [OVERLAP] # 82 dur=  5.0s target/cap/译=21/21/17 overlap=1.3s | And those warnings could even be a bit s
+  [OVERLAP] # 84 dur= 13.5s target/cap/译=58/58/56 overlap=1.5s | This is a warning that you have to liste
+  [OVERLAP] # 85 dur= 10.8s target/cap/译=47/47/44 overlap=3.2s | and certain messages will uh include num
+  [GAP]     # 81 dur=  6.0s target/cap/译=26/26/18 gap=2.7s | and even not just notifications but like
+  [GAP]     # 89 dur=  3.5s target/cap/译=15/15/17 gap=1.5s | or the road is closed somewhere.
+  [OVERFLOW-CACHED] #  0 target/cap/译=57/57/158 | Hello my darlings and welcome to my chan
+  [OVERFLOW-CACHED] #  1 target/cap/译=60/60/61 | reading. I would like to um remind it's 
+  [OVERFLOW-CACHED] #  7 target/cap/译=14/14/44 | There is some u angry or upset face here
+  [OVERFLOW-CACHED] # 14 target/cap/译=12/12/50 | from positive to negative. Don't do it.
+  [OVERFLOW-CACHED] # 17 target/cap/译=28/28/72 | compliment that you will remember for a 
+  [OVERFLOW-CACHED] # 24 target/cap/译=46/46/70 | the message here comes through is that u
+  [OVERFLOW-CACHED] # 25 target/cap/译=22/22/30 | and as soon as you feel that that means 
+  [OVERFLOW-CACHED] # 33 target/cap/译=55/55/61 | Especially if you're in social media som
+  [OVERFLOW-CACHED] # 35 target/cap/译=15/15/23 | but this success is coming to you.
+  [OVERFLOW-CACHED] # 37 target/cap/译=18/18/20 | advice? Yes. Yes. Yes. Yes. And yes.
+  [OVERFLOW-CACHED] # 40 target/cap/译=23/23/56 | level of uh doing things. Like for examp
+  [OVERFLOW-CACHED] # 42 target/cap/译=56/56/61 | Otherwise um my point is you are here be
+  [OVERFLOW-CACHED] # 45 target/cap/译=53/53/60 | So uh same thing is here your tribe your
+  [OVERFLOW-CACHED] # 49 target/cap/译=52/52/65 | somehow downsize you even for some of yo
+  [OVERFLOW-CACHED] # 51 target/cap/译=34/34/38 | um because of their ego, they're trying 
+  [OVERFLOW-CACHED] # 54 target/cap/译=54/54/58 | some of you will be building something n
+  [OVERFLOW-CACHED] # 60 target/cap/译=46/46/50 | Okay. And others of you will go on a cer
+  [OVERFLOW-CACHED] # 62 target/cap/译=50/50/52 | place or analyzing something here, analy
+  [OVERFLOW-CACHED] # 64 target/cap/译=8/8/9 | an archaeologist here.
+  [OVERFLOW-CACHED] # 66 target/cap/译=13/13/20 | And I see you analyzing and writing down
+  [OVERFLOW-CACHED] # 68 target/cap/译=61/61/75 | for those people, you're not just search
+  [OVERFLOW-CACHED] # 76 target/cap/译=52/52/56 | I hear pay attention to who will come ov
+  [OVERFLOW-CACHED] # 83 target/cap/译=9/9/21 | you're like why is this happening? Why i
+  [OVERFLOW-CACHED] # 89 target/cap/译=15/15/17 | or the road is closed somewhere.
+  [OVERFLOW-CACHED] # 91 target/cap/译=45/45/49 | Things like that could happen. This will
+  [OVERFLOW-CACHED] # 92 target/cap/译=60/60/75 | especially for those who think negative 
+  [OVERFLOW-CACHED] # 93 target/cap/译=13/13/16 | and stuff like that. So yes, listen to y
+  [OVERFLOW-CACHED] # 94 target/cap/译=63/63/70 | And speaking of intuition, as I said in 
+
+===== 4-you broke someone wide open_dubbed.m4a (-dCKFYCDsK4) =====
+共 127 句，VAD检测到 70 段语音, chars_per_sec=5.25
+重叠 17 句，留白 0 句，超字数上限 57 句
+  [OVERLAP] #  5 dur= 12.5s target/cap/译=65/65/60 overlap=0.6s | And maybe you always have. There's just 
+  [OVERLAP] # 11 dur=  7.7s target/cap/译=41/41/24 overlap=0.9s | maybe went to a lot. There's a lot of li
+  [OVERLAP] # 15 dur= 11.7s target/cap/译=61/61/51 overlap=0.3s | the thread between you two is like this 
+  [OVERLAP] # 36 dur= 14.0s target/cap/译=73/73/68 overlap=0.5s | They need to ask for help. And the reaso
+  [OVERLAP] # 45 dur= 12.9s target/cap/译=68/68/47 overlap=0.6s | true form connection, and that's what is
+  [OVERLAP] # 59 dur=  1.2s target/cap/译=6/6/7 overlap=1.3s | Interesting. Okay.
+  [OVERLAP] # 60 dur= 13.1s target/cap/译=69/69/62 overlap=0.5s | Um, your main message is starting off by
+  [OVERLAP] # 64 dur=  8.7s target/cap/译=45/45/40 overlap=0.9s | back to you in your environment. Again, 
+  [OVERLAP] # 79 dur=  5.6s target/cap/译=29/29/29 overlap=0.7s | Actually, integration is on your purpose
+  [OVERLAP] # 81 dur= 12.0s target/cap/译=63/63/58 overlap=1.0s | up into your consciousness, you're fight
+  [OVERLAP] # 83 dur=  3.0s target/cap/译=16/16/13 overlap=0.4s | They're more reflecting your progress.
+  [OVERLAP] # 93 dur= 13.7s target/cap/译=72/72/58 overlap=0.3s | interesting that's happening here is lik
+  [OVERLAP] # 95 dur= 11.9s target/cap/译=62/62/53 overlap=0.4s | Thank you, universe." This car coming up
+  [OVERLAP] #113 dur= 12.0s target/cap/译=63/63/11 overlap=0.3s | immediately. That is your message. Trust
+  [OVERLAP] #116 dur=  6.8s target/cap/译=36/33/70 overlap=0.9s | This last part is just me bombarding you
+  [OVERLAP] #118 dur=  3.3s target/cap/译=17/17/63 overlap=0.5s | not silly thing is a frequency did come 
+  [OVERLAP] #122 dur= 12.5s target/cap/译=66/66/87 overlap=1.0s | When it's blocked, uh there's issues wit
+  [OVERFLOW-CACHED] # 17 target/cap/译=65/65/73 | on that level. So, a lot of specifics he
+  [OVERFLOW-CACHED] # 19 target/cap/译=65/65/77 | First and foremost, with the specifics i
+  [OVERFLOW-CACHED] # 21 target/cap/译=65/65/77 | environment in some way. Like locked out
+  [OVERFLOW-CACHED] # 24 target/cap/译=71/71/78 | under the mat, have a backup plan, uh al
+  [OVERFLOW-CACHED] # 26 target/cap/译=8/8/16 | I write most of it down for you.
+  [OVERFLOW-CACHED] # 27 target/cap/译=34/34/39 | Hopefully, that's helpful. But, for what
+  [OVERFLOW-CACHED] # 29 target/cap/译=65/65/82 | But, literally, it is about you. So, tho
+  [OVERFLOW-CACHED] # 30 target/cap/译=67/67/112 | separate person to you is energetically 
+  [OVERFLOW-CACHED] # 31 target/cap/译=49/49/67 | difficult to cut, understand. There's so
+  [OVERFLOW-CACHED] # 33 target/cap/译=55/55/65 | of themselves for maybe the first time i
+  [OVERFLOW-CACHED] # 34 target/cap/译=67/67/68 | So, when you think of being locked out f
+  [OVERFLOW-CACHED] # 35 target/cap/译=64/64/81 | like that. This isn't like a crafty, I f
+  [OVERFLOW-CACHED] # 38 target/cap/译=24/24/48 | they're the ones that perform what looks
+  [OVERFLOW-CACHED] # 39 target/cap/译=51/51/71 | Like, it could be a coping mechanism, bu
+  [OVERFLOW-CACHED] # 40 target/cap/译=69/69/77 | Maybe work leans on them heavily. They f
+  [OVERFLOW-CACHED] # 41 target/cap/译=64/64/88 | people need something, they call this pe
+  [OVERFLOW-CACHED] # 46 target/cap/译=49/49/74 | typical connections is like it is forcin
+  [OVERFLOW-CACHED] # 48 target/cap/译=64/64/73 | energetically. Like maybe they have trie
+  [OVERFLOW-CACHED] # 50 target/cap/译=64/64/71 | are performing one-sided connections ene
+  [OVERFLOW-CACHED] # 51 target/cap/译=64/64/69 | message is not like "Oh, this person lik
+  [OVERFLOW-CACHED] # 53 target/cap/译=76/76/93 | pings as something deeper. Basically, in
+  [OVERFLOW-CACHED] # 54 target/cap/译=65/65/82 | enter their consciousness upcoming and i
+  [OVERFLOW-CACHED] # 61 target/cap/译=76/76/84 | symbolically dense as well. They are a m
+  [OVERFLOW-CACHED] # 62 target/cap/译=63/63/76 | what is happening when that happens for 
+  [OVERFLOW-CACHED] # 63 target/cap/译=70/70/78 | car, but it's showing me a moving vessel
+  [OVERFLOW-CACHED] # 66 target/cap/译=64/64/79 | not wanting this person in your consciou
+  [OVERFLOW-CACHED] # 67 target/cap/译=66/66/67 | down. Maybe it just is an emotional thin
+  [OVERFLOW-CACHED] # 69 target/cap/译=71/71/80 | that matters, it just matters how much t
+  [OVERFLOW-CACHED] # 73 target/cap/译=63/63/78 | actually see them. Our subconscious thou
+  [OVERFLOW-CACHED] # 75 target/cap/译=65/65/77 | energy is also kind of silly because lik
+  [OVERFLOW-CACHED] # 76 target/cap/译=33/33/45 | something. Delay here, when I look at en
+  [OVERFLOW-CACHED] # 78 target/cap/译=23/23/28 | represents our spiritual health, like ho
+  [OVERFLOW-CACHED] # 80 target/cap/译=68/68/80 | So, your destiny could be activated year
+  [OVERFLOW-CACHED] # 86 target/cap/译=67/67/73 | consciousness. It is showing you somethi
+  [OVERFLOW-CACHED] # 88 target/cap/译=65/65/71 | moving and there's no like healthy, okay
+  [OVERFLOW-CACHED] # 89 target/cap/译=65/65/73 | your psyche begins purging things. Your 
+  [OVERFLOW-CACHED] # 91 target/cap/译=64/64/74 | You are practicing recognizing significa
+  [OVERFLOW-CACHED] # 92 target/cap/译=72/72/94 | happening? So you see this person's car 
+  [OVERFLOW-CACHED] # 96 target/cap/译=74/74/89 | but you don't have anything real. You do
+  [OVERFLOW-CACHED] # 98 target/cap/译=69/69/70 | and so things are reflecting to me in re
+  [OVERFLOW-CACHED] #100 target/cap/译=71/71/81 | things and not have answers. Your guides
+  [OVERFLOW-CACHED] #101 target/cap/译=52/52/68 | this is your self-knowing strengthening 
+  [OVERFLOW-CACHED] #102 target/cap/译=66/66/69 | They're going to just throw some stuff i
+  [OVERFLOW-CACHED] #104 target/cap/译=68/68/70 | reason that they are here is to bring yo
+  [OVERFLOW-CACHED] #105 target/cap/译=70/70/80 | said, there could be a lot of reasons th
+  [OVERFLOW-CACHED] #106 target/cap/译=68/68/90 | activating um and something is demanding
+  [OVERFLOW-CACHED] #108 target/cap/译=71/71/117 | It doesn't just have to be that you see 
+  [OVERFLOW-CACHED] #110 target/cap/译=63/63/77 | see something weird, to see an odd, very
+  [OVERFLOW-CACHED] #111 target/cap/译=72/72/73 | have the answer. You are being given exp
+  [OVERFLOW-CACHED] #112 target/cap/译=67/67/72 | That is what is happening here and that 
+  [OVERFLOW-CACHED] #114 target/cap/译=12/12/31 | without any formal confirmation.
+  [OVERFLOW-CACHED] #121 target/cap/译=27/27/82 | feel that instinctively, and I will leav
+  [OVERFLOW-CACHED] #123 target/cap/译=73/73/89 | to encourage you all to keep leaving nud
+
+===== 5-15 июня_ Новолуние открывающее новую реальность. СМЕНА ПАРАДИГМЫ СОЗНАНИЯ. Прогн_dubbed.m4a (XFpWvmKtZZQ) =====
+共 174 句，VAD检测到 256 段语音, chars_per_sec=3.64
+重叠 98 句，留白 0 句，超字数上限 75 句
+  [OVERLAP] #  1 dur=  1.2s target/cap/译=4/4/6 overlap=1.1s | 5:55 a.m.
+  [OVERLAP] #  8 dur=  3.5s target/cap/译=13/13/16 overlap=1.4s | renewal, knowledge, information, communi
+  [OVERLAP] #  9 dur=  7.7s target/cap/译=28/28/39 overlap=6.0s | The New Moon in Gemini opens intellectua
+  [OVERLAP] # 15 dur= 11.1s target/cap/译=41/41/45 overlap=1.3s | can bring us a huge amount of news, conv
+  [OVERLAP] # 17 dur= 11.3s target/cap/译=41/41/41 overlap=1.3s | There will be more communication, more n
+  [OVERLAP] # 19 dur= 11.2s target/cap/译=41/41/64 overlap=0.7s | with the star Alnelam, and this is one o
+  [OVERLAP] # 23 dur=  8.9s target/cap/译=32/32/31 overlap=0.4s | So the main theme of this new moon is: w
+  [OVERLAP] # 26 dur=  4.7s target/cap/译=17/17/22 overlap=2.0s | some ideology, some teaching, someone's 
+  [OVERLAP] # 28 dur= 10.5s target/cap/译=38/38/38 overlap=1.7s | And because of this interaction between 
+  [OVERLAP] # 30 dur= 14.3s target/cap/译=52/52/61 overlap=0.7s | Some will suddenly realize that they hav
+  [OVERLAP] # 31 dur=  1.2s target/cap/译=4/4/7 overlap=1.1s | own purpose.
+  [OVERLAP] # 32 dur=  6.4s target/cap/译=23/23/26 overlap=0.6s | Many of us will begin to free ourselves 
+  [OVERLAP] # 35 dur= 14.0s target/cap/译=51/51/34 overlap=0.9s | ability to separate lies from truth, our
+  [OVERLAP] # 36 dur=  1.0s target/cap/译=4/3/16 overlap=3.7s | fakes.
+  [OVERLAP] # 40 dur= 14.3s target/cap/译=52/52/55 overlap=0.3s | Caster died, and Polux was faced with a 
+  [OVERLAP] # 43 dur= 12.3s target/cap/译=45/45/41 overlap=0.3s | And that is why Gemini symbolizes not ju
+  [OVERLAP] # 45 dur= 12.9s target/cap/译=47/47/54 overlap=1.1s | coincidence that Gemini controls crossro
+  [OVERLAP] # 49 dur= 12.4s target/cap/译=45/45/55 overlap=1.3s | on old beliefs, or in a new way, which o
+  [OVERLAP] # 50 dur= 11.6s target/cap/译=42/42/36 overlap=0.7s | fateful conversations, unexpected news, 
+  [OVERLAP] # 51 dur= 11.6s target/cap/译=42/42/53 overlap=0.8s | Moreover, it is important to take into a
+  [OVERLAP] # 52 dur=  7.6s target/cap/译=28/28/30 overlap=2.0s | After all, the point of the new moon is 
+  [OVERLAP] # 55 dur= 11.1s target/cap/译=40/40/52 overlap=2.0s | Also present in the bisextile configurat
+  [OVERLAP] # 59 dur= 13.0s target/cap/译=47/47/41 overlap=1.1s | Many of us have gone through serious tri
+  [OVERLAP] # 63 dur= 12.2s target/cap/译=44/44/29 overlap=1.0s | Overall, we can say that this new moon w
+  [OVERLAP] # 65 dur= 13.5s target/cap/译=49/49/53 overlap=0.7s | Be prepared for the fact that a fateful 
+  [OVERLAP] # 66 dur=  1.0s target/cap/译=4/4/9 overlap=0.5s | meeting.
+  [OVERLAP] # 67 dur= 11.8s target/cap/译=43/43/45 overlap=0.5s | Therefore, over the next two weeks, be e
+  [OVERLAP] # 68 dur=  6.6s target/cap/译=24/24/26 overlap=0.4s | And it is important now to internally tu
+  [OVERLAP] # 69 dur= 12.6s target/cap/译=46/46/48 overlap=0.5s | And it is very useful in the coming 2 we
+  [OVERLAP] # 71 dur= 11.0s target/cap/译=40/40/37 overlap=1.1s | And dear friends, the coming lunar month
+  [OVERLAP] # 73 dur= 10.3s target/cap/译=37/37/39 overlap=2.7s | And on the first lunar day, which begins
+  [OVERLAP] # 74 dur= 12.7s target/cap/译=46/46/32 overlap=0.5s | June 16, it is very favorable to make a 
+  [OVERLAP] # 76 dur= 10.5s target/cap/译=38/38/38 overlap=1.6s | And especially strong will be intentions
+  [OVERLAP] # 77 dur= 13.6s target/cap/译=49/49/53 overlap=1.1s | So, dear friends, once again I would lik
+  [OVERLAP] # 78 dur=  9.2s target/cap/译=33/33/41 overlap=0.7s | way we perceive reality is changing. Old
+  [OVERLAP] # 80 dur= 11.2s target/cap/译=41/41/32 overlap=1.1s | open space for new ideas, new knowledge,
+  [OVERLAP] # 82 dur=  3.0s target/cap/译=11/11/11 overlap=0.5s | attentive enough to notice them.
+  [OVERLAP] # 83 dur= 10.4s target/cap/译=38/38/46 overlap=0.6s | And to more quickly resonate with the fa
+  [OVERLAP] # 84 dur= 10.3s target/cap/译=38/38/40 overlap=0.7s | First, repeat this affirmation, then cop
+  [OVERLAP] # 86 dur= 14.2s target/cap/译=52/52/63 overlap=0.8s | Also, write in the comments what exactly
+  [OVERLAP] # 88 dur= 12.2s target/cap/译=44/44/54 overlap=0.7s | I release old thinking and open my mind 
+  [OVERLAP] # 91 dur= 11.1s target/cap/译=40/40/33 overlap=0.7s | Dear Aries, the new moon in Gemini activ
+  [OVERLAP] # 92 dur=  9.1s target/cap/译=33/33/37 overlap=2.5s | communicate as much as possible in the c
+  [OVERLAP] # 93 dur=  5.3s target/cap/译=19/19/17 overlap=0.9s | starting a blog to share your ideas with
+  [OVERLAP] # 94 dur=  6.8s target/cap/译=25/25/30 overlap=0.9s | Your communication on social media can l
+  [OVERLAP] # 95 dur=  5.5s target/cap/译=20/20/17 overlap=6.6s | Therefore, Try to be as active as possib
+  [OVERLAP] # 96 dur=  6.1s target/cap/译=22/22/35 overlap=0.5s | participate in any discussions and debat
+  [OVERLAP] # 97 dur= 11.4s target/cap/译=42/42/47 overlap=1.7s | All these contacts and communication wil
+  [OVERLAP] # 98 dur= 11.0s target/cap/译=40/40/38 overlap=4.2s | Opportunities may arise for interesting 
+  [OVERLAP] # 99 dur= 13.4s target/cap/译=49/49/56 overlap=0.4s | Dear Taurus, the new moon in Gemini acti
+  [OVERLAP] #100 dur= 11.1s target/cap/译=40/40/31 overlap=1.7s | coming lunar month. Evaluate your spendi
+  [OVERLAP] #101 dur=  1.0s target/cap/译=4/4/3 overlap=0.5s | investing.
+  [OVERLAP] #102 dur= 12.7s target/cap/译=46/46/38 overlap=0.9s | The energies of this new moon will help 
+  [OVERLAP] #103 dur= 10.6s target/cap/译=39/39/42 overlap=1.8s | create a practical budget for achieving 
+  [OVERLAP] #104 dur= 14.0s target/cap/译=51/51/39 overlap=1.0s | is occurring in your first house of the 
+  [OVERLAP] #106 dur= 14.9s target/cap/译=54/54/44 overlap=0.6s | Think more about your individuality, wha
+  [OVERLAP] #107 dur=  9.4s target/cap/译=34/34/32 overlap=1.1s | first lunar day, be sure to reflect on h
+  [OVERLAP] #108 dur=  9.2s target/cap/译=33/33/28 overlap=1.1s | The energies of this new moon will certa
+  [OVERLAP] #109 dur=  9.9s target/cap/译=36/36/29 overlap=4.7s | Therefore, embrace the new trend and all
+  [OVERLAP] #111 dur=  5.8s target/cap/译=21/21/16 overlap=0.3s | Be sure to During this lunar month, find
+  [OVERLAP] #112 dur= 10.5s target/cap/译=38/38/31 overlap=1.9s | Engage in practices such as meditation o
+  [OVERLAP] #113 dur= 13.3s target/cap/译=49/49/44 overlap=1.8s | past events and your emotions and releas
+  [OVERLAP] #117 dur=  3.5s target/cap/译=13/13/10 overlap=3.0s | Good luck to you, dear Cancer.
+  [OVERLAP] #118 dur= 12.3s target/cap/译=45/45/53 overlap=0.9s | Dear Leo, the new moon in Gemini activat
+  [OVERLAP] #119 dur= 13.6s target/cap/译=49/49/45 overlap=0.8s | the theme of realizing your dreams. Ther
+  [OVERLAP] #125 dur=  5.0s target/cap/译=18/18/15 overlap=1.0s | coming lunar month, communicate more wit
+  [OVERLAP] #126 dur= 11.6s target/cap/译=42/42/41 overlap=0.6s | Try to implement your ideas. Strive to t
+  [OVERLAP] #129 dur= 13.0s target/cap/译=47/47/38 overlap=0.4s | This new moon in Gemini activates your T
+  [OVERLAP] #130 dur=  3.0s target/cap/译=11/11/11 overlap=0.3s | significantly expand your knowledge base
+  [OVERLAP] #131 dur= 10.9s target/cap/译=40/40/30 overlap=1.5s | On the first lunar day, we recommend pla
+  [OVERLAP] #132 dur=  7.8s target/cap/译=28/28/31 overlap=0.6s | do everything to somehow expand your wor
+  [OVERLAP] #133 dur=  6.0s target/cap/译=22/22/17 overlap=1.3s | It is favorable to study foreign languag
+  [OVERLAP] #136 dur= 11.5s target/cap/译=42/42/38 overlap=1.0s | Dear Scorpio, this new moon in Gemini ac
+  [OVERLAP] #137 dur= 11.7s target/cap/译=43/43/41 overlap=1.3s | as joint resource management with your p
+  [OVERLAP] #141 dur=  2.4s target/cap/译=9/9/5 overlap=1.2s | abilities in managing them.
+  [OVERLAP] #142 dur= 11.4s target/cap/译=41/41/40 overlap=0.5s | Furthermore, in the coming lunar month, 
+  [OVERLAP] #143 dur=  4.1s target/cap/译=15/15/14 overlap=3.1s | We wish you success, dear Scorpios and
+  [OVERLAP] #146 dur= 12.1s target/cap/译=44/44/47 overlap=4.5s | Already on the first lunar day, reflect 
+  [OVERLAP] #147 dur=  7.1s target/cap/译=26/26/27 overlap=0.6s | . The coming lunar month is sure to brin
+  [OVERLAP] #148 dur= 12.1s target/cap/译=44/44/51 overlap=0.9s | Perhaps a significant acquaintance will 
+  [OVERLAP] #149 dur= 13.2s target/cap/译=48/48/44 overlap=1.2s | . Those alliances and agreements that ha
+  [OVERLAP] #151 dur=  2.4s target/cap/译=9/9/12 overlap=2.7s | you success, dear Sagittarius.
+  [OVERLAP] #153 dur= 10.9s target/cap/译=40/40/41 overlap=4.4s | This means it's time for you to focus on
+  [OVERLAP] #154 dur= 12.5s target/cap/译=45/45/47 overlap=1.8s | Create healthy habits that will support 
+  [OVERLAP] #155 dur=  4.7s target/cap/译=17/17/14 overlap=0.6s | about your daily routine. Make it more e
+  [OVERLAP] #156 dur=  8.7s target/cap/译=31/31/23 overlap=0.9s | Consider ways you can maintain and stren
+  [OVERLAP] #157 dur=  3.9s target/cap/译=14/14/14 overlap=0.5s | between work, your responsibilities, and
+  [OVERLAP] #158 dur= 10.3s target/cap/译=37/37/32 overlap=0.4s | Use this opportunity that the new moon i
+  [OVERLAP] #161 dur= 13.1s target/cap/译=48/48/50 overlap=1.4s | Dear Aquarius, this new moon in Gemini a
+  [OVERLAP] #162 dur= 13.0s target/cap/译=47/47/43 overlap=0.4s | the theme of children. In the coming lun
+  [OVERLAP] #163 dur=  9.0s target/cap/译=33/33/31 overlap=0.7s | your hobby that brings you joy. You will
+  [OVERLAP] #164 dur=  7.1s target/cap/译=26/26/27 overlap=1.0s | The energies of this new moon will inspi
+  [OVERLAP] #165 dur= 11.6s target/cap/译=42/42/33 overlap=0.7s | Some news, some changes will occur with 
+  [OVERLAP] #166 dur= 13.5s target/cap/译=49/49/61 overlap=2.0s | education, interesting trips, and travel
+  [OVERLAP] #167 dur= 12.1s target/cap/译=44/44/43 overlap=1.3s | will support you in your desire. We wish
+  [OVERLAP] #169 dur= 13.9s target/cap/译=51/51/51 overlap=0.6s | In the coming lunar month, strive to cre
+  [OVERLAP] #170 dur=  4.7s target/cap/译=17/17/15 overlap=1.0s | strengthen connections and relationships
+  [OVERLAP] #172 dur=  8.8s target/cap/译=32/32/32 overlap=0.8s | real estate for a long time, now is your
+  [OVERFLOW-CACHED] #  2 target/cap/译=12/12/15 | Moscow, Minsk, and Kyiv time.
+  [OVERFLOW-CACHED] #  3 target/cap/译=50/50/56 | The peculiarity of this new moon is that
+  [OVERFLOW-CACHED] #  5 target/cap/译=12/12/13 | you must be ready for internal changes.
+  [OVERFLOW-CACHED] #  6 target/cap/译=9/9/11 | Well, let's talk in more detail.
+  [OVERFLOW-CACHED] # 10 target/cap/译=45/45/54 | may become obsolete once we cross the li
+  [OVERFLOW-CACHED] # 27 target/cap/译=46/46/47 | Lilith Sagittarius can create for us the
+  [OVERFLOW-CACHED] # 34 target/cap/译=47/47/59 | That is, it is important to be prepared,
+  [OVERFLOW-CACHED] # 37 target/cap/译=52/52/64 | In general, the New Moon in Gemini is al
+  [OVERFLOW-CACHED] # 38 target/cap/译=35/35/36 | at the heart of the symbolism of this si
+  [OVERFLOW-CACHED] # 39 target/cap/译=48/48/50 | According to the myth, Caster was a mort
+  [OVERFLOW-CACHED] # 41 target/cap/译=48/48/53 | for the sake of his brother. And then Pa
+  [OVERFLOW-CACHED] # 42 target/cap/译=32/32/48 | and part in the kingdom of the dead. Thi
+  [OVERFLOW-CACHED] # 47 target/cap/译=53/53/66 | Therefore, the new moon in Gemini always
+  [OVERFLOW-CACHED] # 57 target/cap/译=49/49/52 | moving into the sign of Taurus. And now,
+  [OVERFLOW-CACHED] # 60 target/cap/译=19/19/23 | seems to be asking the last question bef
+  [OVERFLOW-CACHED] # 72 target/cap/译=14/14/23 | any activities related to the transfer o
+  [OVERFLOW-CACHED] # 85 target/cap/译=46/46/55 | In this way, we will launch a strong, jo
+  [OVERFLOW-CACHED] # 87 target/cap/译=9/9/11 | mentally or out loud.
+  [OVERFLOW-CACHED] # 89 target/cap/译=6/6/9 | ease and trust.
+  [OVERFLOW-CACHED] # 90 target/cap/译=49/49/52 | And now, dear friends, let 's talk in mo
+  [OVERFLOW-CACHED] #110 target/cap/译=33/33/44 | Dear Cancer, this new moon in Gemini act
+  [OVERFLOW-CACHED] #122 target/cap/译=54/54/55 | Try to be more active on social networks
+  [OVERFLOW-CACHED] #134 target/cap/译=54/54/58 | If you were planning a move to another c
+  [OVERFLOW-CACHED] #135 target/cap/译=6/6/9 | you, dear Libra.
+  [OVERFLOW-CACHED] #138 target/cap/译=48/48/53 | finances that you do not directly earn. 
+  [OVERFLOW-CACHED] #144 target/cap/译=14/14/20 | Sagittarius. This new moon in Gemini act
+  [OVERFLOW-CACHED] #150 target/cap/译=48/48/50 | done will be for the better. The old and
+  [OVERFLOW-CACHED] #152 target/cap/译=13/13/22 | Dear Capricorn, this new moon in Gemini 
+  [OVERFLOW-CACHED] #160 target/cap/译=39/39/43 | Relationships with colleagues may improv
+  [OVERFLOW-CACHED] #173 target/cap/译=37/37/38 | All these issues are favorable for resol
+
+===== 6-FATED Changes SHAKE the Timeline! Uranus square Nodes+Gemini New Moon! June 15th_dubbed.m4a (qfcL-JxOkdM) =====
+共 231 句，VAD检测到 837 段语音, chars_per_sec=4.64
+重叠 9 句，留白 6 句，超字数上限 117 句
+  [OVERLAP] # 14 dur= 13.7s target/cap/译=64/64/41 overlap=0.5s | And it is about if for example, if you w
+  [OVERLAP] # 19 dur=  8.9s target/cap/译=41/41/49 overlap=0.4s | trading, sales, uh algorithms, marketing
+  [OVERLAP] # 23 dur= 11.5s target/cap/译=53/53/43 overlap=1.1s | a book, starting to make a blog, startin
+  [OVERLAP] # 48 dur= 12.8s target/cap/译=59/59/21 overlap=0.4s | valuable, anything that is uh of good va
+  [OVERLAP] #113 dur= 12.7s target/cap/译=59/59/53 overlap=0.6s | Aries rising sun or moon, so any anythin
+  [OVERLAP] #118 dur= 11.7s target/cap/译=54/54/50 overlap=0.6s | your second house. There can be renewal 
+  [OVERLAP] #131 dur= 11.2s target/cap/译=52/52/47 overlap=0.6s | And of course, the Uranus, if you have s
+  [OVERLAP] #148 dur=  4.3s target/cap/译=20/20/24 overlap=0.4s | some long-term project. So, for Leo, the
+  [OVERLAP] #162 dur= 12.9s target/cap/译=60/60/47 overlap=0.6s | time to spend with friends even to meet 
+  [GAP]     # 11 dur= 10.9s target/cap/译=51/51/21 gap=6.5s | And it's known as a star which is good f
+  [GAP]     # 65 dur=  2.7s target/cap/译=12/12/8 gap=1.2s | everyday reality. And it's rare that out
+  [GAP]     # 85 dur=  6.8s target/cap/译=31/31/22 gap=2.8s | you have to others. For Virgo can be job
+  [GAP]     # 98 dur=  8.8s target/cap/译=41/41/29 gap=3.6s | So, that's the interesting maybe that's 
+  [GAP]     #172 dur=  3.5s target/cap/译=16/16/12 gap=1.4s | something to others for your career.
+  [GAP]     #197 dur= 14.7s target/cap/译=68/68/38 gap=7.3s | more easily now. Or uh eighth house is a
+  [OVERFLOW-CACHED] #  0 target/cap/译=58/58/67 | Hello my astrology friends. This is Lada
+  [OVERFLOW-CACHED] #  1 target/cap/译=57/57/68 | Bulgaria in a small town. I came to visi
+  [OVERFLOW-CACHED] #  2 target/cap/译=9/9/14 | But anyway, I have work to do as well.
+  [OVERFLOW-CACHED] #  3 target/cap/译=64/64/73 | I'm not abandoning my larger family on t
+  [OVERFLOW-CACHED] #  6 target/cap/译=9/9/11 | So this is very improvised.
+  [OVERFLOW-CACHED] #  8 target/cap/译=18/18/22 | So each one of us will be renewed in a c
+  [OVERFLOW-CACHED] #  9 target/cap/译=61/61/75 | New moon every year around this time com
+  [OVERFLOW-CACHED] # 10 target/cap/译=9/9/11 | Orion's belt, the star.
+  [OVERFLOW-CACHED] # 12 target/cap/译=62/62/66 | &gt;&gt; &gt;&gt; So you could use that 
+  [OVERFLOW-CACHED] # 13 target/cap/译=52/52/56 | be visible. So on the 16th or on the 17t
+  [OVERFLOW-CACHED] # 15 target/cap/译=62/62/68 | star Alnilam. So, if you want for exampl
+  [OVERFLOW-CACHED] # 17 target/cap/译=59/59/62 | attention of of others, receive some uh 
+  [OVERFLOW-CACHED] # 20 target/cap/译=18/18/21 | If And And all business needs to be tapp
+  [OVERFLOW-CACHED] # 21 target/cap/译=59/59/67 | Gemini rules all of that. So, this new m
+  [OVERFLOW-CACHED] # 22 target/cap/译=58/58/61 | star has like to it grabs the focus of o
+  [OVERFLOW-CACHED] # 24 target/cap/译=60/60/64 | conversations, don't do it exactly on th
+  [OVERFLOW-CACHED] # 25 target/cap/译=13/13/15 | days, how it's going to be." Not just th
+  [OVERFLOW-CACHED] # 26 target/cap/译=64/64/82 | So, yeah, that's some of the positives w
+  [OVERFLOW-CACHED] # 28 target/cap/译=62/62/76 | pleasures and the enjoyable things of li
+  [OVERFLOW-CACHED] # 29 target/cap/译=65/65/70 | simple remedies for Venus. For example, 
+  [OVERFLOW-CACHED] # 30 target/cap/译=60/60/77 | to take care of white flowers, and so on
+  [OVERFLOW-CACHED] # 32 target/cap/译=21/21/33 | self-worth. But, let's continue now. So,
+  [OVERFLOW-CACHED] # 34 target/cap/译=37/37/54 | Then the following day, 16, 17, 18, even
+  [OVERFLOW-CACHED] # 35 target/cap/译=63/63/65 | And in the early degrees, a simultaneous
+  [OVERFLOW-CACHED] # 38 target/cap/译=38/38/43 | having personal transits of Venus, Uranu
+  [OVERFLOW-CACHED] # 39 target/cap/译=39/39/40 | You go there every 7 days, it updates an
+  [OVERFLOW-CACHED] # 40 target/cap/译=63/63/81 | Remember that. And this calendar is pers
+  [OVERFLOW-CACHED] # 42 target/cap/译=60/60/71 | It can activate something important deci
+  [OVERFLOW-CACHED] # 43 target/cap/译=57/57/58 | enjoying yourself. As we said, like I me
+  [OVERFLOW-CACHED] # 44 target/cap/译=20/20/24 | get in through the five senses. It's not
+  [OVERFLOW-CACHED] # 45 target/cap/译=62/62/69 | Uh Venus is the things that we can recei
+  [OVERFLOW-CACHED] # 47 target/cap/译=61/61/91 | If you have anything to do about sociali
+  [OVERFLOW-CACHED] # 50 target/cap/译=35/35/36 | Uh so, yeah, all of those or putting you
+  [OVERFLOW-CACHED] # 56 target/cap/译=57/57/61 | Again, good for business, good for any k
+  [OVERFLOW-CACHED] # 57 target/cap/译=33/33/37 | it's great for such things. But, I wante
+  [OVERFLOW-CACHED] # 60 target/cap/译=45/45/46 | it peaks on the 13th of June. So, the pr
+  [OVERFLOW-CACHED] # 61 target/cap/译=9/9/11 | And what is Uranus square the nodes?
+  [OVERFLOW-CACHED] # 63 target/cap/译=57/57/64 | be sudden karmic release. South node is 
+  [OVERFLOW-CACHED] # 67 target/cap/译=40/40/48 | Hawaii burned down. It's a collective re
+  [OVERFLOW-CACHED] # 69 target/cap/译=51/51/59 | couple of weeks is Uranus square the nod
+  [OVERFLOW-CACHED] # 74 target/cap/译=31/31/36 | Uh so, sudden disruption, something happ
+  [OVERFLOW-CACHED] # 76 target/cap/译=53/53/57 | plans of people, that disrupts the colle
+  [OVERFLOW-CACHED] # 79 target/cap/译=53/53/57 | That cuts the past like for some unhealt
+  [OVERFLOW-CACHED] # 81 target/cap/译=16/16/19 | This is Virgo, Gemini, Pisces axis very.
+  [OVERFLOW-CACHED] # 82 target/cap/译=20/20/30 | So, suddenly you can break a habit. This
+  [OVERFLOW-CACHED] # 83 target/cap/译=32/32/34 | Cut it as if with a laser. Uranus, there
+  [OVERFLOW-CACHED] # 84 target/cap/译=61/61/62 | Or with certain habits and behaviors tha
+  [OVERFLOW-CACHED] # 88 target/cap/译=35/35/49 | can be some sudden disruptions. It's alr
+  [OVERFLOW-CACHED] # 91 target/cap/译=38/38/44 | very fast developments of things. And yo
+  [OVERFLOW-CACHED] # 95 target/cap/译=58/58/65 | sense a bit more of a sacrifice of us to
+  [OVERFLOW-CACHED] # 96 target/cap/译=60/60/66 | means that it's not going to be oh, some
+  [OVERFLOW-CACHED] #100 target/cap/译=69/69/81 | way. So, those changes overall should be
+  [OVERFLOW-CACHED] #102 target/cap/译=57/57/62 | consciousness. This is the axis of uh, l
+  [OVERFLOW-CACHED] #103 target/cap/译=62/62/75 | view certain aspects of your life. Like 
+  [OVERFLOW-CACHED] #104 target/cap/译=33/33/43 | side of the wave. So, some realization s
+  [OVERFLOW-CACHED] #105 target/cap/译=59/59/63 | You suddenly realize something with your
+  [OVERFLOW-CACHED] #107 target/cap/译=54/54/56 | So, this is a rare opportunity to really
+  [OVERFLOW-CACHED] #109 target/cap/译=61/61/65 | These are psychological, mental, uh, int
+  [OVERFLOW-CACHED] #114 target/cap/译=51/51/56 | others, uh starting any kind of teamwork
+  [OVERFLOW-CACHED] #115 target/cap/译=63/63/65 | Wonderful time for that. And Venus is in
+  [OVERFLOW-CACHED] #117 target/cap/译=61/61/62 | It's something about shifting your consc
+  [OVERFLOW-CACHED] #120 target/cap/译=48/48/50 | Uh Venus for you, Taurus, is in your fou
+  [OVERFLOW-CACHED] #124 target/cap/译=12/12/14 | new ideas this week, write them down.
+  [OVERFLOW-CACHED] #130 target/cap/译=44/44/52 | for even spending time with good company
+  [OVERFLOW-CACHED] #132 target/cap/译=35/35/52 | degrees of Gemini. Check the part of thi
+  [OVERFLOW-CACHED] #135 target/cap/译=53/53/55 | good for financially for you, especially
+  [OVERFLOW-CACHED] #136 target/cap/译=35/35/38 | know, for your teeth, it's good time for
+  [OVERFLOW-CACHED] #137 target/cap/译=35/35/43 | Uh can be also enjoyable and food time o
+  [OVERFLOW-CACHED] #138 target/cap/译=56/56/58 | And the Uranus square the nodes is the m
+  [OVERFLOW-CACHED] #140 target/cap/译=60/60/63 | subconscious and superconscious way. If 
+  [OVERFLOW-CACHED] #141 target/cap/译=64/64/75 | Um yeah, Venus is making also opposition
+  [OVERFLOW-CACHED] #142 target/cap/译=8/8/10 | uh Neptune trying.
+  [OVERFLOW-CACHED] #144 target/cap/译=66/66/67 | shining. Venus there, the brightest star
+  [OVERFLOW-CACHED] #149 target/cap/译=63/63/68 | For Virgo, um the new moon is happening 
+  [OVERFLOW-CACHED] #150 target/cap/译=60/60/61 | start some new career project, you can a
+  [OVERFLOW-CACHED] #151 target/cap/译=58/58/61 | moon, so things should be accepted in a 
+  [OVERFLOW-CACHED] #152 target/cap/译=21/21/28 | you're retired. So, you might find yours
+  [OVERFLOW-CACHED] #155 target/cap/译=60/60/70 | pleasures is the 12th house can be good 
+  [OVERFLOW-CACHED] #156 target/cap/译=59/59/61 | especially the first 5° of Virgo 0 to 5°
+  [OVERFLOW-CACHED] #158 target/cap/译=59/59/71 | Libra the new moon is happening in your 
+  [OVERFLOW-CACHED] #160 target/cap/译=63/63/75 | from higher social class cultural intell
+  [OVERFLOW-CACHED] #163 target/cap/译=55/55/61 | online with large groups of people or to
+  [OVERFLOW-CACHED] #166 target/cap/译=34/34/44 | Everything that I spoke about with Uranu
+  [OVERFLOW-CACHED] #168 target/cap/译=46/46/47 | regarding in that money comes to you thr
+  [OVERFLOW-CACHED] #173 target/cap/译=28/28/32 | Uh if you have public any public reach o
+  [OVERFLOW-CACHED] #174 target/cap/译=59/59/60 | Uh your reputation and public standing i
+  [OVERFLOW-CACHED] #177 target/cap/译=62/62/64 | Now, for Sagittarius, the new moon is ha
+  [OVERFLOW-CACHED] #178 target/cap/译=60/60/74 | wider audience, or if you even want to s
+  [OVERFLOW-CACHED] #180 target/cap/译=65/65/68 | uh or even, you know, to uh business opp
+  [OVERFLOW-CACHED] #181 target/cap/译=34/34/37 | something new that appears in the life o
+  [OVERFLOW-CACHED] #182 target/cap/译=11/11/13 | Or some new circumstances there.
+  [OVERFLOW-CACHED] #184 target/cap/译=55/55/61 | after your health as well by trying uh a
+  [OVERFLOW-CACHED] #185 target/cap/译=62/62/74 | weeks, till the till the first 10 days o
+  [OVERFLOW-CACHED] #187 target/cap/译=46/46/47 | And you don't need don't need to know as
+  [OVERFLOW-CACHED] #188 target/cap/译=49/49/52 | It's especially there can be some sudden
+  [OVERFLOW-CACHED] #191 target/cap/译=57/57/64 | moon, the new moon is happening in your 
+  [OVERFLOW-CACHED] #193 target/cap/译=11/11/14 | of health, health therapies, healing.
+  [OVERFLOW-CACHED] #196 target/cap/译=58/58/71 | You can receive something from another a
+  [OVERFLOW-CACHED] #198 target/cap/译=64/64/73 | there this week. And, uh, don't forget t
+  [OVERFLOW-CACHED] #201 target/cap/译=10/9/10 | idea coming to you.
+  [OVERFLOW-CACHED] #202 target/cap/译=30/30/32 | Uh, something new, original, or possibil
+  [OVERFLOW-CACHED] #203 target/cap/译=64/64/66 | Fifth house is enjoyments, fun, leisure,
+  [OVERFLOW-CACHED] #204 target/cap/译=61/61/71 | with loved ones as well, or even your ro
+  [OVERFLOW-CACHED] #205 target/cap/译=21/21/25 | original. Well, more normal people, it's
+  [OVERFLOW-CACHED] #206 target/cap/译=38/38/48 | There is a renewal there, even dating, r
+  [OVERFLOW-CACHED] #209 target/cap/译=16/16/19 | good aspects. So, overall they should be
+  [OVERFLOW-CACHED] #210 target/cap/译=54/54/67 | &gt;&gt; &gt;&gt; Something good coming 
+  [OVERFLOW-CACHED] #212 target/cap/译=60/60/72 | And attracting more pleasant Venusian pe
+  [OVERFLOW-CACHED] #214 target/cap/译=22/22/25 | There can be some sudden changes with fi
+  [OVERFLOW-CACHED] #216 target/cap/译=58/58/65 | something new appearing, something old n
+  [OVERFLOW-CACHED] #218 target/cap/译=26/26/30 | Something you can change, something do s
+  [OVERFLOW-CACHED] #219 target/cap/译=50/50/61 | Uh with maybe some new idea to do in you
+  [OVERFLOW-CACHED] #222 target/cap/译=64/64/65 | And so you can tap in into this Venus by
+  [OVERFLOW-CACHED] #224 target/cap/译=69/69/71 | And it's also good for work at work envi
+  [OVERFLOW-CACHED] #225 target/cap/译=41/41/49 | big shake up. They can need to release a
+
+===== 7-God & Your Higher Self Needs You To Hear This...🧿🪽_dubbed.m4a (UpCgewoofV0) =====
+共 172 句，VAD检测到 303 段语音, chars_per_sec=4.66
+重叠 40 句，留白 4 句，超字数上限 78 句
+  [OVERLAP] # 10 dur= 10.7s target/cap/译=50/50/54 overlap=2.1s | and you go on the next grade. You go on 
+  [OVERLAP] # 15 dur=  3.0s target/cap/译=14/14/8 overlap=1.4s | The peak of your manifestations.
+  [OVERLAP] # 20 dur=  4.3s target/cap/译=20/20/19 overlap=3.2s | you just went up and it's affecting your
+  [OVERLAP] # 24 dur= 13.0s target/cap/译=61/61/44 overlap=0.7s | So you're manifesting a person right now
+  [OVERLAP] # 29 dur=  8.9s target/cap/译=41/41/37 overlap=1.5s | Knowing that you have more control over 
+  [OVERLAP] # 30 dur=  6.5s target/cap/译=30/29/18 overlap=1.8s | And it says, "Make peace with your thoug
+  [OVERLAP] # 31 dur=  6.5s target/cap/译=30/30/44 overlap=1.9s | You're about to manifest something. You'
+  [OVERLAP] # 34 dur= 10.5s target/cap/译=49/49/59 overlap=1.7s | and it's not even real, but we've been, 
+  [OVERLAP] # 36 dur= 11.7s target/cap/译=55/55/36 overlap=0.7s | either fear of looking at things straigh
+  [OVERLAP] # 38 dur=  5.3s target/cap/译=25/25/21 overlap=1.7s | There's a fear here of meeting other peo
+  [OVERLAP] # 40 dur=  1.2s target/cap/译=6/3/5 overlap=2.0s | But but
+  [OVERLAP] # 41 dur= 11.9s target/cap/译=55/55/52 overlap=0.9s | do you want to live this way? Do you wan
+  [OVERLAP] # 42 dur= 12.0s target/cap/译=56/56/58 overlap=2.1s | this like like get away like and that's 
+  [OVERLAP] # 43 dur=  8.0s target/cap/译=37/37/52 overlap=1.0s | There's a fear of being hurt again. This
+  [OVERLAP] # 51 dur= 12.7s target/cap/译=59/59/56 overlap=0.8s | were around. And someone here, excuse me
+  [OVERLAP] # 54 dur=  6.9s target/cap/译=32/32/29 overlap=1.9s | There's people that you are supposed to 
+  [OVERLAP] # 59 dur=  9.8s target/cap/译=46/46/49 overlap=2.0s | and not think about the past when you do
+  [OVERLAP] # 60 dur=  9.5s target/cap/译=44/44/43 overlap=2.6s | manifesting here? You're in a vortex of 
+  [OVERLAP] # 63 dur= 10.2s target/cap/译=48/48/43 overlap=1.1s | much. So I understand that I you know I 
+  [OVERLAP] # 65 dur=  5.3s target/cap/译=25/19/13 overlap=2.1s | So it's been about 6 years for me. Um,
+  [OVERLAP] # 67 dur=  7.8s target/cap/译=36/36/38 overlap=0.3s | by everybody, right? Jim, Bob, Kate, Har
+  [OVERLAP] # 68 dur= 12.0s target/cap/译=56/56/67 overlap=1.1s | Everybody and their mom. You know what I
+  [OVERLAP] # 73 dur=  9.5s target/cap/译=44/44/40 overlap=1.5s | because your higher self wants to experi
+  [OVERLAP] # 75 dur=  1.0s target/cap/译=5/2/3 overlap=1.5s | Okay.
+  [OVERLAP] # 76 dur= 11.0s target/cap/译=51/51/63 overlap=1.5s | All right. Anything else, spirit? We're 
+  [OVERLAP] # 77 dur= 11.9s target/cap/译=55/55/59 overlap=1.0s | your confirmation about your belief syst
+  [OVERLAP] # 88 dur=  4.7s target/cap/译=22/22/21 overlap=0.4s | All right. And a lot was about your beli
+  [OVERLAP] # 92 dur=  7.1s target/cap/译=33/33/31 overlap=1.8s | I'm not scared. I'm not fearful of my ow
+  [OVERLAP] # 93 dur=  3.3s target/cap/译=15/15/27 overlap=1.4s | It's changed everything for you. Okay. S
+  [OVERLAP] # 94 dur=  1.8s target/cap/译=8/8/9 overlap=0.9s | It's okay, Riri.
+  [OVERLAP] #110 dur=  4.1s target/cap/译=19/18/10 overlap=2.0s | Don't hold us back from feeling this.
+  [OVERLAP] #124 dur=  2.4s target/cap/译=11/8/5 overlap=1.3s | that or you are.
+  [OVERLAP] #127 dur=  1.8s target/cap/译=8/8/6 overlap=3.3s | people out, okay?
+  [OVERLAP] #129 dur=  1.8s target/cap/译=8/7/69 overlap=1.0s | out there. it.
+  [OVERLAP] #136 dur=  1.2s target/cap/译=6/6/17 overlap=1.4s | It's beautiful.
+  [OVERLAP] #137 dur=  2.8s target/cap/译=13/13/28 overlap=1.3s | And I think everyone's going to want a b
+  [OVERLAP] #138 dur=  4.8s target/cap/译=23/23/45 overlap=1.6s | Whatever you've been cooking up in that 
+  [OVERLAP] #142 dur= 10.0s target/cap/译=47/47/14 overlap=2.1s | someone in the public eye. God wants to 
+  [OVERLAP] #159 dur= 11.3s target/cap/译=52/52/38 overlap=1.5s | That's what's happening right now is I f
+  [OVERLAP] #161 dur= 12.4s target/cap/译=58/58/68 overlap=0.3s | That's what I'm feeling. Someone here th
+  [GAP]     # 71 dur=  1.8s target/cap/译=8/8/4 gap=0.8s | to transform you.
+  [GAP]     # 85 dur=  3.4s target/cap/译=16/16/9 gap=1.7s | Fear was holding me back from a lot.
+  [GAP]     #135 dur=  2.8s target/cap/译=13/13/4 gap=1.5s | Look what we made together.
+  [GAP]     #171 dur=  3.5s target/cap/译=16/14/4 gap=2.5s | I'll see you in the next one.
+  [OVERFLOW-CACHED] #  0 target/cap/译=61/61/84 | Hi you guys. Thank you guys for being he
+  [OVERFLOW-CACHED] #  1 target/cap/译=38/38/46 | but sometimes it gets really, you know, 
+  [OVERFLOW-CACHED] #  3 target/cap/译=65/65/70 | very foreign to me. So, I pulled one car
+  [OVERFLOW-CACHED] # 11 target/cap/译=32/32/41 | So, I feel that there's something here a
+  [OVERFLOW-CACHED] # 12 target/cap/译=63/63/76 | And more and more about your energy, wha
+  [OVERFLOW-CACHED] # 16 target/cap/译=49/49/54 | You know, it's interesting cuz I just di
+  [OVERFLOW-CACHED] # 17 target/cap/译=29/29/34 | Like everything you have manifested this
+  [OVERFLOW-CACHED] # 21 target/cap/译=25/25/29 | I want to get more here. So you have Bud
+  [OVERFLOW-CACHED] # 22 target/cap/译=12/12/14 | Someone here you have been in the void.
+  [OVERFLOW-CACHED] # 26 target/cap/译=62/62/66 | So please don't build walls. Build a bri
+  [OVERFLOW-CACHED] # 28 target/cap/译=8/8/9 | Knowing that everything is possible.
+  [OVERFLOW-CACHED] # 32 target/cap/译=65/65/84 | Let's get more about this. Whoa, that's 
+  [OVERFLOW-CACHED] # 35 target/cap/译=43/43/45 | okay, someone here, you've been in the v
+  [OVERFLOW-CACHED] # 37 target/cap/译=16/16/18 | people because you've been hurt so bad.
+  [OVERFLOW-CACHED] # 44 target/cap/译=11/11/13 | So, there's someone coming in here.
+  [OVERFLOW-CACHED] # 46 target/cap/译=57/57/62 | There's three people in this card and th
+  [OVERFLOW-CACHED] # 47 target/cap/译=24/24/25 | something out at the root here. And this
+  [OVERFLOW-CACHED] # 50 target/cap/译=58/58/66 | whole world. It affected the way you wha
+  [OVERFLOW-CACHED] # 53 target/cap/译=32/32/35 | going to have to take a risk on yourself
+  [OVERFLOW-CACHED] # 55 target/cap/译=62/62/82 | You're manifesting new connections right
+  [OVERFLOW-CACHED] # 61 target/cap/译=60/60/76 | Community that brings hope. There you ar
+  [OVERFLOW-CACHED] # 62 target/cap/译=56/56/66 | is more important than we realize. You k
+  [OVERFLOW-CACHED] # 66 target/cap/译=62/62/94 | yeah. And I feel like it's safer that wa
+  [OVERFLOW-CACHED] # 69 target/cap/译=61/61/62 | I've been screwed over by too many diffe
+  [OVERFLOW-CACHED] # 82 target/cap/译=65/65/70 | This you're going to meet you're going t
+  [OVERFLOW-CACHED] # 87 target/cap/译=35/35/37 | I feel like fear has held someone back a
+  [OVERFLOW-CACHED] # 95 target/cap/译=56/56/68 | &gt;&gt; So, what's going on? Wow, beaut
+  [OVERFLOW-CACHED] # 96 target/cap/译=39/39/46 | about. Okay. And again, meeting of the t
+  [OVERFLOW-CACHED] #109 target/cap/译=59/59/60 | Don't hold us back from feeling all of t
+  [OVERFLOW-CACHED] #111 target/cap/译=15/15/33 | This was your destiny, you know. Oh, I f
+  [OVERFLOW-CACHED] #113 target/cap/译=59/59/73 | I I I just don't understand how girls do
+  [OVERFLOW-CACHED] #116 target/cap/译=43/43/50 | number one, what I want to say is you ha
+  [OVERFLOW-CACHED] #118 target/cap/译=45/45/49 | different emotions, being hurt, being lo
+  [OVERFLOW-CACHED] #119 target/cap/译=8/8/11 | This is what your higher self is saying.
+  [OVERFLOW-CACHED] #120 target/cap/译=26/26/27 | I don't want to not feel one. I want to 
+  [OVERFLOW-CACHED] #122 target/cap/译=63/63/74 | Okay. For some of you, this person comin
+  [OVERFLOW-CACHED] #123 target/cap/译=54/54/56 | Star and six of wands. Okay. This is som
+  [OVERFLOW-CACHED] #125 target/cap/译=35/35/43 | Either you're in the public eye or they'
+  [OVERFLOW-CACHED] #128 target/cap/译=63/63/76 | Don't shut these people out. The sun, ok
+  [OVERFLOW-CACHED] #139 target/cap/译=46/46/53 | Um, and use your discernment. You unders
+  [OVERFLOW-CACHED] #140 target/cap/译=38/38/51 | You have victory over this of choosing l
+  [OVERFLOW-CACHED] #143 target/cap/译=10/10/42 | Starting over and intuition is what I ju
+  [OVERFLOW-CACHED] #144 target/cap/译=53/53/66 | and act on your idea. You guys could hav
+  [OVERFLOW-CACHED] #145 target/cap/译=46/46/58 | This is your spirit team going, "Yes, th
+  [OVERFLOW-CACHED] #150 target/cap/译=57/57/69 | Um if you want to succeed, you need to k
+  [OVERFLOW-CACHED] #153 target/cap/译=61/61/66 | Okay? Because especially right now, you'
+  [OVERFLOW-CACHED] #155 target/cap/译=31/31/34 | Six of Wands and the Sun. I just want to
+  [OVERFLOW-CACHED] #157 target/cap/译=56/56/70 | Last one. 777. Good luck. This message i
+  [OVERFLOW-CACHED] #158 target/cap/译=19/19/29 | share. Yet, you'll need enthusiasm and e
+  [OVERFLOW-CACHED] #160 target/cap/译=15/15/17 | you're going to start feeling like I wan
+  [OVERFLOW-CACHED] #162 target/cap/译=67/67/71 | side. Everything that's good and pleasan
+  [OVERFLOW-CACHED] #163 target/cap/译=62/62/64 | build bridges, not walls. These are not 
+  [OVERFLOW-CACHED] #164 target/cap/译=31/31/37 | confirmation that you have ripped it out
+  [OVERFLOW-CACHED] #165 target/cap/译=9/9/12 | Um we have the sun and the six of wands.
+  [OVERFLOW-CACHED] #166 target/cap/译=63/63/71 | I'm just reiterating what's going on her
+  [OVERFLOW-CACHED] #167 target/cap/译=60/60/75 | people that are coming in, they could be
+  [OVERFLOW-CACHED] #168 target/cap/译=34/34/37 | you out and show you off. Okay, I love y
+  [OVERFLOW-CACHED] #169 target/cap/译=24/24/30 | You've been in this manifestation vortex
+  [OVERFLOW-CACHED] #170 target/cap/译=21/21/24 | Persevere. You have good luck. And look 
+
+===== 8-you're moving through DIVINE REARRANGEMENT_dubbed.m4a (LrgVvdCGr2U) =====
+共 133 句，VAD检测到 258 段语音, chars_per_sec=4.20
+重叠 10 句，留白 15 句，超字数上限 63 句
+  [OVERLAP] #  5 dur= 13.0s target/cap/译=55/55/31 overlap=1.2s | Things are changing, and you can feel th
+  [OVERLAP] # 16 dur=  2.0s target/cap/译=9/9/11 overlap=0.5s | There was something else that I was hear
+  [OVERLAP] # 18 dur= 11.8s target/cap/译=50/50/40 overlap=0.7s | Joyful. As if I I I don't know why but I
+  [OVERLAP] # 36 dur=  4.2s target/cap/译=18/18/14 overlap=1.0s | They're not It's not going to feel so tu
+  [OVERLAP] # 45 dur= 11.6s target/cap/译=49/49/22 overlap=1.0s | You may be feeling like you're being cha
+  [OVERLAP] # 47 dur=  1.0s target/cap/译=4/2/2 overlap=0.3s | Ooh.
+  [OVERLAP] # 67 dur=  2.4s target/cap/译=10/10/8 overlap=1.4s | Such beautiful, beautiful artwork.
+  [OVERLAP] # 68 dur=  4.3s target/cap/译=18/18/34 overlap=0.5s | I see in you a divine wild child and sac
+  [OVERLAP] # 69 dur=  1.8s target/cap/译=7/7/9 overlap=0.5s | Chutzpah? Chutzpah. Guts.
+  [OVERLAP] #108 dur=  3.8s target/cap/译=16/16/15 overlap=0.4s | Can we not just talk about the fact that
+  [GAP]     #  8 dur=  3.7s target/cap/译=16/16/12 gap=1.6s | There is some sort of a What's that word
+  [GAP]     # 20 dur= 11.9s target/cap/译=50/50/43 gap=5.0s | They're showing me literally like not kn
+  [GAP]     # 34 dur= 10.3s target/cap/译=43/43/32 gap=4.7s | of it it was starting to poison you from
+  [GAP]     # 41 dur=  6.0s target/cap/译=25/25/19 gap=2.7s | because you're about to have some really
+  [GAP]     # 50 dur=  8.0s target/cap/译=34/34/20 gap=4.1s | that you need whatever is happening at t
+  [GAP]     # 59 dur=  3.3s target/cap/译=14/14/8 gap=1.5s | I wear it like almost every other day.
+  [GAP]     # 61 dur=  4.7s target/cap/译=20/16/12 gap=2.7s | I do. It makes me feel so hugged.
+  [GAP]     # 81 dur=  4.1s target/cap/译=17/17/12 gap=1.8s | There it is, more obvious even in the da
+  [GAP]     # 90 dur=  4.1s target/cap/译=17/17/12 gap=1.7s | Oh, the joy of you. The expanse of you.
+  [GAP]     # 93 dur=  5.5s target/cap/译=23/23/18 gap=2.4s | There the great beloved is looking out f
+  [GAP]     #107 dur=  4.0s target/cap/译=17/17/12 gap=1.6s | Lest you become tainted or poisoned by t
+  [GAP]     #122 dur=  3.0s target/cap/译=12/12/6 gap=1.7s | doubts and fears. Enough now.
+  [GAP]     #123 dur=  9.8s target/cap/译=41/41/26 gap=5.2s | You are liberated through the hope in yo
+  [GAP]     #128 dur=  9.4s target/cap/译=39/39/25 gap=4.8s | I'm like, Rumi is the one guide that all
+  [GAP]     #131 dur=  4.7s target/cap/译=20/20/12 gap=2.7s | That was crazy, you guys. All right, wel
+  [OVERFLOW-CACHED] #  0 target/cap/译=5/5/13 | Your entire life's being rearranged righ
+  [OVERFLOW-CACHED] #  1 target/cap/译=13/13/18 | And I can feel that you knew this was co
+  [OVERFLOW-CACHED] #  2 target/cap/译=52/52/54 | I'm also being shown there was a channel
+  [OVERFLOW-CACHED] #  4 target/cap/译=14/14/19 | reality, has caught up to the movement.
+  [OVERFLOW-CACHED] #  6 target/cap/译=57/57/62 | but I also feel for you that it feels tu
+  [OVERFLOW-CACHED] #  7 target/cap/译=10/10/12 | very connected to your sense of self.
+  [OVERFLOW-CACHED] # 11 target/cap/译=55/55/67 | you're about to be moving through more t
+  [OVERFLOW-CACHED] # 13 target/cap/译=35/35/37 | you've been at one energy for such a lon
+  [OVERFLOW-CACHED] # 14 target/cap/译=24/24/27 | But you can't expect yourself to feel mo
+  [OVERFLOW-CACHED] # 17 target/cap/译=18/18/29 | Oh, the angels specifically are giving m
+  [OVERFLOW-CACHED] # 19 target/cap/译=33/33/35 | may have felt overwhelming and now it ge
+  [OVERFLOW-CACHED] # 22 target/cap/译=55/55/68 | You were giving your power and energy to
+  [OVERFLOW-CACHED] # 24 target/cap/译=55/55/65 | I hear shift but I also hear move. So ma
+  [OVERFLOW-CACHED] # 25 target/cap/译=8/8/13 | almost like they're showing me a plant.
+  [OVERFLOW-CACHED] # 26 target/cap/译=53/53/79 | They're showing me a root Okay, not like
+  [OVERFLOW-CACHED] # 27 target/cap/译=4/2/3 | lot.
+  [OVERFLOW-CACHED] # 31 target/cap/译=33/33/41 | and move you and replace you into a plac
+  [OVERFLOW-CACHED] # 33 target/cap/译=51/51/53 | Um Yeah, they're giving me like poison u
+  [OVERFLOW-CACHED] # 35 target/cap/译=60/60/66 | And so, your angels are rearranging ever
+  [OVERFLOW-CACHED] # 39 target/cap/译=48/48/63 | I'm hearing a specific message. This cam
+  [OVERFLOW-CACHED] # 40 target/cap/译=58/58/72 | And you're being prepared for a real rel
+  [OVERFLOW-CACHED] # 42 target/cap/译=15/15/23 | Now, they're pulling me back to the ener
+  [OVERFLOW-CACHED] # 43 target/cap/译=52/52/68 | That's going to be the theme for the nex
+  [OVERFLOW-CACHED] # 44 target/cap/译=10/10/24 | truly come back to your power before.
+  [OVERFLOW-CACHED] # 48 target/cap/译=24/24/27 | But, these are assisting you in awakenin
+  [OVERFLOW-CACHED] # 51 target/cap/译=32/32/41 | Because for some I'm I'm receiving stron
+  [OVERFLOW-CACHED] # 52 target/cap/译=52/52/59 | So you could be like headed on your gold
+  [OVERFLOW-CACHED] # 54 target/cap/译=16/16/21 | Some of them are orchids. Orchids could 
+  [OVERFLOW-CACHED] # 55 target/cap/译=6/6/15 | And the other thing that I want to pull 
+  [OVERFLOW-CACHED] # 57 target/cap/译=10/10/18 | Every time I wear a skirt, I'm like, how
+  [OVERFLOW-CACHED] # 58 target/cap/译=7/7/12 | Literally, I'm obsessed with this skirt.
+  [OVERFLOW-CACHED] # 62 target/cap/译=25/25/29 | Okay, Rumi, what what message, if you co
+  [OVERFLOW-CACHED] # 63 target/cap/译=5/5/7 | Arise, 13.
+  [OVERFLOW-CACHED] # 64 target/cap/译=10/10/18 | 13's could be significant for you. Here'
+  [OVERFLOW-CACHED] # 65 target/cap/译=13/13/17 | Sorry, there's the Oh, the number's on t
+  [OVERFLOW-CACHED] # 66 target/cap/译=7/7/8 | It's not focusing. There you go.
+  [OVERFLOW-CACHED] # 70 target/cap/译=15/15/16 | You dare to love where others only see p
+  [OVERFLOW-CACHED] # 72 target/cap/译=12/12/14 | You see love where others ply fear.
+  [OVERFLOW-CACHED] # 80 target/cap/译=23/23/25 | It becomes a candle that shimmers conten
+  [OVERFLOW-CACHED] # 82 target/cap/译=14/14/16 | The stars do appear to shine brighter at
+  [OVERFLOW-CACHED] # 84 target/cap/译=12/12/18 | They will pass with the coming dawn, you
+  [OVERFLOW-CACHED] # 89 target/cap/译=15/15/17 | You are filled with holy fire and you sh
+  [OVERFLOW-CACHED] # 91 target/cap/译=14/14/15 | You filled my own heart with your magnif
+  [OVERFLOW-CACHED] # 92 target/cap/译=12/12/15 | I see and know the great beloved in you.
+  [OVERFLOW-CACHED] # 95 target/cap/译=11/11/12 | That is what the candle of hope honors.
+  [OVERFLOW-CACHED] # 96 target/cap/译=50/50/54 | The workings of the great beloved, so cr
+  [OVERFLOW-CACHED] # 98 target/cap/译=20/20/24 | From holding on to letting go and from t
+  [OVERFLOW-CACHED] # 99 target/cap/译=22/22/28 | So, the great beloved takes you across t
+  [OVERFLOW-CACHED] #100 target/cap/译=9/9/13 | Red cardinals could be significant.
+  [OVERFLOW-CACHED] #103 target/cap/译=15/15/18 | They are so little in the greater scheme
+  [OVERFLOW-CACHED] #104 target/cap/译=7/7/8 | Put them aside.
+  [OVERFLOW-CACHED] #109 target/cap/译=17/17/21 | I can't believe that this is saying that
+  [OVERFLOW-CACHED] #110 target/cap/译=10/10/17 | Let them go and instead instead focus on
+  [OVERFLOW-CACHED] #111 target/cap/译=16/16/20 | Can you sense that before you is a great
+  [OVERFLOW-CACHED] #112 target/cap/译=19/19/23 | A greater pathway opening up. This is tr
+  [OVERFLOW-CACHED] #115 target/cap/译=29/29/32 | So easy it is when the light of the hear
+  [OVERFLOW-CACHED] #120 target/cap/译=4/3/5 | Arise.
+  [OVERFLOW-CACHED] #125 target/cap/译=5/4/5 | Step up.
+  [OVERFLOW-CACHED] #127 target/cap/译=47/47/58 | Wow, that just made me so happy. I Every
+  [OVERFLOW-CACHED] #132 target/cap/译=40/40/56 | That was the channel message. I hope thi
+
+===== 9-Your recalibration is complete, expect restoration in your finances_dubbed.m4a (JNYp3ynwMYE) =====
+共 210 句，VAD检测到 472 段语音, chars_per_sec=5.47
+重叠 28 句，留白 6 句，超字数上限 84 句
+  [OVERLAP] #  9 dur=  8.7s target/cap/译=48/48/30 overlap=0.4s | But there's something here about you def
+  [OVERLAP] # 11 dur=  4.3s target/cap/译=23/23/31 overlap=1.3s | Okay. Going to go into the tarot. I'm ju
+  [OVERLAP] # 20 dur=  1.0s target/cap/译=5/1/1 overlap=1.0s | Um
+  [OVERLAP] # 22 dur=  8.0s target/cap/译=44/44/31 overlap=0.7s | Last I mean six weeks. Um something coul
+  [OVERLAP] # 27 dur=  8.8s target/cap/译=48/48/34 overlap=0.8s | So you are breaking chains of poverty in
+  [OVERLAP] # 46 dur=  6.0s target/cap/译=33/33/28 overlap=0.3s | So, release the past. Let it go. Be in t
+  [OVERLAP] # 48 dur=  4.3s target/cap/译=24/24/29 overlap=0.4s | Some of you are guided again to exercise
+  [OVERLAP] # 54 dur= 11.3s target/cap/译=62/62/58 overlap=1.0s | And that's why you have to go through th
+  [OVERLAP] # 86 dur= 12.5s target/cap/译=69/69/58 overlap=0.7s | There's a point where God will pressure 
+  [OVERLAP] # 88 dur= 11.9s target/cap/译=65/65/39 overlap=0.3s | So, you could have also had I'm seeing l
+  [OVERLAP] # 89 dur=  2.8s target/cap/译=15/9/5 overlap=0.9s | or a breakup with.
+  [OVERLAP] # 92 dur= 11.9s target/cap/译=65/65/58 overlap=0.4s | But I feel like there was this pattern o
+  [OVERLAP] # 96 dur=  3.4s target/cap/译=19/19/40 overlap=0.5s | all we got to do is work, work, work, ri
+  [OVERLAP] #100 dur= 11.7s target/cap/译=64/64/64 overlap=0.6s | learn how to regulate their nervous syst
+  [OVERLAP] #105 dur=  5.5s target/cap/译=30/30/18 overlap=0.4s | How you perceive yourself is exactly how
+  [OVERLAP] #113 dur=  3.7s target/cap/译=20/20/24 overlap=0.6s | I'm breathing in. I'm visualizing like I
+  [OVERLAP] #120 dur=  3.0s target/cap/译=16/16/17 overlap=1.2s | they're looking for someone to heal them
+  [OVERLAP] #126 dur= 12.4s target/cap/译=68/68/52 overlap=1.0s | So, with that tower energy to the first 
+  [OVERLAP] #131 dur=  7.2s target/cap/译=40/40/53 overlap=0.4s | And you need to call your energy back if
+  [OVERLAP] #139 dur= 11.1s target/cap/译=61/61/76 overlap=0.6s | that area, what house it's in, that area
+  [OVERLAP] #156 dur=  1.8s target/cap/译=10/9/9 overlap=0.4s | yourself. Oh, Leo.
+  [OVERLAP] #158 dur= 11.5s target/cap/译=63/63/174 overlap=0.6s | It's just going to make you a magnet for
+  [OVERLAP] #160 dur=  5.1s target/cap/译=28/28/31 overlap=0.5s | Okay, I don't know. Some of y'all, the r
+  [OVERLAP] #162 dur=  9.8s target/cap/译=53/53/71 overlap=2.0s | Yep. Hot, spicy, steamy summer." Also, I
+  [OVERLAP] #163 dur=  2.3s target/cap/译=12/12/13 overlap=1.1s | for. Either way, I feel like you are
+  [OVERLAP] #167 dur=  1.0s target/cap/译=5/4/8 overlap=1.6s | &gt;&gt;
+  [OVERLAP] #168 dur= 11.7s target/cap/译=64/64/97 overlap=0.4s | You're going to be like, "You know what?
+  [OVERLAP] #175 dur=  9.3s target/cap/译=51/51/48 overlap=0.7s | You enhance that vibration. You multiply
+  [GAP]     # 15 dur=  5.2s target/cap/译=29/29/17 gap=2.1s | All right. I've been pulling this energy
+  [GAP]     # 59 dur=  3.2s target/cap/译=18/18/8 gap=1.6s | And I'm going to be painting uh these th
+  [GAP]     # 64 dur=  2.6s target/cap/译=14/13/3 gap=1.7s | guys last week in my video.
+  [GAP]     #122 dur=  3.4s target/cap/译=19/17/9 gap=1.7s | You genuinely want to help people.
+  [GAP]     #179 dur=  6.6s target/cap/译=36/36/19 gap=3.0s | Like attracts like, so make sure that yo
+  [GAP]     #183 dur=  5.2s target/cap/译=28/24/12 gap=3.2s | and get back to work on my other paintin
+  [OVERFLOW-CACHED] #  0 target/cap/译=13/13/18 | going to be collecting messages for whoe
+  [OVERFLOW-CACHED] #  2 target/cap/译=5/2/3 | Okay.
+  [OVERFLOW-CACHED] #  3 target/cap/译=49/49/54 | So, you may need There's something about
+  [OVERFLOW-CACHED] #  6 target/cap/译=12/12/17 | That's what a lot of you could have been
+  [OVERFLOW-CACHED] # 10 target/cap/译=46/46/62 | Some of you could also be joining maybe 
+  [OVERFLOW-CACHED] # 16 target/cap/译=65/65/66 | What's going on here? &gt;&gt; &gt;&gt; 
+  [OVERFLOW-CACHED] # 18 target/cap/译=24/24/28 | So we have five, five is a very masculin
+  [OVERFLOW-CACHED] # 21 target/cap/译=38/38/45 | There was some type of uh attack maybe t
+  [OVERFLOW-CACHED] # 26 target/cap/译=26/26/29 | And I mean, yeah, look, like five of Pen
+  [OVERFLOW-CACHED] # 28 target/cap/译=7/7/8 | God is restoring you.
+  [OVERFLOW-CACHED] # 29 target/cap/译=16/16/17 | God is your provider. God is your source
+  [OVERFLOW-CACHED] # 30 target/cap/译=52/52/57 | You do not need anything or anybody else
+  [OVERFLOW-CACHED] # 32 target/cap/译=54/54/55 | But you need to know that your prayers h
+  [OVERFLOW-CACHED] # 33 target/cap/译=65/65/71 | The strongholds have been broken. And yo
+  [OVERFLOW-CACHED] # 35 target/cap/译=70/70/72 | enemy to attack you. Be prepared to come
+  [OVERFLOW-CACHED] # 40 target/cap/译=57/57/78 | You're coming out on the other side of t
+  [OVERFLOW-CACHED] # 44 target/cap/译=72/72/87 | Yeah. So, worry, fear, doubt, all of tha
+  [OVERFLOW-CACHED] # 47 target/cap/译=56/56/60 | I don't know what that that could be for
+  [OVERFLOW-CACHED] # 49 target/cap/译=41/41/62 | You feel called to do uh could be like I
+  [OVERFLOW-CACHED] # 50 target/cap/译=71/71/86 | There's um this restoration going on, th
+  [OVERFLOW-CACHED] # 53 target/cap/译=46/46/64 | There's no way that this can ever end, r
+  [OVERFLOW-CACHED] # 57 target/cap/译=70/70/75 | So God is shifting you out of that seaso
+  [OVERFLOW-CACHED] # 63 target/cap/译=73/73/82 | Actually, what I'm doing with this conce
+  [OVERFLOW-CACHED] # 70 target/cap/译=59/59/60 | I don't know how much that is in inches,
+  [OVERFLOW-CACHED] # 71 target/cap/译=12/12/13 | I don't know, we'll see how it goes.
+  [OVERFLOW-CACHED] # 77 target/cap/译=29/29/36 | Narcissist love bombing, self-absorbed, 
+  [OVERFLOW-CACHED] # 79 target/cap/译=38/38/50 | Some of you I just really feel also with
+  [OVERFLOW-CACHED] # 90 target/cap/译=35/35/53 | And for some of you if you resonate with
+  [OVERFLOW-CACHED] # 94 target/cap/译=62/62/70 | So, what this was meant to do, this was 
+  [OVERFLOW-CACHED] # 95 target/cap/译=75/75/85 | And that can apply to many different asp
+  [OVERFLOW-CACHED] # 98 target/cap/译=62/62/70 | sensitive soul or you're neurodivergent,
+  [OVERFLOW-CACHED] #103 target/cap/译=81/81/83 | well, guess what? Reality has no choice 
+  [OVERFLOW-CACHED] #109 target/cap/译=69/69/76 | you know, anytime you pull your energy b
+  [OVERFLOW-CACHED] #110 target/cap/译=48/48/58 | that that Uranus and and Aquarius energy
+  [OVERFLOW-CACHED] #111 target/cap/译=61/61/68 | People will project their wounds onto yo
+  [OVERFLOW-CACHED] #117 target/cap/译=69/69/72 | You need to be able to identify if you w
+  [OVERFLOW-CACHED] #118 target/cap/译=33/33/34 | really self-reflect and consider where y
+  [OVERFLOW-CACHED] #119 target/cap/译=67/67/70 | Would this person be an addition to your
+  [OVERFLOW-CACHED] #121 target/cap/译=39/39/45 | And unfortunately, a lot of people are l
+  [OVERFLOW-CACHED] #124 target/cap/译=53/53/191 | Right? Nowhere but getting taken advanta
+  [OVERFLOW-CACHED] #125 target/cap/译=12/12/15 | Your presence, your time, your energy.
+  [OVERFLOW-CACHED] #127 target/cap/译=19/16/18 | is uh anything but a conformist.
+  [OVERFLOW-CACHED] #128 target/cap/译=12/12/13 | Let's see what other cards I'm going to 
+  [OVERFLOW-CACHED] #129 target/cap/译=40/40/50 | Let's come through. Partying, time with 
+  [OVERFLOW-CACHED] #132 target/cap/译=37/37/39 | And focus on yourself because the more y
+  [OVERFLOW-CACHED] #133 target/cap/译=24/24/29 | You're focused on yourself. Um and if pe
+  [OVERFLOW-CACHED] #135 target/cap/译=49/49/69 | some people are just meant to be in our 
+  [OVERFLOW-CACHED] #146 target/cap/译=15/15/16 | God is repairing you. God is restoring y
+  [OVERFLOW-CACHED] #148 target/cap/译=14/14/30 | I'm telling you, I mean, some of you cou
+  [OVERFLOW-CACHED] #149 target/cap/译=69/69/74 | You have someone here who's definitely l
+  [OVERFLOW-CACHED] #151 target/cap/译=7/7/8 | I have no room here.
+  [OVERFLOW-CACHED] #152 target/cap/译=62/62/70 | &gt;&gt; &gt;&gt; You guys, I need I nee
+  [OVERFLOW-CACHED] #154 target/cap/译=10/10/14 | But I love it. I'm I'm obsessed, guys.
+  [OVERFLOW-CACHED] #161 target/cap/译=14/14/18 | Leo, Jupiter in Leo really said, "Yep.
+  [OVERFLOW-CACHED] #164 target/cap/译=52/52/53 | going to be seen. You're going to be not
+  [OVERFLOW-CACHED] #165 target/cap/译=42/42/69 | Maybe some of you have got like a gym cr
+  [OVERFLOW-CACHED] #171 target/cap/译=23/23/28 | &gt;&gt; &gt;&gt; Ready or not, here you
+  [OVERFLOW-CACHED] #177 target/cap/译=7/7/10 | I'm claiming this energy for yourself.
+  [OVERFLOW-CACHED] #184 target/cap/译=17/17/24 | Let me see if I can pull the angel cards
+  [OVERFLOW-CACHED] #191 target/cap/译=58/58/80 | Your garden is a healing place. Seek ref
+  [OVERFLOW-CACHED] #193 target/cap/译=27/27/30 | Just your own little your own little spa
+  [OVERFLOW-CACHED] #195 target/cap/译=66/66/79 | I know I was getting a couple comments i
+  [OVERFLOW-CACHED] #196 target/cap/译=5/2/3 | did.
+  [OVERFLOW-CACHED] #197 target/cap/译=39/39/44 | This is This for me is very much so &gt;
+  [OVERFLOW-CACHED] #198 target/cap/译=70/70/75 | But, &gt;&gt; &gt;&gt; just do something
+  [OVERFLOW-CACHED] #199 target/cap/译=26/26/29 | There's just society's made up rules, wh
+  [OVERFLOW-CACHED] #201 target/cap/译=8/8/11 | Don't stop watching my videos, though.
+  [OVERFLOW-CACHED] #204 target/cap/译=18/18/21 | yeah, guys, that's the message I have fo
+  [OVERFLOW-CACHED] #205 target/cap/译=70/70/74 | Let me know if you like these type of vi
+  [OVERFLOW-CACHED] #208 target/cap/译=69/69/90 | your pet's character traits or personali
+  [OVERFLOW-CACHED] #209 target/cap/译=35/35/38 | you're subscribed to the channel so you 
+
+===== 10-STOP. You Need To Watch This Before The Day Ends! ❤︎_dubbed.m4a (x04lp6s6Pco) =====
+共 160 句，VAD检测到 343 段语音, chars_per_sec=4.58
+重叠 17 句，留白 4 句，超字数上限 60 句
+  [OVERLAP] #  8 dur= 11.7s target/cap/译=54/54/50 overlap=0.9s | initial. Next we have C channel. You are
+  [OVERLAP] # 38 dur= 12.9s target/cap/译=59/59/47 overlap=0.7s | Um, maybe there was an argument or a dif
+  [OVERLAP] # 58 dur= 13.3s target/cap/译=61/61/54 overlap=0.6s | Sometimes we don't want to face our real
+  [OVERLAP] # 64 dur= 11.7s target/cap/译=54/54/55 overlap=0.5s | This could be a good friend, a family me
+  [OVERLAP] # 66 dur= 12.8s target/cap/译=59/59/57 overlap=1.2s | And you know why I feel the bookstore is
+  [OVERLAP] # 67 dur= 11.6s target/cap/译=53/53/50 overlap=0.6s | absorbing knowledge. You are learning th
+  [OVERLAP] # 69 dur= 12.6s target/cap/译=58/58/53 overlap=0.4s | You are outgrowing parts of yourself, ve
+  [OVERLAP] # 76 dur= 11.9s target/cap/译=55/55/55 overlap=0.6s | And what why it's doing this is because 
+  [OVERLAP] # 92 dur= 12.1s target/cap/译=56/56/44 overlap=0.7s | like the part of you transitioning into 
+  [OVERLAP] # 94 dur= 14.3s target/cap/译=65/65/69 overlap=0.6s | autopilot thing that I do where I feel I
+  [OVERLAP] # 95 dur= 11.7s target/cap/译=54/54/44 overlap=0.9s | also feel like responsible or you feel l
+  [OVERLAP] #111 dur= 11.9s target/cap/译=55/55/45 overlap=0.9s | our mind, right? we can create a whole s
+  [OVERLAP] #112 dur=  8.0s target/cap/译=37/37/44 overlap=0.9s | battling mentally. It's your thoughts, p
+  [OVERLAP] #114 dur= 12.2s target/cap/译=56/56/54 overlap=0.8s | Let's work on calming that nervous syste
+  [OVERLAP] #116 dur= 13.0s target/cap/译=60/60/51 overlap=0.5s | Right? That's again a choice that you ge
+  [OVERLAP] #120 dur= 12.7s target/cap/译=58/58/61 overlap=0.4s | but I'm too scared to. I'm afraid of hei
+  [OVERLAP] #150 dur=  2.4s target/cap/译=11/11/8 overlap=1.7s | Spirit called you here.
+  [GAP]     # 50 dur=  6.5s target/cap/译=30/30/20 gap=2.7s | side where it's in your favor. It's work
+  [GAP]     #149 dur=  3.5s target/cap/译=16/15/31 gap=1.7s | Trust you're here for a reason.
+  [GAP]     #157 dur=  3.0s target/cap/译=14/14/7 gap=1.3s | &gt;&gt; Thank you for watching.
+  [GAP]     #159 dur=  2.4s target/cap/译=11/11/6 gap=1.4s | &gt;&gt; It's pretty close.
+  [OVERFLOW-CACHED] #  0 target/cap/译=51/51/73 | We are now connected. &gt;&gt; So, my in
+  [OVERFLOW-CACHED] #  1 target/cap/译=55/55/69 | Maybe this has to do with money or your 
+  [OVERFLOW-CACHED] #  2 target/cap/译=43/43/58 | every one of you here with me today. So,
+  [OVERFLOW-CACHED] #  3 target/cap/译=19/19/31 | This is a collective reading. It is for 
+  [OVERFLOW-CACHED] #  4 target/cap/译=60/60/79 | So, whenever you're finding this reading
+  [OVERFLOW-CACHED] #  5 target/cap/译=49/49/50 | want you to place these wherever they re
+  [OVERFLOW-CACHED] # 14 target/cap/译=26/26/28 | is unfolding for you. Okay. So these are
+  [OVERFLOW-CACHED] # 16 target/cap/译=62/62/66 | can mix and match these however they're 
+  [OVERFLOW-CACHED] # 22 target/cap/译=55/55/60 | just outgrowing things. You're you know 
+  [OVERFLOW-CACHED] # 23 target/cap/译=27/27/33 | and you are rebuilding or you are disman
+  [OVERFLOW-CACHED] # 24 target/cap/译=57/57/62 | is the taking apart of something to rebu
+  [OVERFLOW-CACHED] # 25 target/cap/译=64/64/93 | of you are going to feel this energy int
+  [OVERFLOW-CACHED] # 26 target/cap/译=55/55/76 | intuition. This is going to strengthen y
+  [OVERFLOW-CACHED] # 28 target/cap/译=57/57/69 | stuck at some point in your life but you
+  [OVERFLOW-CACHED] # 30 target/cap/译=21/21/27 | differently in each of our lives. This i
+  [OVERFLOW-CACHED] # 31 target/cap/译=65/65/69 | So those of you that are watching, if my
+  [OVERFLOW-CACHED] # 32 target/cap/译=62/62/68 | connecting with my energy, consider subs
+  [OVERFLOW-CACHED] # 33 target/cap/译=58/58/69 | to thank you all so so much for all of y
+  [OVERFLOW-CACHED] # 34 target/cap/译=62/62/68 | out. So, the number five, the number 10,
+  [OVERFLOW-CACHED] # 37 target/cap/译=45/45/46 | challenging? And I feel I'm getting verb
+  [OVERFLOW-CACHED] # 40 target/cap/译=61/61/76 | time, right? It's not about rushing into
+  [OVERFLOW-CACHED] # 42 target/cap/译=62/62/77 | Okay? So, kindness and love is going to 
+  [OVERFLOW-CACHED] # 44 target/cap/译=38/38/42 | and you know maybe you're not feeling go
+  [OVERFLOW-CACHED] # 55 target/cap/译=64/64/86 | because you're done with it because you'
+  [OVERFLOW-CACHED] # 61 target/cap/译=58/58/59 | there are parts of you that you may be d
+  [OVERFLOW-CACHED] # 63 target/cap/译=9/9/12 | stranger, this could be an acquaintance.
+  [OVERFLOW-CACHED] # 73 target/cap/译=58/58/59 | This might be an internal storm where yo
+  [OVERFLOW-CACHED] # 74 target/cap/译=58/58/70 | you or someone in your life. And I'm get
+  [OVERFLOW-CACHED] # 78 target/cap/译=8/8/10 | you're not meant to be restricted here.
+  [OVERFLOW-CACHED] # 85 target/cap/译=70/70/78 | It's over whatever this was. And this ab
+  [OVERFLOW-CACHED] # 86 target/cap/译=11/11/12 | layer off. You can take that armor off.
+  [OVERFLOW-CACHED] # 88 target/cap/译=42/42/46 | There's a cycle that you have just compl
+  [OVERFLOW-CACHED] # 89 target/cap/译=16/15/16 | Right? So, this exists for you.
+  [OVERFLOW-CACHED] # 93 target/cap/译=58/58/66 | weight and sometimes I feel in my own ex
+  [OVERFLOW-CACHED] # 98 target/cap/译=33/33/34 | So there's something right now in your e
+  [OVERFLOW-CACHED] #102 target/cap/译=66/66/70 | Spirit wants you to trust that. believe 
+  [OVERFLOW-CACHED] #103 target/cap/译=59/59/62 | receive it. Sometimes we have a hard tim
+  [OVERFLOW-CACHED] #105 target/cap/译=57/57/74 | overcoming something with your physical 
+  [OVERFLOW-CACHED] #108 target/cap/译=54/54/76 | Okay, what am I going to do in this situ
+  [OVERFLOW-CACHED] #109 target/cap/译=33/33/37 | Right? Not afraid to change and try some
+  [OVERFLOW-CACHED] #117 target/cap/译=62/62/71 | system. So, I practice it every single d
+  [OVERFLOW-CACHED] #123 target/cap/译=62/62/82 | Um, I'm getting bubble gum with this um 
+  [OVERFLOW-CACHED] #133 target/cap/译=9/9/14 | And I have an affirmation for you today.
+  [OVERFLOW-CACHED] #137 target/cap/译=58/58/62 | So let's go ahead close and seal your re
+  [OVERFLOW-CACHED] #139 target/cap/译=59/59/64 | Don't be afraid of what is falling apart
+  [OVERFLOW-CACHED] #140 target/cap/译=62/62/122 | encouraging you to express your gratitud
+  [OVERFLOW-CACHED] #141 target/cap/译=58/58/141 | experience and they want you to follow y
+  [OVERFLOW-CACHED] #143 target/cap/译=68/68/75 | channel and you're enjoying my content, 
+  [OVERFLOW-CACHED] #145 target/cap/译=55/55/62 | leave you all the information in the des
+  [OVERFLOW-CACHED] #148 target/cap/译=24/24/65 | description box below for you. I can't w
+  [OVERFLOW-CACHED] #149 target/cap/译=16/15/31 | Trust you're here for a reason.
+  [OVERFLOW-CACHED] #151 target/cap/译=9/9/19 | If you enjoyed that, my family and I hav
+  [OVERFLOW-CACHED] #152 target/cap/译=48/48/55 | &gt;&gt; Ria and I have our helpful 14-d
+  [OVERFLOW-CACHED] #154 target/cap/译=60/60/76 | &gt;&gt; Hi, Tom here. Feel free to chec
+  [OVERFLOW-CACHED] #155 target/cap/译=66/66/83 | and be calm. Last but not least, my daug
+  [OVERFLOW-CACHED] #156 target/cap/译=27/27/28 | can find all the links in the descriptio
+
+
+========== SUMMARY ==========
+video                                                        total overlap   gap overflow   cps
+1-Every Argument is With a GHOST_dubbed.m4a                     79       4     4       37  5.00
+2-How To Think SO CLEARLY People Assume You're A Genius_dubb   112       6     1       54  4.69
+3-Sand Reading⏳😍Divine Guidance ♥️_dubbed.m4a                   97      41     2       44  4.32
+4-you broke someone wide open_dubbed.m4a                       127      17     0       57  5.25
+5-15 июня_ Новолуние открывающее новую реальность. СМЕНА ПАР   174      98     0       75  3.64
+6-FATED Changes SHAKE the Timeline! Uranus square Nodes+Gemi   231       9     6      117  4.64
+7-God & Your Higher Self Needs You To Hear This...🧿🪽_dubbed.   172      40     4       78  4.66
+8-you're moving through DIVINE REARRANGEMENT_dubbed.m4a        133      10    15       63  4.20
+9-Your recalibration is complete, expect restoration in your   210      28     6       84  5.47
+10-STOP. You Need To Watch This Before The Day Ends! ❤︎_dubb   160      17     4       60  4.58

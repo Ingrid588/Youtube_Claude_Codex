@@ -1,0 +1,304 @@
+import asyncio
+import json
+import re
+import subprocess
+import os
+
+import edge_tts
+import yt_dlp
+from tqdm import tqdm
+from google import genai
+
+# ========== 配置区（只需改这里）==========
+GEMINI_API_KEY = 'AIzaSyCvg8n9PbJKoTjz0_c52ESuVPWJR9lvj0o'   # 填你的Gemini API Key
+TARGET_LANG = '中文'                  # 目标语言
+TTS_VOICE = 'zh-CN-XiaoxiaoNeural'   # TTS声音
+OUTPUT_PATH = 'output_dubbed.mp4'    # 输出文件名
+INPUT = 'https://youtu.be/0pMGS6bNcek'  # YouTube链接或本地文件路径
+
+TEMP_DIR = r'C:\video\Youtube_Claude\temp'  # 临时文件目录，自动创建
+os.makedirs(TEMP_DIR, exist_ok=True)
+# ========== 第一步：获取字幕 ==========
+def get_subtitles(url_or_file):
+    ydl_opts = {
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        'subtitleslangs': ['en'],
+        'subtitlesformat': 'vtt',
+        'skip_download': True,
+        'outtmpl': '/TEMP_DIR/subtitle',
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url_or_file])
+
+    vtt_path = '/TEMP_DIR/subtitle.en.vtt'
+    if not os.path.exists(vtt_path):
+        raise FileNotFoundError("未找到字幕文件，该视频可能没有英文字幕")
+
+    return parse_vtt(vtt_path)
+
+
+def parse_vtt(vtt_path):
+    segments = []
+    with open(vtt_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # 兼容1位和2位小时的时间戳格式
+    pattern = r'(\d{1,2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}\.\d{3})[^\n]*\n([\s\S]*?)(?=\n\n|\Z)'
+    matches = re.findall(pattern, content)
+
+    seen_texts = set()
+    for start, end, text in matches:
+        # 去掉HTML标签（如<c>、<00:00:01.000>等）
+        text = re.sub(r'<[^>]+>', '', text).strip().replace('\n', ' ')
+        # 去掉多余空格
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        if not text or text in seen_texts:
+            continue
+        seen_texts.add(text)
+
+        segments.append({
+            'start': timestamp_to_seconds(start),
+            'end': timestamp_to_seconds(end),
+            'text': text
+        })
+
+    return segments
+
+def timestamp_to_seconds(ts):
+    parts = ts.split(':')
+    if len(parts) == 3:
+        h, m, s = parts
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    elif len(parts) == 2:
+        m, s = parts
+        return int(m) * 60 + float(s)
+    return 0
+
+# ========== 第二步：翻译字幕 ==========
+def translate_segments(segments, target_lang=TARGET_LANG):
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    
+    # 缓存文件路径
+    cache_path = os.path.join(TEMP_DIR, 'translations.json')
+    
+    # 读取已有翻译缓存
+    cache = {}
+    if os.path.exists(cache_path):
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            cache = json.load(f)
+        print(f"  读取缓存：已有 {len(cache)} 条翻译")
+    
+    # 把缓存填回segments
+    for seg in segments:
+        if seg['text'] in cache:
+            seg['translation'] = cache[seg['text']]
+    
+    # 只翻译没有翻译的
+    todo = [s for s in segments if 'translation' not in s]
+    
+    if not todo:
+        print("  全部命中缓存，跳过翻译")
+        return segments
+    
+    batch_size = 50
+    batches = [todo[i:i+batch_size] for i in range(0, len(todo), batch_size)]
+
+    with tqdm(total=len(todo), desc="翻译字幕", unit="条") as pbar:
+        for batch in batches:
+            texts = [s['text'] for s in batch]
+            batch_text = '\n'.join([f"{i}|{t}" for i, t in enumerate(texts)])
+
+            prompt = f"""将以下英文字幕翻译成{target_lang}，保持序号格式，每行一条：
+{batch_text}
+只输出翻译结果，格式：序号|翻译内容"""
+
+            response = None
+            for attempt in range(5):
+                try:
+                    response = client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=prompt
+                    )
+                    break
+                except Exception as e:
+                    if attempt == 4:
+                        print(f"\n  批次失败，跳过：{e}")
+                        break
+                    import time
+                    wait = (attempt + 1) * 3
+                    print(f"\n  503繁忙，{wait}秒后重试({attempt+1}/5)...")
+                    time.sleep(wait)
+
+            if response:
+                for line in response.text.strip().split('\n'):
+                    if '|' in line:
+                        try:
+                            idx, translation = line.split('|', 1)
+                            batch[int(idx.strip())]['translation'] = translation.strip()
+                        except:
+                            pass
+                
+                # 每批翻译完立即保存缓存
+                for seg in batch:
+                    if 'translation' in seg:
+                        cache[seg['text']] = seg['translation']
+                with open(cache_path, 'w', encoding='utf-8') as f:
+                    json.dump(cache, f, ensure_ascii=False, indent=2)
+
+            pbar.update(len(batch))
+
+    return segments# ========== 第三步：TTS合成 ==========
+def get_audio_duration(path):
+    result = subprocess.run(
+        ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', path],
+        capture_output=True, text=True
+    )
+    info = json.loads(result.stdout)
+    return float(info['format']['duration'])
+
+
+async def synthesize_segment(seg, voice=TTS_VOICE):
+    text = seg['translation']
+    duration = seg['end'] - seg['start']
+    audio_path = os.path.join(TEMP_DIR, f"seg_{int(seg['start']*1000)}.mp3")
+
+    for attempt in range(3):
+        try:
+            communicate = edge_tts.Communicate(text, voice, proxy="http://127.0.0.1:17891")
+            await communicate.save(audio_path)
+            break
+        except Exception as e:
+            if attempt == 2:
+                print(f"\n  警告：片段合成失败，跳过。({e})")
+                return None
+            await asyncio.sleep(2)
+
+    if not os.path.exists(audio_path):
+        return None
+
+    actual_duration = get_audio_duration(audio_path)
+    if actual_duration > duration * 0.95 and duration > 0:
+        rate_pct = min(int((actual_duration / duration - 1) * 100), 50)
+        if rate_pct > 5:
+            for attempt in range(3):
+                try:
+                    communicate = edge_tts.Communicate(text, voice, rate=f"+{rate_pct}%", proxy="http://127.0.0.1:17891")
+                    await communicate.save(audio_path)
+                    break
+                except:
+                    await asyncio.sleep(2)
+
+    seg['audio_path'] = audio_path
+    return audio_path
+
+async def synthesize_all(segments, voice=TTS_VOICE):
+    semaphore = asyncio.Semaphore(3)
+    valid_segments = [s for s in segments if 'translation' in s]
+
+    async def run_with_sem(seg, pbar):
+        async with semaphore:
+            await synthesize_segment(seg, voice)
+            pbar.update(1)
+
+    with tqdm(total=len(valid_segments), desc="合成配音", unit="条") as pbar:
+        await asyncio.gather(*[run_with_sem(seg, pbar) for seg in valid_segments])
+
+    return segments
+
+# ========== 第四步：合并视频 ==========
+def merge_audio_video(video_path, segments, output_path):
+    # 获取视频总时长
+    result = subprocess.run(
+        ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', video_path],
+        capture_output=True, text=True
+    )
+    total_duration = float(json.loads(result.stdout)['format']['duration'])
+
+    input_args = ['-i', video_path]
+    filter_parts = []
+    idx = 1
+
+    for seg in segments:
+        if 'audio_path' in seg and os.path.exists(seg['audio_path']):
+            input_args += ['-i', seg['audio_path']]
+            delay_ms = int(seg['start'] * 1000)
+            filter_parts.append(
+                f'[{idx}:a]adelay={delay_ms}|{delay_ms}[a{idx}]'
+            )
+            idx += 1
+
+    if not filter_parts:
+        raise RuntimeError("没有可用的配音片段")
+
+    mix_inputs = '[0:a]volume=0.3[orig];' + \
+                 ''.join([f'[a{i+1}]' for i in range(len(filter_parts))]) + \
+                 f'[orig]amix=inputs={len(filter_parts)+1}:normalize=0[aout]'
+
+    filter_complex = ';'.join(filter_parts) + ';' + mix_inputs
+
+    cmd = ['ffmpeg', '-y'] + input_args + [
+        '-filter_complex', filter_complex,
+        '-map', '0:v',
+        '-map', '[aout]',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-progress', 'pipe:1',
+        '-nostats',
+        output_path
+    ]
+
+    process = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+    )
+
+    with tqdm(total=int(total_duration), desc="合并视频", unit="秒") as pbar:
+        current_time = 0
+        for line in process.stdout:
+            if line.startswith('out_time_ms='):
+                try:
+                    ms = int(line.split('=')[1])
+                    new_time = min(ms // 1000000, int(total_duration))
+                    if new_time > current_time:
+                        pbar.update(new_time - current_time)
+                        current_time = new_time
+                except:
+                    pass
+        process.wait()
+
+
+# ========== 主流程 ==========
+async def dub_video(input_src, output_path, target_lang=TARGET_LANG):
+    print(f"\n▶ 第1步：获取字幕...")
+    segments = get_subtitles(input_src)
+    print(f"  共获取 {len(segments)} 条字幕")
+
+    print(f"\n▶ 第2步：翻译字幕...")
+    segments = translate_segments(segments, target_lang)
+
+    print(f"\n▶ 第3步：合成配音...")
+    segments = await synthesize_all(segments)
+
+    print(f"\n▶ 第4步：合并视频...")
+    
+    # 如果是YouTube链接，需要先下载视频文件
+    if input_src.startswith('http'):
+        print("  下载视频文件...")
+        video_file = '/TEMP_DIR/source_video.mp4'
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4',
+            'outtmpl': video_file,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([input_src])
+        merge_audio_video(video_file, segments, output_path)
+    else:
+        merge_audio_video(input_src, segments, output_path)
+
+    print(f"\n✅ 完成！输出文件：{output_path}")
+
+
+# ========== 运行入口 ==========
+if __name__ == '__main__':
+    asyncio.run(dub_video(INPUT, OUTPUT_PATH))

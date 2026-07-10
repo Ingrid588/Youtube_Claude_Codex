@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { width: 320px; font-family: "Microsoft YaHei", sans-serif; padding: 0; margin: 0; }
+    .tabs { display: flex; border-bottom: 1px solid #e0e0e0; }
+    .tab-btn { flex: 1; padding: 10px; border: none; background: #f5f5f5; cursor: pointer; font-size: 12px; border-bottom: 2px solid transparent; }
+    .tab-btn.active { background: white; border-bottom-color: #c00; }
+    .tab-content { display: none; padding: 12px; }
+    .tab-content.active { display: block; }
+    h3 { margin: 0 0 10px; font-size: 14px; }
+    label { font-size: 13px; display: block; margin-bottom: 4px; }
+    .val { color: #c00; font-weight: bold; }
+    input[type=range] { width: 100%; }
+    .hint { font-size: 11px; color: #888; margin-top: 4px; line-height: 1.4; }
+    .row { margin-bottom: 12px; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 10px 0; }
+    select, input[type=text], textarea { font-size: 12px; padding: 4px; width: 100%; margin-top: 3px; box-sizing: border-box; }
+    button { font-size: 12px; padding: 6px 8px; cursor: pointer; background: #f0f0f0; border: 1px solid #ccc; border-radius: 3px; }
+    button:hover { background: #e0e0e0; }
+    .speaker-row { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+    .speaker-row label { margin: 0; white-space: nowrap; font-size: 12px; flex-shrink: 0; }
+    .speaker-row select { flex: 1; min-width: 0; width: auto; }
+    #speakerPanel { display: none; margin-top: 8px; }
+    .video-list { max-height: 250px; overflow-y: auto; border: 1px solid #ddd; padding: 0; margin-top: 8px; }
+    .video-item {
+      padding: 8px; border-bottom: 1px solid #f0f0f0; font-size: 11px; display: flex; align-items: center; gap: 6px;
+    }
+    .video-item input[type=checkbox] { flex-shrink: 0; cursor: pointer; }
+    .video-item .video-id { flex: 1; font-family: monospace; font-size: 10px; color: #666; min-width: 0; overflow: hidden; text-overflow: ellipsis; word-break: break-all; }
+    .video-item .status {
+      flex-shrink: 0; width: 12px; height: 12px; border-radius: 50%; display: inline-block;
+    }
+    .video-item .status.pending { background: #333; }
+    .video-item .status.processing { background: #ff9800; }
+    .video-item .status.done { background: #4caf50; }
+    .video-item .status.failed { background: #f44336; }
+    .video-item button { flex-shrink: 0; padding: 2px 6px; font-size: 10px; }
+    .video-item button.download { background: #4caf50; color: white; display: none; }
+    .video-item.done button.download { display: inline-block; }
+    .video-item button.retry { background: #f44336; color: white; display: none; }
+    .video-item.failed button.retry { display: inline-block; }
+    .progress-bar { width: 100%; height: 6px; background: #e0e0e0; border-radius: 3px; margin-top: 8px; }
+    .progress-bar-fill { height: 100%; background: #4caf50; border-radius: 3px; transition: width 0.3s; }
+    .batch-controls { margin: 8px 0; display: flex; gap: 6px; }
+    .batch-controls button { flex: 1; }
+    .cache-item { padding: 6px; border: 1px solid #ddd; border-radius: 3px; margin-bottom: 6px; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="realtime">⚡ 实时配音 Codex</button>
+    <button class="tab-btn" data-tab="collect">📺 内容收集</button>
+    <button class="tab-btn" data-tab="search">🔍 搜索视频</button>
+    <button class="tab-btn" data-tab="cache">💾 缓存管理</button>
+    <button class="tab-btn" data-tab="ready">🔔 配音就绪</button>
+  </div>
+
+  <!-- 实时配音标签页 -->
+  <div id="realtime" class="tab-content active">
+    <h3>🎧 实时配音 Codex 设置</h3>
+
+    <div class="row">
+      <label>功能模式：</label>
+      <label style="margin-right:12px;"><input type="radio" name="dubMode" value="dub" checked /> 🎧 配音（翻译成中文朗读）</label>
+      <label><input type="radio" name="dubMode" value="read" /> 🔊 朗读（设置字幕后原文照读）</label>
+      <div class="hint">选一个，视频上只显示对应按钮；切换会自动停掉另一个。</div>
+    </div>
+
+    <div class="row">
+      <label>配音服务器地址：</label>
+      <input type="text" id="serverUrl" placeholder="留空使用云端服务器" />
+      <div style="margin-top:6px;">
+        <button type="button" id="useTestServer">使用测试服务器</button>
+        <button type="button" id="useProductionServer">恢复默认生产服务器</button>
+      </div>
+      <div id="testServerControl" style="display:none;margin-top:8px;padding:8px;border:1px solid #ddd;border-radius:6px;">
+        <span id="testServerStatus">正在检查测试服务器……</span>
+        <button type="button" id="restartTestServer" style="margin-left:8px;">重启测试服务器</button>
+      </div>
+      <div class="hint">默认用云端服务，不用填。只有想换成自己搭的本机/局域网服务时才需要填这里，比如 http://192.168.1.10:8765。</div>
+    </div>
+
+    <div class="row">
+      <label>原声音量：<span class="val" id="volLabel">30%</span></label>
+      <input type="range" id="vol" min="0" max="100" step="5" value="30" />
+      <div class="hint">设为 0% 则完全静音原声，只听中文配音。</div>
+    </div>
+
+    <div class="row">
+      <label><input type="checkbox" id="autoDub" /> 打开视频自动开始配音</label>
+      <div class="hint">开启后进入视频页面自动配音，关闭则手动点按钮触发。</div>
+    </div>
+
+    <div class="row">
+      <label><input type="checkbox" id="autoExportFiles" /> 自动下载配音文件（变速日志+字幕+录音/录像）</label>
+      <div class="hint">勾选后，不管是单个视频还是播放列表连续配音，视频配音结束时都会自动下载这一整套文件，
+        不用再去popup里手动点"下载本次配音变速日志+字幕"。用浏览器的标签页录音/录屏功能，
+        不会影响配音本身的声音。</div>
+      <label style="margin-top:6px;display:block;">
+        <input type="checkbox" id="autoRecordVideo" /> 连画面一起录（画面+字幕+配音三合一成片）
+      </label>
+      <div class="hint">不勾只录纯音频；勾选后录出来的是完整视频（包含画面和叠加的中文字幕），文件会大很多，
+        但不用再额外拼变速日志/字幕，一个视频文件就是成片。每个视频独立一份，连续播放时也一样。</div>
+      <div id="recordingStatus" class="hint" style="margin-top:5px;">
+        勾选自动下载或录屏选项时会自动取得录制权限
+      </div>
+    </div>
+
+    <div class="row">
+      <label><input type="checkbox" id="subs" checked /> 显示中文字幕</label>
+    </div>
+
+    <div class="row">
+      <label>字幕大小：<span class="val" id="subFontLabel">100%</span></label>
+      <input type="range" id="subFontScale" min="60" max="180" step="10" value="100" />
+    </div>
+
+    <div class="row">
+      <label>字幕背景透明度：<span class="val" id="subBgLabel">80%</span></label>
+      <input type="range" id="subBgOpacity" min="0" max="100" step="5" value="80" />
+      <div class="hint">0% 是完全透明（无背景），100% 是不透明黑底。</div>
+    </div>
+
+    <hr>
+
+    <div class="row">
+      <label><input type="checkbox" id="useGeminiTranslate" /> Gemini翻译（仅配音模式）</label>
+      <div class="hint">YouTube自动翻译质量太差时勾选——改用原文（不是YT已经翻译过的二手中文）
+        交给Gemini重新翻译，更贴近原意，但会产生少量API费用。不勾选则照常用YouTube自动翻译，不耗API。</div>
+    </div>
+
+    <hr>
+
+    <div class="row">
+      <label><input type="checkbox" id="multiSpeaker" /> 多人对话配音（仅 YouTube）</label>
+      <div class="hint">自动识别音调区分说话人，分配不同配音员。</div>
+
+      <div id="speakerPanel">
+        <div class="hint" style="margin-top:4px;">请指定视频中的说话人构成，音调区分同性别顺序。</div>
+
+        <div style="margin-top:8px;">
+          <div class="speaker-row">
+            <label style="width:60px;">男性：</label>
+            <select id="maleCount" style="width:54px;flex:none;">
+              <option value="0">0 人</option>
+              <option value="1">1 人</option>
+              <option value="2">2 人</option>
+            </select>
+          </div>
+          <div id="maleVoices" style="padding-left:8px;margin-top:4px;"></div>
+        </div>
+
+        <div style="margin-top:8px;">
+          <div class="speaker-row">
+            <label style="width:60px;">女性：</label>
+            <select id="femaleCount" style="width:54px;flex:none;">
+              <option value="0">0 人</option>
+              <option value="1">1 人</option>
+              <option value="2" selected>2 人</option>
+            </select>
+          </div>
+          <div id="femaleVoices" style="padding-left:8px;margin-top:4px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <hr>
+
+    <div class="row">
+      <button id="toggleLangTable" style="width:100%;">🌐 语言 ↔ 配音员对照表（朗读 + 配音 共用）</button>
+      <div class="hint">未单独设置的语言，朗读和配音都会用"默认"那一列（列表第一项），不用每种语言都手动配。</div>
+      <div id="langTablePanel" style="display:none;margin-top:8px;max-height:280px;overflow-y:auto;border:1px solid #ddd;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead>
+            <tr style="background:#f5f5f5;position:sticky;top:0;">
+              <th style="text-align:left;padding:4px;border-bottom:1px solid #ddd;">语言</th>
+              <th style="text-align:left;padding:4px;border-bottom:1px solid #ddd;">配音员（朗读+配音共用）</th>
+              <th style="text-align:left;padding:4px;border-bottom:1px solid #ddd;"></th>
+            </tr>
+          </thead>
+          <tbody id="langTableBody"></tbody>
+        </table>
+      </div>
+      <div class="hint" id="langTableMsg"></div>
+    </div>
+
+    <hr>
+
+    <div class="row">
+      <button id="clearCache" style="width:100%;">
+        🗑 清除当前视频配音缓存
+      </button>
+      <div class="hint" id="clearMsg"></div>
+    </div>
+
+    <hr>
+
+    <div class="row">
+      <button id="exportRateLog" style="width:100%;">
+        ⬇️ 下载本次配音变速日志+字幕
+      </button>
+      <div class="hint">配音时视频会变速以塞下译文。变速日志记录了每个时间点的速率，配合
+        <code>retime_video.py</code> 脚本可以把单独下载的原速视频拉伸到和单独录制的配音音频对齐；
+        同时还会下载一份SRT字幕，时间轴跟配音录音文件是同一套，可以直接一起拖进剪辑软件。
+        正常停止配音会自动下载，这个按钮是给忘了点停止/想中途先导出时用的备用入口。</div>
+      <div class="hint" id="rateLogMsg"></div>
+    </div>
+
+    <div class="row" style="margin-top:8px;">
+      <button id="downloadDubPackage" style="width:100%;background:#4caf50;color:#fff;">
+        📦 下载当前视频完整配音包
+      </button>
+      <div class="hint">一次下载当前视频的完整配音音频（MP3），并导出本页已有的变速日志、SRT、ASS、诊断日志。</div>
+      <div class="hint" id="dubPackageMsg"></div>
+    </div>
+
+  </div>
+
+  <!-- 内容收集标签页 -->
+  <div id="collect" class="tab-content">
+    <h3>📺 我的内容收集</h3>
+
+    <div class="row">
+      <label>粘贴链接或播放列表：</label>
+      <textarea id="collectionUrl" placeholder="粘贴播放列表 URL 或视频链接&#10;每行一个" style="height: 50px; font-size: 11px;"></textarea>
+    </div>
+
+    <div class="row">
+      <button id="parseCollectionList" style="width:100%;">📋 解析链接</button>
+      <div class="hint" id="parseCollectionMsg"></div>
+    </div>
+
+    <div id="collectionListContainer" style="display:none;">
+      <label>识别到的视频（<span id="collectionVideoCount">0</span>）：</label>
+
+      <div class="batch-controls">
+        <button id="selectAllCollection">☑ 全选</button>
+        <button id="selectNoneCollection">☐ 全不选</button>
+        <button id="batchDownloadCollection" style="background:#4caf50;color:white;">⬇ 批量下载</button>
+      </div>
+
+      <div class="video-list" id="collectionVideoList"></div>
+
+      <div class="row">
+        <div style="display:flex;gap:6px;">
+          <button id="startDubCollection" style="flex:1;background:#4caf50;color:white;">▶ 开始配音预取</button>
+          <button id="cancelDubCollection" style="flex:0 0 auto;background:#f44336;color:white;display:none;">✕ 取消</button>
+        </div>
+        <div class="hint" id="dubCollectionMsg"></div>
+      </div>
+
+      <div class="progress-bar"><div class="progress-bar-fill" id="dubCollectionProgress" style="width:0%;"></div></div>
+      <div class="hint" style="margin-top:8px;" id="dubCollectionStatus"></div>
+    </div>
+
+    <hr>
+
+    <div class="row">
+      <button id="refreshCollected" style="width:100%;">🔄 刷新我的收藏</button>
+      <div class="hint">自动收集订阅频道新视频。在 YouTube 上点赞时会自动收录。</div>
+    </div>
+
+    <div id="playlistsContainer" style="margin-top:12px;">
+      <label>播放列表（<span id="playlistCount">0</span>）：</label>
+      <div id="playlistsList" style="max-height:200px;overflow-y:auto;border:1px solid #ddd;padding:4px;">
+        <div class="hint">加载中...</div>
+      </div>
+    </div>
+
+    <div id="collectedVideosContainer" style="margin-top:12px;">
+      <label>待处理视频（<span id="collectedCount">0</span>）：</label>
+      <div id="collectedList" style="max-height:150px;overflow-y:auto;border:1px solid #ddd;padding:0;">
+        <div class="hint" style="padding:4px;">暂无待处理视频</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 搜索视频标签页 -->
+  <div id="search" class="tab-content">
+    <h3>🔍 搜索视频</h3>
+
+    <div class="row">
+      <label>关键词（用/分隔多个）：</label>
+      <input type="text" id="searchKeywords" placeholder="如：tarot/astrology/spirituality" value="tarot/astrology/personal growth/love tarot/planetary transits/spirituality" />
+    </div>
+
+    <div class="row">
+      <label>发布时间：<span id="daysLabel">3天</span></label>
+      <input type="range" id="searchDays" min="1" max="30" value="3" style="width:100%;" />
+    </div>
+
+    <div class="row">
+      <label>最低播放数：<span id="viewsLabel">10000</span></label>
+      <input type="range" id="searchViews" min="1000" max="100000" step="1000" value="10000" style="width:100%;" />
+    </div>
+
+    <div class="row">
+      <button id="startSearch" style="width:100%;background:#2196f3;color:white;">🔍 开始搜索</button>
+      <button id="resetSeenSearch" style="width:100%;margin-top:4px;background:#9e9e9e;color:white;font-size:11px;">🗑 清空"已看过"记录（让旧结果重新出现）</button>
+      <div class="hint" id="searchMsg"></div>
+    </div>
+
+    <div id="searchResultsContainer" style="display:none;margin-top:12px;">
+      <label>搜索结果（<span id="resultCount">0</span>）：</label>
+
+      <div class="batch-controls">
+        <button id="selectAllResults">☑ 全选</button>
+        <button id="selectNoneResults">☐ 全不选</button>
+        <button id="addToPlaylistBtn" style="background:#4caf50;color:white;">➕ 添加到播放列表</button>
+      </div>
+
+      <div id="searchResults" style="max-height:250px;overflow-y:auto;border:1px solid #ddd;padding:0;"></div>
+    </div>
+  </div>
+
+  <!-- 缓存管理标签页 -->
+  <div id="cache" class="tab-content">
+    <h3>💾 配音缓存管理</h3>
+
+    <div class="row">
+      <button id="refreshCache" style="width:100%;">🔄 刷新列表</button>
+    </div>
+
+    <div id="cacheList" style="max-height: 300px; overflow-y: auto; margin-top: 8px;">
+      <div class="hint">加载中...</div>
+    </div>
+  </div>
+
+  <!-- 配音完成通知：持久保存，必须由用户逐条关闭 -->
+  <div id="ready" class="tab-content">
+    <h3>🔔 后台配音中心</h3>
+    <div class="hint">这里统一显示后台配音中的视频、已完成可下载的视频，以及失败任务。点击标题可直接打开视频。</div>
+    <div id="dubReadySummary" class="hint" style="margin-top:8px;"></div>
+    <div id="dubReadyJobs" style="max-height:220px;overflow-y:auto;margin-top:10px;"></div>
+    <div id="dubReadyList" style="max-height:360px;overflow-y:auto;margin-top:10px;">
+      <div class="hint">暂无已完成通知</div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

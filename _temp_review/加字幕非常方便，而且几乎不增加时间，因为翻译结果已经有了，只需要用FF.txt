@@ -1,0 +1,51 @@
+加字幕非常方便，而且几乎不增加时间，因为翻译结果已经有了，只需要用FFmpeg把字幕烧录进去，就是多一个FFmpeg参数的事。
+字幕有两种方式：
+方式一：硬字幕（烧录进视频画面）
+字幕直接嵌入画面，任何播放器都能看到，但不可关闭。
+方式二：软字幕（单独字幕轨道）
+字幕作为独立轨道附加在视频里，播放器可以选择开关，更灵活。
+
+加字幕只需要两步：
+第一步，在翻译完成后生成SRT字幕文件，在translate_segments()后面加一个函数：
+pythondef export_srt(segments, srt_path):
+    """把翻译结果导出为SRT字幕文件"""
+    lines = []
+    for i, seg in enumerate(segments):
+        if 'translation' not in seg:
+            continue
+        start = seconds_to_srt_time(seg['start'])
+        end = seconds_to_srt_time(seg['end'])
+        lines.append(f"{i+1}\n{start} --> {end}\n{seg['translation']}\n")
+    
+    with open(srt_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+
+def seconds_to_srt_time(seconds):
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+第二步，在merge_audio_video()的FFmpeg命令里加字幕，软字幕加法：
+pythonsrt_path = os.path.join(TEMP_DIR, 'subtitles.srt')
+
+cmd = ['ffmpeg', '-y'] + input_args + [
+    '-i', srt_path,          # 加入字幕文件
+    '-filter_complex_script', filter_file,
+    '-map', '0:v',
+    '-map', '[aout]',
+    '-map', str(len(input_args)//2),  # 字幕轨道
+    '-c:v', 'copy',
+    '-c:a', 'aac',
+    '-c:s', 'mov_text',      # 软字幕格式
+    '-progress', 'pipe:1',
+    '-nostats',
+    output_path
+]
+主流程里加一行，在第3步和第4步之间：
+pythonprint(f"\n▶ 第3.5步：生成字幕文件...")
+srt_path = os.path.join(TEMP_DIR, 'subtitles.srt')
+export_srt(segments, srt_path)
+print(f"  字幕文件已生成：{srt_path}")
+
+时间影响几乎可以忽略，生成SRT文件不到1秒，FFmpeg加字幕轨道也只增加几秒。要加吗？我把完整版重新整合发给你。

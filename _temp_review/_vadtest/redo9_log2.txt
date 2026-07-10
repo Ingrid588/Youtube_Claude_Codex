@@ -1,0 +1,36 @@
+
+===== 9-Your recalibration is complete, expect restoration in your finances =====
+  共210句，标记0句需重译(含上下文)，实际清除缓存0条
+  [9-Your recalibration is complete, expect restoration in your finances] 本视频平均语速约3.3词/秒，译文预算约8.3字/秒
+  读取缓存：已有 210 条翻译
+  [9-Your recalibration is complete, expect restoration in your finances] 翻译缓存命中 210/210 条
+  [9-Your recalibration is complete, expect restoration in your finances] 全部命中翻译缓存，跳过翻译
+  本视频 Gemini 用量：输入 0 tokens / 输出 0 tokens，约 $0.0000
+  累计（共55个视频）：输入 291893 tokens / 输出 190623 tokens，约 $0.1054
+  合成配音...
+合成配音:   0%|          | 0/210 [00:00<?, ?条/s]合成配音:   1%|          | 2/210 [00:09<16:03,  4.63s/条]合成配音:  45%|████▍     | 94/210 [00:10<00:09, 12.10条/s]合成配音:  47%|████▋     | 99/210 [00:19<00:23,  4.81条/s]合成配音:  58%|█████▊    | 122/210 [00:22<00:15,  5.57条/s]合成配音:  58%|█████▊    | 122/210 [00:40<00:15,  5.57条/s]合成配音:  59%|█████▊    | 123/210 [00:40<00:45,  1.91条/s]合成配音:  60%|█████▉    | 125/210 [00:43<00:48,  1.75条/s]合成配音:  60%|██████    | 127/210 [00:45<00:51,  1.60条/s]合成配音:  70%|██████▉   | 146/210 [00:48<00:24,  2.65条/s]合成配音:  70%|███████   | 147/210 [00:56<00:40,  1.56条/s]合成配音:  70%|███████   | 148/210 [01:03<01:00,  1.03条/s]合成配音:  74%|███████▍  | 156/210 [01:11<00:52,  1.03条/s]合成配音:  75%|███████▍  | 157/210 [01:20<01:18,  1.48s/条]合成配音:  75%|███████▌  | 158/210 [01:28<01:40,  1.94s/条]合成配音:  78%|███████▊  | 163/210 [01:29<01:03,  1.36s/条]合成配音:  78%|███████▊  | 164/210 [01:32<01:06,  1.45s/条]合成配音:  79%|███████▊  | 165/210 [01:35<01:15,  1.68s/条]合成配音:  79%|███████▊  | 165/210 [01:35<00:26,  1.73条/s]
+Traceback (most recent call last):
+  File "<string>", line 6, in <module>
+  File "C:\Users\a\AppData\Local\Programs\Python\Python312\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Users\a\AppData\Local\Programs\Python\Python312\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\a\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\video\Youtube_Claude\_vadtest\redo_videos.py", line 87, in redo_one
+    segments = await dub8.synthesize_all(segments, dub8.TTS_VOICE, title)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\video\Youtube_Claude\dub8.py", line 911, in synthesize_all
+    await asyncio.gather(*[run_with_sem(seg, pbar) for seg in valid_segments])
+  File "C:\video\Youtube_Claude\dub8.py", line 907, in run_with_sem
+    await synthesize_segment(seg, voice, tts_cache, title)
+  File "C:\video\Youtube_Claude\dub8.py", line 875, in synthesize_segment
+    actual_duration = get_audio_duration(audio_path)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\video\Youtube_Claude\dub8.py", line 845, in get_audio_duration
+    return float(info['format']['duration'])
+                 ~~~~^^^^^^^^^^
+KeyError: 'format'
