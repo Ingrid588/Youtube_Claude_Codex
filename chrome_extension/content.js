@@ -2047,6 +2047,73 @@ function _hasForwardDubCache(sess, t, windowSec = 45) {
   });
 }
 
+const LOCAL_CACHE_LOW_WATER_SECONDS = 10 * 60;
+const LOCAL_CACHE_TARGET_SECONDS = 20 * 60;
+
+function _ensureLocalCacheLead(sess, t) {
+  if (!sess?.started || !sess.videoId || !Array.isArray(sess._allSegments)) return;
+  const lead = (sess._maxSynthedTime || 0) - t;
+  if (lead >= LOCAL_CACHE_LOW_WATER_SECONDS) return;
+  if (sess._localCacheLeadLoading) return;
+  if (Date.now() - (sess._lastLocalCacheLeadLoadAt || 0) < 2500) return;
+  sess._lastLocalCacheLeadLoadAt = Date.now();
+  sess._localCacheLeadLoading = true;
+
+  (async () => {
+    try {
+      const from = Math.max(0, t - 2);
+      const to = t + LOCAL_CACHE_TARGET_SECONDS;
+      const existing = new Set((sess.dubSegments || []).map(_segKey));
+      const candidates = sess._allSegments
+        .filter((s) => {
+          if (existing.has(_segKey(s))) return false;
+          const end = Math.max(s.end || s.start, s.start + 0.5);
+          return end >= from && s.start <= to;
+        })
+        .slice(0, 260);
+      if (!candidates.length) return;
+
+      const requested = applySessionVoice(sess, candidates);
+      const cached = await loadLocalDubBatch(sess.videoId, requested);
+      if (!sess.started) return;
+
+      let loaded = 0;
+      let frontier = sess._maxSynthedTime || 0;
+      const have = new Set((sess.dubSegments || []).map(_segKey));
+      for (let i = 0; i < cached.length; i++) {
+        const item = cached[i];
+        if (!item) continue;
+        const key = _segKey(item);
+        if (have.has(key)) continue;
+        sess.dubSegments.push({ ...item, played: item.start < t - 5 });
+        have.add(key);
+        loaded++;
+        frontier = Math.max(frontier, item.start + (item.tts_duration || item.duration || 0));
+      }
+      if (!loaded) return;
+      sess.dubSegments.sort((a, b) => a.start - b.start);
+      sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
+      if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
+      recordDiagnostic(sess, 'loaded_forward_local_cache_into_play_queue', {
+        loaded,
+        currentTime: +(t || 0).toFixed(3),
+        maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
+      });
+      if (sess._buffering && _segReadyAt(sess, sess.video.currentTime)) {
+        sess._buffering = false;
+        sess.weArePausing = false;
+        sess._bufferingSince = null;
+        hideBufferIndicator();
+        try { sess.video.play().catch(() => {}); } catch (_) {}
+      }
+    } catch (e) {
+      console.warn('[配音插件] 装载本地前方缓存失败', e?.message || e);
+    } finally {
+      sess._localCacheLeadLoading = false;
+    }
+  })();
+}
+
 // 位置感知缓冲：只看"当前位置该有的句子是否已合成"，而非全局顺序前沿。
 // 这样 seek 到任意位置都能就地等该位置合成，不必等顺序合成爬过来。
 function maybeBufferForSynthesis(sess, t) {
@@ -2058,6 +2125,7 @@ function maybeBufferForSynthesis(sess, t) {
       try { sess.video.play().catch(() => {}); } catch (_) {}
     }
   };
+  _ensureLocalCacheLead(sess, t);
   // 快速路径：只要合成前沿/可播缓存已经覆盖或明显领先当前时间，就不因为某个
   // 边界句短暂未命中而暂停视频。长视频几千段字幕时，这也是避免每个 timeupdate
   // 都全量扫描、最后二十分钟主线程越来越卡的关键。
