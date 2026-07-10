@@ -755,17 +755,87 @@ function parseTimedText(body) {
   if (t[0] === '{') {
     try {
       const data = JSON.parse(t);
+      const rowLimits = new Map();
+      const windowState = new Map();
+      const normalizeLines = (raw) => String(raw || '')
+        .split(/\n+/)
+        .map((x) => stripNonSpeechMarker(x.trim()))
+        .filter(Boolean);
+      const getState = (winId) => {
+        if (!windowState.has(winId)) {
+          windowState.set(winId, { visibleLines: [], pendingLineBreak: false });
+        }
+        return windowState.get(winId);
+      };
+      const overlapLines = (prevLines, curLines) => {
+        if (!prevLines.length || !curLines.length) return 0;
+        const max = Math.min(prevLines.length, curLines.length);
+        for (let k = max; k > 0; k--) {
+          let ok = true;
+          for (let i = 0; i < k; i++) {
+            const prevLine = prevLines[prevLines.length - k + i];
+            const curLine = curLines[i];
+            if (prevLine === curLine) continue;
+            const last = i === k - 1;
+            if (last && curLine.startsWith(prevLine) && curLine.length > prevLine.length) continue;
+            ok = false;
+            break;
+          }
+          if (ok) return k;
+        }
+        return 0;
+      };
+      const emitSeg = (start, end, lines) => {
+        const filtered = (lines || []).map((x) => String(x || '').trim()).filter(Boolean);
+        if (!filtered.length) return;
+        const text = filtered.join(' ').trim();
+        if (!text) return;
+        segs.push({ start, end, text, lines: filtered });
+      };
+      for (const ev of data.events || []) {
+        if (ev?.wpWinPosId != null) {
+          const winPos = data.wpWinPositions?.[ev.wpWinPosId];
+          if (winPos?.rcRows) rowLimits.set(ev.wWinId ?? ev.id ?? 0, Math.max(1, Number(winPos.rcRows) || 2));
+        }
+      }
       for (const ev of data.events || []) {
         if (!ev.segs || ev.dDurationMs == null) continue;
-        const rawText = ev.segs.map((s) => s.utf8 || '').join('').trim();
-        const lines = rawText.split(/\n+/).map((x) => stripNonSpeechMarker(x.trim())).filter(Boolean);
-        const text = stripNonSpeechMarker(rawText.replace(/\n/g, ' ').trim());
-        if (text) segs.push({
-          start: ev.tStartMs / 1000,
-          end: (ev.tStartMs + ev.dDurationMs) / 1000,
-          text,
-          lines,
-        });
+        const winId = ev.wWinId ?? 0;
+        const state = getState(winId);
+        const rowLimit = rowLimits.get(winId) || 2;
+        const rawText = ev.segs.map((s) => s.utf8 || '').join('');
+        const newlineOnly = rawText.replace(/\s/g, '') === '';
+        if (newlineOnly && rawText.includes('\n')) {
+          state.pendingLineBreak = true;
+          continue;
+        }
+        const start = ev.tStartMs / 1000;
+        const end = (ev.tStartMs + ev.dDurationMs) / 1000;
+        const lines = normalizeLines(rawText);
+        if (!lines.length) continue;
+        if (state.pendingLineBreak && lines.length === 1) {
+          state.pendingLineBreak = false;
+          state.visibleLines = [...state.visibleLines, lines[0]].slice(-rowLimit);
+          emitSeg(start, end, [lines[0]]);
+          continue;
+        }
+        state.pendingLineBreak = false;
+        const prevLines = state.visibleLines;
+        const overlap = overlapLines(prevLines, lines);
+        if (overlap > 0) {
+          const delta = lines.slice(overlap);
+          if (delta.length) emitSeg(start, end, delta);
+          else if (lines.length && prevLines.length) {
+            const prevLast = prevLines[prevLines.length - 1];
+            const curLast = lines[Math.min(overlap - 1, lines.length - 1)];
+            if (curLast && prevLast && curLast.startsWith(prevLast) && curLast.length > prevLast.length) {
+              emitSeg(start, end, [curLast.slice(prevLast.length).trim()]);
+            }
+          }
+        } else {
+          emitSeg(start, end, lines);
+        }
+        state.visibleLines = lines.slice(-rowLimit);
       }
       return segs;
     } catch (e) { return []; }
