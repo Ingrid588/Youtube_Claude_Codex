@@ -1362,6 +1362,41 @@ async function readLocalDubAudio(videoId, seg) {
   }
 }
 
+async function readLocalDubAudioLoose(videoId, seg) {
+  try {
+    const db = await openLocalDubDB();
+    const tx = db.transaction('segments', 'readonly');
+    const store = tx.objectStore('segments');
+    const targetStart = Math.round((seg?.start || 0) * 1000);
+    const targetUrl = String(seg?.audio_url || '');
+    const targetText = String(seg?.text || '').trim();
+    const row = await new Promise((resolve) => {
+      let found = null;
+      const req = store.openCursor();
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) return resolve(found);
+        const key = String(cursor.primaryKey || '');
+        const value = cursor.value || {};
+        const sameVideo = key.startsWith(`${videoId}|`);
+        const sameStart = Math.abs(Math.round((value.start || 0) * 1000) - targetStart) <= 20;
+        const sameUrl = targetUrl && value.audio_url === targetUrl;
+        const sameText = targetText && String(value.text || '').trim() === targetText;
+        if (sameVideo && value.audio_b64 && (sameUrl || (sameStart && sameText) || sameStart)) {
+          found = value;
+          return resolve(found);
+        }
+        cursor.continue();
+      };
+      req.onerror = () => resolve(found);
+    });
+    db.close();
+    return row?.audio_b64 || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function getAudio(sess, seg) {
   if (!seg.audio_url) return null;
   if (sess.audioCache[seg.audio_url]) return sess.audioCache[seg.audio_url];
@@ -1399,7 +1434,8 @@ async function loadAudioOnce(sess, seg) {
         // 的 Private Network Access 限制，blob: URL 没有这个问题）。
         sess.audioCache[seg.audio_url] = new Audio(seg.audio_url);
       } else {
-        const localAudioB64 = await readLocalDubAudio(sess.videoId, seg);
+        let localAudioB64 = await readLocalDubAudio(sess.videoId, seg);
+        if (!localAudioB64) localAudioB64 = await readLocalDubAudioLoose(sess.videoId, seg);
         if (localAudioB64) {
           sess.audioCache[seg.audio_url] = audioFromBase64(localAudioB64);
         } else {
@@ -1407,6 +1443,14 @@ async function loadAudioOnce(sess, seg) {
         }
       }
     } catch (e) {
+      try {
+        const looseB64 = await readLocalDubAudioLoose(sess.videoId, seg);
+        if (looseB64) {
+          console.warn('[配音插件] 音频URL失效，已从本地缓存回补', seg.audio_url);
+          sess.audioCache[seg.audio_url] = audioFromBase64(looseB64);
+          return sess.audioCache[seg.audio_url];
+        }
+      } catch (_) {}
       console.warn('[配音插件] 音频加载失败', seg.audio_url, e);
       // "Extension context invalidated"：插件被重新加载/更新过，但这个页面还在用旧的
       // content script 实例，旧实例连不上新的 service worker，会导致后续每一段音频都
@@ -2694,6 +2738,45 @@ async function saveLocalDubBatch(videoId, requested, returned) {
   } catch (e) {
     console.warn('[配音插件] 写入本地音频缓存失败', e?.message || e);
   }
+}
+
+async function hydrateLocalCacheWindow(sess, centerTime, beforeSec = 12, afterSec = 240) {
+  if (!sess?.started || !sess?.videoId || !Array.isArray(sess._allSegments)) return 0;
+  const from = Math.max(0, Number(centerTime || 0) - beforeSec);
+  const to = Number(centerTime || 0) + afterSec;
+  const candidates = sess._allSegments
+    .filter((s) => {
+      const end = Math.max(s.end || s.start, s.start + 0.5);
+      return end >= from && s.start <= to;
+    })
+    .slice(0, centerTime < 2 ? 520 : 320);
+  if (!candidates.length) return 0;
+  const requested = applySessionVoice(sess, candidates);
+  const cached = await loadLocalDubBatch(sess.videoId, requested);
+  if (!sess.started || !cached?.length) return 0;
+  const map = new Map((sess.dubSegments || []).map((s) => [_segKey(s), s]));
+  let count = 0;
+  let frontier = sess._maxSynthedTime || 0;
+  for (let i = 0; i < cached.length; i++) {
+    const item = cached[i];
+    if (!item?.audio_b64) continue;
+    const seg = { ...requested[i], ...item, played: requested[i].start < centerTime - 5 };
+    const key = _segKey(seg);
+    const existing = map.get(key);
+    if (existing) Object.assign(existing, seg);
+    else {
+      sess.dubSegments.push(seg);
+      map.set(key, seg);
+    }
+    frontier = Math.max(frontier, seg.start + (seg.tts_duration || seg.duration || 0));
+    count++;
+  }
+  if (count) {
+    sess.dubSegments.sort((a, b) => a.start - b.start);
+    sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
+    if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
+  }
+  return count;
 }
 
 async function clearLocalDubVideo(videoId) {
@@ -4393,9 +4476,20 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       for (const seg of sess.dubSegments) {
         seg.played = (seg.start + (seg.tts_duration || seg.duration || 0)) < t;
       }
-      // 快进后立即对新位置优先合成 + 预取音频，迅速到达新节点（不等顺序合成）
-      requestSynthAround(sess, t);
-      prefetchAhead(sess, t);
+      // 快进后先把本地缓存挂回当前窗口，再对新位置优先合成，避免明明已有缓存却还去等服务器。
+      const shouldHoldAtStart = t < 2.2;
+      if (shouldHoldAtStart) {
+        sess._buffering = true;
+        sess.weArePausing = true;
+        try { sess.video.pause(); } catch (_) {}
+        showBufferIndicator('🎧 正在对齐开头配音…', sess.video);
+      }
+      hydrateLocalCacheWindow(sess, t, shouldHoldAtStart ? 1.5 : 12, shouldHoldAtStart ? 300 : 240)
+        .catch(() => 0)
+        .finally(() => {
+          requestSynthAround(sess, t);
+          prefetchAhead(sess, t);
+        });
       // 反复快进快退时，每次拖动都会触发上面这些、但中间状态的请求大多会被新的
       // seekEpoch 作废——只在"用户停下来不再拖了"这一刻才真正要紧。这里加个停顿
       // 后的兜底：停止拖动 280ms 后，主动检查一次缓冲状态 + 踢一次播放调度，
@@ -4404,6 +4498,12 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       sess._seekSettleTimer = setTimeout(() => {
         if (!sess.started) return;
         const tt = sess.video.currentTime;
+        if (tt < 2.2 && _segReadyAt(sess, tt)) {
+          sess._buffering = false;
+          sess.weArePausing = false;
+          hideBufferIndicator();
+          try { sess.video.play().catch(() => {}); } catch (_) {}
+        }
         if (maybeBufferForSynthesis(sess, tt)) return;
         playNextDue(sess, tt);
       }, 280);
