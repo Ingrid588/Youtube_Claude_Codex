@@ -757,8 +757,15 @@ function parseTimedText(body) {
       const data = JSON.parse(t);
       for (const ev of data.events || []) {
         if (!ev.segs || ev.dDurationMs == null) continue;
-        const text = stripNonSpeechMarker(ev.segs.map((s) => s.utf8 || '').join('').replace(/\n/g, ' ').trim());
-        if (text) segs.push({ start: ev.tStartMs / 1000, end: (ev.tStartMs + ev.dDurationMs) / 1000, text });
+        const rawText = ev.segs.map((s) => s.utf8 || '').join('').trim();
+        const lines = rawText.split(/\n+/).map((x) => stripNonSpeechMarker(x.trim())).filter(Boolean);
+        const text = stripNonSpeechMarker(rawText.replace(/\n/g, ' ').trim());
+        if (text) segs.push({
+          start: ev.tStartMs / 1000,
+          end: (ev.tStartMs + ev.dDurationMs) / 1000,
+          text,
+          lines,
+        });
       }
       return segs;
     } catch (e) { return []; }
@@ -768,12 +775,42 @@ function parseTimedText(body) {
     for (const node of doc.querySelectorAll('text')) {
       const start = parseFloat(node.getAttribute('start'));
       const dur = parseFloat(node.getAttribute('dur') || '0');
-      const text = stripNonSpeechMarker((node.textContent || '').replace(/&#39;/g,"'").replace(/&quot;/g,'"')
-        .replace(/&amp;/g,'&').replace(/\n/g,' ').trim());
-      if (text && !isNaN(start)) segs.push({ start, end: start + dur, text });
+      const rawText = (node.textContent || '').replace(/&#39;/g,"'").replace(/&quot;/g,'"')
+        .replace(/&amp;/g,'&').trim();
+      const lines = rawText.split(/\n+/).map((x) => stripNonSpeechMarker(x.trim())).filter(Boolean);
+      const text = stripNonSpeechMarker(rawText.replace(/\n/g, ' ').trim());
+      if (text && !isNaN(start)) segs.push({ start, end: start + dur, text, lines });
     }
   } catch (e) {}
   return segs;
+}
+
+function cueLines(seg) {
+  const lines = Array.isArray(seg?.lines) && seg.lines.length
+    ? seg.lines
+    : String(seg?.text || '').split(/\n+/);
+  return lines.map((x) => String(x || '').trim()).filter(Boolean);
+}
+
+function isCueLineExpansion(prev, seg) {
+  const prevLines = cueLines(prev);
+  const segLines = cueLines(seg);
+  if (!prevLines.length || !segLines.length) return false;
+  if (segLines.length < prevLines.length) return false;
+  let i = 0;
+  while (i < prevLines.length && i < segLines.length) {
+    const a = prevLines[i];
+    const b = segLines[i];
+    if (a === b) {
+      i++;
+      continue;
+    }
+    if (i === prevLines.length - 1 && b.startsWith(a) && b.length > a.length) {
+      return true;
+    }
+    return false;
+  }
+  return segLines.length > prevLines.length || seg.text.startsWith(prev.text);
 }
 
 // 相邻字幕 cue 在换行时经常在边界留下 1～几个字重叠（如「随着天」+「天蝎座」→
@@ -813,11 +850,11 @@ function dedupRollingCaptions(segments) {
           prev.end = Math.max(prev.end, seg.end);
           continue;   // 完全相同的紧邻重复 cue：合并时间窗，不重复保留
         }
-        if (seg.text.startsWith(prev.text) && seg.text.length > prev.text.length) {
+        if (isCueLineExpansion(prev, seg)) {
           out[out.length - 1] = { ...seg, start: prev.start };  // 后一条是更完整的渐进版本
           continue;
         }
-        if (prev.text.startsWith(seg.text)) {
+        if (isCueLineExpansion(seg, prev) || prev.text.startsWith(seg.text)) {
           continue;   // 这一条是前一条的截断残留，跳过
         }
         // 换行滚动时常见「前条尾字 = 后条首字」的部分重叠（非整句前缀），合并去重，
