@@ -2028,6 +2028,21 @@ async function requestSynthAround(sess, t) {
   }
 }
 
+function rememberMissedRealtimeSegment(sess, seg, reason = 'not_ready') {
+  if (!sess || !seg) return;
+  sess._missedRealtimeSegments = sess._missedRealtimeSegments || new Map();
+  const key = _segKey(seg);
+  if (!sess._missedRealtimeSegments.has(key)) {
+    sess._missedRealtimeSegments.set(key, {
+      start: seg.start,
+      end: seg.end,
+      text: seg.text,
+      firstSeenAt: Date.now(),
+      reason,
+    });
+  }
+}
+
 // 当前时间 t 处是否已有"就绪(已合成带音频)"的配音段
 function _segReadyAt(sess, t) {
   return sess.dubSegments.some((s) => {
@@ -2159,6 +2174,17 @@ function maybeBufferForSynthesis(sess, t) {
 
   // 该句还没合成 → 先催合成
   requestSynthAround(sess, t);
+  rememberMissedRealtimeSegment(sess, expected, 'playhead_passed_before_audio_ready');
+
+  if (sess._buffering) {
+    recordDiagnostic(sess, 'realtime_buffer_released_to_keep_video_moving', {
+      currentTime: +(t || 0).toFixed(3),
+      missingStart: +(expected.start || 0).toFixed(3),
+      maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
+    });
+    unbuffer();
+    return false;
+  }
 
   // 如果当前位置这一句暂时没拿到，但前方已经有可用缓存，继续往前走。
   // 这比把整条视频暂停住更安全：缺句会继续被 requestSynthAround 补救，而录屏
@@ -2172,6 +2198,23 @@ function maybeBufferForSynthesis(sess, t) {
         maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
       });
       console.warn('[配音插件] 当前句未就绪，但前方已有缓存，继续播放并后台补救');
+    }
+    return false;
+  }
+
+  // 实时配音最高优先级：视频不停。即使当前一两句还没及时合成，也先记录漏句、
+  // 继续播放，后面由优先合成/收尾补漏补回缓存，供用户重看或导出时使用。
+  // 只有启动阶段首批还没就绪时，外层 beginDubbing/onFirstChunkReady 仍会负责等待。
+  if (!sess._buffering) {
+    sess._synthMiss = 0;
+    if (Date.now() - (sess._lastNoPauseMissingLogAt || 0) > 10000) {
+      sess._lastNoPauseMissingLogAt = Date.now();
+      recordDiagnostic(sess, 'realtime_missing_sentence_continue_without_pause', {
+        currentTime: +(t || 0).toFixed(3),
+        missingStart: +(expected.start || 0).toFixed(3),
+        maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
+      });
+      console.warn('[配音插件] 当前句未及时配音，实时播放继续，稍后补齐缓存');
     }
     return false;
   }
@@ -3193,7 +3236,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
     const btn = document.getElementById('dub-ext-btn');
     if (btn) {
       btn.textContent = `🎧待补${finalMissing.length}句`;
-      btn.title = '播放到缺失位置时会自动暂停、补齐并恢复';
+      btn.title = '播放到缺失位置时会继续往前走，并在后台补齐缓存';
     }
     requestSynthAround(sess, sess.video.currentTime);
     return;
@@ -3237,7 +3280,7 @@ function pauseForTranslateFailure(sess, failedStarts) {
 // 菜单更适合所有输入设备），只重新尝试"应该有但目前还没拿到音频"的那些句子，
 // 补回 sess.dubSegments，不影响已经在播的部分。复用收尾补漏同一套逐句比对逻辑，
 // 单独抽出来供手动触发。
-async function repairDubbing(sess, btn, { resumeAfter = false } = {}) {
+async function repairDubbing(sess, btn, { resumeAfter = false, silent = false } = {}) {
   if (!sess.started || sess._readMode || !sess._allSegments?.length) return;
   // 防重入：看门狗自动补救和用户手动点"补救并恢复"可能撞在同一时间，两份补救
   // 并发跑会对同一批缺失句子重复发请求。带2分钟兜底超时——万一上一次补救因为
@@ -3267,14 +3310,16 @@ async function repairDubbing(sess, btn, { resumeAfter = false } = {}) {
   };
 
   if (!missing.length) {
-    showBufferIndicator('🔧 没有发现缺失的句子', sess.video);
-    setTimeout(hideBufferIndicator, 2000);
+    if (!silent) {
+      showBufferIndicator('🔧 没有发现缺失的句子', sess.video);
+      setTimeout(hideBufferIndicator, 2000);
+    }
     finishResume();
     sess._repairing = false;
     return;
   }
   console.log(`[配音插件] 手动补救：发现 ${missing.length} 句缺失，重新尝试合成`);
-  showBufferIndicator(`🔧 正在补救 ${missing.length} 句缺失的配音…`, sess.video);
+  if (!silent) showBufferIndicator(`🔧 正在补救 ${missing.length} 句缺失的配音…`, sess.video);
 
   // 之前这里是把全部缺失句子（哪怕几百句）一次性塞进一个请求发出去，跟长视频走正常
   // 配音流程时用的分批节奏（processDubbingChunked 的 CHUNK_SIZES）完全不一样。
@@ -4379,11 +4424,16 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     sess._onEnded = () => {
       clearTimeout(sess._endFinalizeTimer);
       const deadline = Date.now() + 30000;
-      const waitForLastVoice = () => {
+      const waitForLastVoice = async () => {
         if (sess.curAudio && !sess.curAudio.ended && Date.now() < deadline) {
           console.log('[配音插件] 视频画面已结束，等待最后一句配音说完后再停止录制');
           sess._endFinalizeTimer = setTimeout(waitForLastVoice, 500);
           return;
+        }
+        try {
+          await repairDubbing(sess, btn, { resumeAfter: false, silent: true });
+        } catch (e) {
+          console.warn('[配音插件] 视频结束后补漏失败，仍继续结束会话', e?.message || e);
         }
         sess._endFinalizeTimer = setTimeout(() => stopDubbing(sess, btn, false), 300);
       };

@@ -177,6 +177,28 @@ async function _hasCompleteLocalAudio(videoId, segments) {
   }
 }
 
+async function _missingLocalAudioSegments(videoId, segments) {
+  if (!Array.isArray(segments) || !segments.length) return [];
+  try {
+    const db = await _openLocalDubDB();
+    const tx = db.transaction('segments', 'readonly');
+    const store = tx.objectStore('segments');
+    const missing = [];
+    await Promise.all(segments.map((seg) => new Promise((resolve) => {
+      const req = store.get(_localDubKey(videoId, seg));
+      req.onsuccess = () => {
+        if (!req.result?.audio_b64) missing.push(seg);
+        resolve();
+      };
+      req.onerror = () => { missing.push(seg); resolve(); };
+    })));
+    db.close();
+    return missing.sort((a, b) => (a.start || 0) - (b.start || 0));
+  } catch (_) {
+    return segments.slice();
+  }
+}
+
 async function _serverHasEnoughDubSegments(videoId, expectedTotal) {
   if (!expectedTotal) return false;
   try {
@@ -410,14 +432,16 @@ async function processOne(videoId, errObj, onProgress) {
     // Do not infer completion from a rough server file count. Completion is
     // declared only after every requested key has been persisted to IndexedDB.
 
-    // 分批配音：每批失败只重试这一批，不连累已经做完的部分；服务器按时间戳+
-    // 音色缓存每一段TTS，重发已完成批次只会快速命中缓存，不会重复合成/重复计费。
+    // 分批配音：第一轮以"往前走"为最高优先级。某一批网络差/429/超时，
+    // 不让它卡住整个长视频；先记录失败批次，继续后面的批次，最后再集中补漏。
+    let completedCount = 0;
     for (let i = 0; i < cap.segments.length; i += DUB_CHUNK_SIZE) {
       if (await isBackgroundVideoCancelled(videoId)) return 'cancelled';
       const batch = cap.segments.slice(i, i + DUB_CHUNK_SIZE);
       const batchNo = Math.floor(i / DUB_CHUNK_SIZE) + 1;
       let ok = false, lastErr = null;
-      for (let attempt = 0; attempt <= CHUNK_RETRY; attempt++) {
+      const firstPassRetry = Math.min(CHUNK_RETRY, 2);
+      for (let attempt = 0; attempt <= firstPassRetry; attempt++) {
         if (await isBackgroundVideoCancelled(videoId)) return 'cancelled';
         try {
           await dubChunk(videoId, batch, options);
@@ -429,25 +453,69 @@ async function processOne(videoId, errObj, onProgress) {
           const recoverable = e?.status === 429 || e?.status >= 500
             || e?.name === 'AbortError' || !e?.status;
           if (!recoverable) break;
-          if (attempt < CHUNK_RETRY) {
-            // 429/断网采用上限60秒的退避。等待期间任务仍是processing，
-            // 浏览器重启后看门狗会从同一视频继续，已写入IndexedDB的批次不会丢。
+          if (attempt < firstPassRetry) {
+            // 第一轮只短重试，不在某一批上等待几小时；后面还有补漏阶段。
             const delay = Math.min(60000, 3000 * Math.pow(1.35, attempt));
             if (!await waitBackgroundRetry(videoId, delay)) return 'cancelled';
           }
         }
       }
       if (await isBackgroundVideoCancelled(videoId)) return 'cancelled';
-      if (!ok) throw new Error(`第${batchNo}批合成失败：${lastErr?.message || '未知错误'}`);
+      if (!ok) {
+        console.warn(`[后台配音] ${videoId} 第${batchNo}批暂时跳过，继续后面的批次，最后补漏：${lastErr?.message || '未知错误'}`);
+        await updateSharedBackgroundJob(videoId, {
+          status: 'processing', done: completedCount,
+          total: totalSegs, title: options.title || videoId,
+          error: `暂时跳过第${batchNo}批，继续后面的批次，最后补漏`,
+          voices: options.voices || [],
+          verified: false,
+        });
+        continue;
+      }
+      completedCount += batch.length;
       if (onProgress) {
-        try { await onProgress(Math.min(i + batch.length, totalSegs), totalSegs); } catch (_) {}
+        try { await onProgress(Math.min(completedCount, totalSegs), totalSegs); } catch (_) {}
       }
       await updateSharedBackgroundJob(videoId, {
-        status: 'processing', done: Math.min(i + batch.length, totalSegs),
+        status: 'processing', done: Math.min(completedCount, totalSegs),
         total: totalSegs, title: options.title || videoId, error: '',
         voices: options.voices || [],
         verified: false,
       });
+    }
+
+    let missing = await _missingLocalAudioSegments(videoId, cap.segments);
+    if (missing.length) {
+      console.warn(`[后台配音] 第一轮完成，仍缺 ${missing.length} 句，开始补漏`);
+    }
+    for (let round = 0; missing.length && round < 6; round++) {
+      if (await isBackgroundVideoCancelled(videoId)) return 'cancelled';
+      const retryList = missing.slice();
+      for (let i = 0; i < retryList.length; i += DUB_CHUNK_SIZE) {
+        if (await isBackgroundVideoCancelled(videoId)) return 'cancelled';
+        const batch = retryList.slice(i, i + DUB_CHUNK_SIZE);
+        try {
+          await dubChunk(videoId, batch, options);
+        } catch (e) {
+          console.warn(`[后台配音] 补漏第${round + 1}轮失败一批：${e.message}`);
+        }
+        const nowMissing = await _missingLocalAudioSegments(videoId, cap.segments);
+        const doneNow = Math.max(0, totalSegs - nowMissing.length);
+        if (onProgress) {
+          try { await onProgress(doneNow, totalSegs); } catch (_) {}
+        }
+        await updateSharedBackgroundJob(videoId, {
+          status: 'processing', done: doneNow, total: totalSegs,
+          title: options.title || videoId,
+          error: nowMissing.length ? `正在补漏 ${nowMissing.length} 句` : '',
+          voices: options.voices || [], verified: false,
+        });
+      }
+      missing = await _missingLocalAudioSegments(videoId, cap.segments);
+      if (missing.length) await waitBackgroundRetry(videoId, Math.min(60000, 5000 * (round + 1)));
+    }
+    if (missing.length) {
+      throw new Error(`后台配音未完整：仍缺 ${missing.length} 句，暂不开放下载`);
     }
 
     console.log('[后台配音] ✓ ' + videoId + ': 配音完成');
