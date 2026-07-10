@@ -2391,8 +2391,15 @@ function playNextDue(sess, t) {
   // 紧挨着出现，隔几句也会有（滚动字幕去重在解析阶段没抓干净）。改成跟"最近几句"的
   // 历史记录比，而不是只看上一句，但仍然只在时间足够近（12秒内）才判定重复，相隔较远的
   // 真实重复台词（如歌词副歌）不受影响。
-  if (best.text.length >= 4 && sess._recentSpoken) {
-    const dup = sess._recentSpoken.find((r) => r.text === best.text && (best.start - r.end) < 12);
+  if (best.text.length >= 6 && sess._recentSpoken) {
+    const dup = sess._recentSpoken.find((r) => {
+      if (!r || r.text !== best.text) return false;
+      if (r.videoId && sess.videoId && r.videoId !== sess.videoId) return false;
+      if (r.seekEpoch != null && sess._seekEpoch != null && r.seekEpoch !== sess._seekEpoch) return false;
+      const gap = best.start - r.end;
+      if (gap < 0 || gap > 4) return false;
+      return Math.abs((r.start || 0) - (best.start || 0)) < 1.2;
+    });
     if (dup) {
       console.warn('[配音插件] 检测到近期重复段，跳过朗读：', best.start.toFixed(1) + 's', best.text.slice(0, 20));
       best.played = true;
@@ -2458,7 +2465,13 @@ function playNextDue(sess, t) {
     // 记录"最近念过的几句"，供下一次 playNextDue 的重复检测使用——保留最近6句，
     // 不只是"刚念完那一句"，这样隔几句出现的残留重复也能被挡住（见上面的检测逻辑）。
     if (!sess._recentSpoken) sess._recentSpoken = [];
-    sess._recentSpoken.push({ text: best.text, end: best.start + (best.tts_duration || best.duration || 0) });
+    sess._recentSpoken.push({
+      text: best.text,
+      start: best.start,
+      end: best.start + (best.tts_duration || best.duration || 0),
+      videoId: sess.videoId,
+      seekEpoch: sess._seekEpoch || 0,
+    });
     if (sess._recentSpoken.length > 6) sess._recentSpoken.shift();
     // 跟随音频进度逐句刷新字幕（视频放慢时 video 的 timeupdate 较稀疏，靠音频自身的更稳）
     audio.addEventListener('timeupdate', () => { if (sess.curAudio === audio) updateSubtitle(sess); });
@@ -4603,6 +4616,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     video.playbackRate = sess._readMode ? (sess._readVideoRate || 1.0) : 1.0;
     sess._rateLog = [];   // 每次fresh start都从头记变速日志，不跨session累积
     sess._subtitleLog = [];
+    sess._recentSpoken = [];
     // 注意：sess._recordStartWallClock 不在这里清空/重置——录音（如果勾了自动导出）
     // 已经在点击配音/朗读按钮那一刻启动（见 startRecordingOnClick），这里再清空会让
     // markPlaybackStart 之后重新赋一个新值，跟录音文件的真实起点对不上，导出的字幕/
