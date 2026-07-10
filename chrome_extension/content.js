@@ -1954,7 +1954,7 @@ async function requestSynthAround(sess, t) {
     .filter((s) => (s.end || s.start) >= t - 0.5)            // 当前位置及之后
     .filter((s) => !have.has(_segKey(s)) && !sess._synthInFlight.has(_segKey(s)))
     .sort((a, b) => Math.abs(a.start - t) - Math.abs(b.start - t))  // 离 t 最近优先
-    .slice(0, 8);
+    .slice(0, getDubLeadSeconds(sess, t) < 120 ? 12 : 8);
   if (!pending.length) return;
   const keys = pending.map(_segKey);
   keys.forEach((k) => sess._synthInFlight.add(k));
@@ -2017,12 +2017,17 @@ async function requestSynthAround(sess, t) {
         error: e?.message || String(e || ''),
       });
     }
-    const delay = Math.min(30000, 3000 * sess._priorityRetryCount);
+    const delay = getPriorityRetryDelayMs(sess, t);
     clearTimeout(sess._priorityRetryTimer);
     sess._priorityRetryTimer = setTimeout(() => {
       if (sess.started) requestSynthAround(sess, sess.video.currentTime);
     }, delay);
-    showBufferIndicator(`🎧 当前句配音暂时失败，${Math.round(delay / 1000)}秒后自动重试…`, sess.video);
+    const lead = getDubLeadSeconds(sess, t);
+    if (lead < 90) {
+      showBufferIndicator(`🎧 当前句配音暂时失败，${(delay / 1000).toFixed(delay < 1000 ? 1 : 0)}秒后自动重试…`, sess.video);
+    } else {
+      console.warn(`[配音插件] 当前句配音暂时失败，库存仍有 ${Math.round(lead)} 秒，静默重试`);
+    }
   } finally {
     keys.forEach((k) => sess._synthInFlight.delete(k));
   }
@@ -2062,6 +2067,20 @@ function _hasForwardDubCache(sess, t, windowSec = 45) {
   });
 }
 
+function getDubLeadSeconds(sess, t = null) {
+  const now = t == null ? Number(sess?.video?.currentTime || 0) : Number(t || 0);
+  return Math.max(0, Number(sess?._maxSynthedTime || 0) - now);
+}
+
+function getPriorityRetryDelayMs(sess, t = null) {
+  const lead = getDubLeadSeconds(sess, t);
+  const tries = sess?._priorityRetryCount || 1;
+  if (lead < 30) return Math.min(2500, 800 + tries * 400);
+  if (lead < 90) return Math.min(4000, 1200 + tries * 600);
+  if (lead < 5 * 60) return Math.min(7000, 2000 + tries * 900);
+  return Math.min(12000, 3000 + tries * 1200);
+}
+
 const LOCAL_CACHE_LOW_WATER_SECONDS = 10 * 60;
 const LOCAL_CACHE_TARGET_SECONDS = 20 * 60;
 
@@ -2070,7 +2089,8 @@ function _ensureLocalCacheLead(sess, t) {
   const lead = (sess._maxSynthedTime || 0) - t;
   if (lead >= LOCAL_CACHE_LOW_WATER_SECONDS) return;
   if (sess._localCacheLeadLoading) return;
-  if (Date.now() - (sess._lastLocalCacheLeadLoadAt || 0) < 2500) return;
+  const minGapMs = lead < 60 ? 800 : (lead < 3 * 60 ? 1500 : 2500);
+  if (Date.now() - (sess._lastLocalCacheLeadLoadAt || 0) < minGapMs) return;
   sess._lastLocalCacheLeadLoadAt = Date.now();
   sess._localCacheLeadLoading = true;
 
@@ -2085,7 +2105,7 @@ function _ensureLocalCacheLead(sess, t) {
           const end = Math.max(s.end || s.start, s.start + 0.5);
           return end >= from && s.start <= to;
         })
-        .slice(0, 260);
+        .slice(0, lead < 60 ? 420 : 260);
       if (!candidates.length) return;
 
       const requested = applySessionVoice(sess, candidates);
