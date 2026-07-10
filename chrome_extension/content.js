@@ -2037,6 +2037,16 @@ function _segReadyAt(sess, t) {
     (s) => (s.audio_url || s.web_speech) && s.start > t && s.start <= t + 4);
 }
 
+function _hasForwardDubCache(sess, t, windowSec = 45) {
+  const end = t + windowSec;
+  if (sess._maxSynthedTime && sess._maxSynthedTime >= t + 0.5) return true;
+  return !!sess.dubSegments?.some((s) => {
+    if (!s.audio_url && !s.web_speech) return false;
+    const segEnd = s.start + (s.tts_duration || s.duration || 0);
+    return segEnd >= t - 0.5 && s.start <= end;
+  });
+}
+
 // 位置感知缓冲：只看"当前位置该有的句子是否已合成"，而非全局顺序前沿。
 // 这样 seek 到任意位置都能就地等该位置合成，不必等顺序合成爬过来。
 function maybeBufferForSynthesis(sess, t) {
@@ -2048,6 +2058,12 @@ function maybeBufferForSynthesis(sess, t) {
       try { sess.video.play().catch(() => {}); } catch (_) {}
     }
   };
+  // 快速路径：只要合成前沿/可播缓存已经覆盖或明显领先当前时间，就不因为某个
+  // 边界句短暂未命中而暂停视频。长视频几千段字幕时，这也是避免每个 timeupdate
+  // 都全量扫描、最后二十分钟主线程越来越卡的关键。
+  if (sess._maxSynthedTime && sess._maxSynthedTime >= t + 0.5) {
+    unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false;
+  }
   // 先判断当前位置是否本来就有字幕/配音。即使之前曾标记“全部完成”，当前位置
   // 缺少音频也必须重新打开补合成状态，不能因为_synthDone而直接放行空播。
   const expected = sess._allSegments && sess._allSegments.find((s) => {
@@ -2075,6 +2091,22 @@ function maybeBufferForSynthesis(sess, t) {
 
   // 该句还没合成 → 先催合成
   requestSynthAround(sess, t);
+
+  // 如果当前位置这一句暂时没拿到，但前方已经有可用缓存，继续往前走。
+  // 这比把整条视频暂停住更安全：缺句会继续被 requestSynthAround 补救，而录屏
+  // 不会因为一个短暂缺口直接废掉。真正没有缓存可用时，下面才进入暂停等待。
+  if (!sess._buffering && _hasForwardDubCache(sess, t, 45)) {
+    sess._synthMiss = 0;
+    if (Date.now() - (sess._lastForwardCacheSkipLogAt || 0) > 10000) {
+      sess._lastForwardCacheSkipLogAt = Date.now();
+      recordDiagnostic(sess, 'missing_current_sentence_but_forward_cache_available', {
+        currentTime: +(t || 0).toFixed(3),
+        maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
+      });
+      console.warn('[配音插件] 当前句未就绪，但前方已有缓存，继续播放并后台补救');
+    }
+    return false;
+  }
 
   // 宽限：非常短暂的缺口（约 1 秒内）让视频继续播，能自己缓过来就不暂停。
   // 只有连续 SYNTH_GRACE_TICKS 次仍没就绪、且当前没在缓冲中，才真正暂停。
@@ -2705,6 +2737,17 @@ async function waitForDubServiceRecovery(sess, videoId, lastError) {
   }
   if (confirmFailures < 3 || !sess.started || sess.videoId !== videoId) return false;
 
+  if (_hasForwardDubCache(sess, sess.video?.currentTime || 0, 90)) {
+    recordDiagnostic(sess, 'network_failure_ignored_because_forward_cache_exists', {
+      error: lastError || '',
+      currentTime: +(sess.video?.currentTime || 0).toFixed(3),
+      maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
+    });
+    hideBufferIndicator();
+    console.warn('[配音插件] 服务短暂不可用，但前方已有配音缓存，不暂停视频');
+    return true;
+  }
+
   await pauseForNetworkRecovery(sess);
   let consecutive = 0;
   let attempt = 0;
@@ -2798,7 +2841,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
   // 小批量节奏不变，那条路径不存在"按批次重复开销"的问题，没必要跟着改。
   // 长视频只合成播放点之后这段窗口。无限制地一次生成3小时以上全部音频会让浏览器
   // 同时持有数千段Base64并让服务器堆积大量进度对象，是旧机器静默断配音的主因。
-  const SYNTH_AHEAD_SECONDS = 10 * 60;
+  const SYNTH_AHEAD_SECONDS = 20 * 60;
   let firstDone = false;
   console.log('[配音插件] 开始配音流程，字幕总数:', rawSegments.length, 'upcoming:', upcoming.length, 'past:', past.length);
 
