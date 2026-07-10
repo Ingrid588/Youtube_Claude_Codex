@@ -2256,6 +2256,79 @@ async function requestSynthAround(sess, t) {
   }
 }
 
+function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
+  if (!sess?.started || !seg || !sess.videoId || sess._readMode) return;
+  if (_currentSegReadyAt(sess, t)) return;
+  const key = _segKey(seg);
+  sess._realtimeCurrentRepair = sess._realtimeCurrentRepair || new Map();
+  const state = sess._realtimeCurrentRepair.get(key) || { tries: 0, inFlight: false, lastAt: 0 };
+  if (state.inFlight) return;
+  const now = Date.now();
+  const early = Number(t || 0) < 3 * 60;
+  const minGap = early ? Math.min(1200, 250 + state.tries * 250) : getPriorityRetryDelayMs(sess, t);
+  if (now - state.lastAt < minGap) return;
+
+  state.inFlight = true;
+  state.lastAt = now;
+  state.tries += 1;
+  sess._realtimeCurrentRepair.set(key, state);
+  recordDiagnostic(sess, 'realtime_current_sentence_repair_start', {
+    currentTime: +(t || 0).toFixed(3),
+    missingStart: +(seg.start || 0).toFixed(3),
+    tries: state.tries,
+    early,
+  });
+
+  (async () => {
+    try {
+      const requested = applySessionVoice(sess, [{ start: seg.start, end: seg.end, text: seg.text }]);
+      const got = await sendChunk(sess.videoId, sess.title, requested, sess._baseRatePct || 0,
+        false, null, sess._subtitleMode === 'gemini');
+      if (!sess.started || !got?.length) return;
+      const have = new Set((sess.dubSegments || []).map(_segKey));
+      let added = 0;
+      for (const item of got) {
+        const itemKey = _segKey(item);
+        if (have.has(itemKey)) continue;
+        sess.dubSegments.push({ ...item, played: false });
+        have.add(itemKey);
+        added++;
+      }
+      if (added) {
+        sess.dubSegments.sort((a, b) => a.start - b.start);
+        const frontier = Math.max(...got.map((s) => s.start + (s.tts_duration || s.duration || 0)));
+        sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
+        if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
+        recordDiagnostic(sess, 'realtime_current_sentence_repair_done', {
+          currentTime: +(sess.video?.currentTime || 0).toFixed(3),
+          missingStart: +(seg.start || 0).toFixed(3),
+          added,
+          tries: state.tries,
+        });
+        playNextDue(sess, sess.video.currentTime);
+      }
+    } catch (e) {
+      recordDiagnostic(sess, 'realtime_current_sentence_repair_failed', {
+        currentTime: +(sess.video?.currentTime || 0).toFixed(3),
+        missingStart: +(seg.start || 0).toFixed(3),
+        tries: state.tries,
+        error: e?.message || String(e || ''),
+      });
+      console.warn('[配音插件] 当前句即时补救失败，继续短间隔重试', e?.message || e);
+    } finally {
+      state.inFlight = false;
+      state.lastAt = Date.now();
+      sess._realtimeCurrentRepair.set(key, state);
+      if (sess.started && !_currentSegReadyAt(sess, sess.video.currentTime)
+          && Math.abs((sess.video.currentTime || 0) - (seg.start || 0)) < (early ? 8 : 4)) {
+        const delay = early ? Math.min(1200, 250 + state.tries * 250) : getPriorityRetryDelayMs(sess, sess.video.currentTime);
+        clearTimeout(state.timer);
+        state.timer = setTimeout(() => requestRealtimeCurrentSentenceRepair(sess, seg, sess.video.currentTime), delay);
+      }
+    }
+  })();
+}
+
 function rememberMissedRealtimeSegment(sess, seg, reason = 'not_ready') {
   if (!sess || !seg) return;
   sess._missedRealtimeSegments = sess._missedRealtimeSegments || new Map();
@@ -2280,6 +2353,13 @@ function _segReadyAt(sess, t) {
     (s) => (s.audio_url || s.web_speech) && s.start > t && s.start <= t + 4);
 }
 
+function _currentSegReadyAt(sess, t) {
+  return sess.dubSegments.some((s) => {
+    const segEnd = s.start + (s.tts_duration || s.duration || 0);
+    return (s.audio_url || s.web_speech) && s.start <= t + 0.5 && segEnd >= t - 0.5;
+  });
+}
+
 function _hasForwardDubCache(sess, t, windowSec = 45) {
   const end = t + windowSec;
   if (sess._maxSynthedTime && sess._maxSynthedTime >= t + 0.5) return true;
@@ -2298,6 +2378,8 @@ function getDubLeadSeconds(sess, t = null) {
 function getPriorityRetryDelayMs(sess, t = null) {
   const lead = getDubLeadSeconds(sess, t);
   const tries = sess?._priorityRetryCount || 1;
+  const now = t == null ? Number(sess?.video?.currentTime || 0) : Number(t || 0);
+  if (now < 3 * 60) return Math.min(1200, 250 + tries * 250);
   if (lead < 30) return Math.min(2500, 800 + tries * 400);
   if (lead < 90) return Math.min(4000, 1200 + tries * 600);
   if (lead < 5 * 60) return Math.min(7000, 2000 + tries * 900);
@@ -2387,9 +2469,6 @@ function maybeBufferForSynthesis(sess, t) {
   // 快速路径：只要合成前沿/可播缓存已经覆盖或明显领先当前时间，就不因为某个
   // 边界句短暂未命中而暂停视频。长视频几千段字幕时，这也是避免每个 timeupdate
   // 都全量扫描、最后二十分钟主线程越来越卡的关键。
-  if (sess._maxSynthedTime && sess._maxSynthedTime >= t + 0.5) {
-    unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false;
-  }
   // 先判断当前位置是否本来就有字幕/配音。即使之前曾标记“全部完成”，当前位置
   // 缺少音频也必须重新打开补合成状态，不能因为_synthDone而直接放行空播。
   const expected = sess._allSegments && sess._allSegments.find((s) => {
@@ -2397,7 +2476,7 @@ function maybeBufferForSynthesis(sess, t) {
     return s.start <= t + 0.5 && segEnd >= t - 0.5;
   });
   if (!expected) { unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false; }
-  if (_segReadyAt(sess, t)) { unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false; }
+  if (_currentSegReadyAt(sess, t)) { unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false; }
   if (sess._synthDone) {
     sess._synthDone = false;
     sess._allDone = false;
@@ -2407,6 +2486,7 @@ function maybeBufferForSynthesis(sess, t) {
 
   // 合成前沿：已合成（带音频）的最远时间点。只要前沿已越过当前播放位置，
   // 就说明配音领先播放——绝不暂停、也绝不显示提示（用户要求：只有真需暂停才提示）。
+  requestRealtimeCurrentSentenceRepair(sess, expected, t);
   let frontier = 0;
   for (const s of sess.dubSegments) {
     if (!s.audio_url && !s.web_speech) continue;
