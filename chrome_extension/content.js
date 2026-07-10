@@ -4431,33 +4431,8 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       sampleDiarization(sess);
       playNextDue(sess, t);
       prefetchAhead(sess, t);
-      // 最后45秒提前检查所有尚未播放的尾部句子，而不只看“当前已经出声”的一句。
-      // 对某句而言，可用尾部画面时间=(视频总长-句子起点)/视频速度；必须至少等于
-      // 该句TTS时长。取所有尾句所需速度的最小值，并留5%余量，避免最后几个字被裁。
-      if (isFinite(video.duration) && video.duration - t < 45) {
-        let endRate = video.playbackRate || defaultVideoRate(sess);
-        const videoRemain = Math.max(0, video.duration - t);
-        if (sess.curAudio) {
-          const audioRemain = Math.max(0,
-            (sess.curAudio.duration - sess.curAudio.currentTime)
-            / (sess.curAudio.playbackRate || 1));
-          if (audioRemain > 0.1 && videoRemain > 0) {
-            endRate = Math.min(endRate, videoRemain / audioRemain);
-          }
-        }
-        for (const seg of sess.dubSegments) {
-          if (seg.played || seg.start < t - 0.5 || seg.start > video.duration) continue;
-          const voiceDuration = Math.max(0.05, seg.tts_duration || seg.duration || 0.05);
-          const tailWindow = Math.max(0.05, video.duration - seg.start);
-          endRate = Math.min(endRate, tailWindow / voiceDuration);
-        }
-        const safeEndRate = Math.max(0.25, Math.min(
-          defaultVideoRate(sess), endRate * 0.95));
-        if (safeEndRate < video.playbackRate - 0.01) {
-          setVideoRate(sess, safeEndRate);
-          sess._endSlowdownActive = true;
-        }
-      }
+      // 结尾不再主动减慢视频。若尾音略长于画面，就保持最后一帧，等待配音自然说完；
+      // 这样观感比明显慢放更自然，也更接近用户期望。
       // 字幕显示：自绘覆盖层（所有平台）
       if (sess._displaySegments) { updateSubtitle(sess); positionSubtitleEl(sess); }
     };
