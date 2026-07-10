@@ -2397,8 +2397,9 @@ function playNextDue(sess, t) {
       if (r.videoId && sess.videoId && r.videoId !== sess.videoId) return false;
       if (r.seekEpoch != null && sess._seekEpoch != null && r.seekEpoch !== sess._seekEpoch) return false;
       const gap = best.start - r.end;
-      if (gap < 0 || gap > 4) return false;
-      return Math.abs((r.start || 0) - (best.start || 0)) < 1.2;
+      if (gap < -0.6 || gap > 4) return false;
+      if ((best.start || 0) <= (r.start || 0)) return false;
+      return true;
     });
     if (dup) {
       console.warn('[配音插件] 检测到近期重复段，跳过朗读：', best.start.toFixed(1) + 's', best.text.slice(0, 20));
