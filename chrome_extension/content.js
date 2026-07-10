@@ -2721,6 +2721,12 @@ async function probeDubServiceHealth(timeoutMs = 10000) {
 // 短暂请求抖动、单个大批次超时或页面跨域问题都不能直接暂停。只有连续三次
 // 后台健康检查失败才进入暂停等待；恢复仍需连续两次成功，避免闪断。
 async function waitForDubServiceRecovery(sess, videoId, lastError) {
+  const errText = String(lastError || '');
+  if (/扩展已重新加载|刷新页面后重试|Extension context invalidated|context invalidated|disconnected/i.test(errText)) {
+    console.warn('[配音插件] 扩展上下文已失效，当前页面必须刷新后才能继续通信:', errText);
+    notifyExtensionContextInvalidated(sess);
+    return false;
+  }
   showBufferIndicator(
     `🌐 配音请求暂时失败，正在确认服务状态…${lastError ? `（${lastError}）` : ''}`,
     sess.video);
