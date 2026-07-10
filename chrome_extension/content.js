@@ -3605,6 +3605,15 @@ async function waitForActualVideoPlayback(video, maxWaitMs = 5000) {
   return false;
 }
 
+function isVideoOperational(video) {
+  if (!video) return false;
+  if (video.paused) return false;
+  if (video.readyState < 3) return false;
+  if (video.seeking) return false;
+  if (video.ended) return false;
+  return true;
+}
+
 async function detectSpeakerGender(video) {
   const AUTO_MALE_VOICE = 'zh-CN-YunxiNeural';
   const AUTO_FEMALE_VOICE = 'zh-CN-XiaoxiaoNeural';
@@ -4015,6 +4024,15 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     blockDubDuringAd(sess?.video, btn);
     return;
   }
+  const playbackReady = await waitForActualVideoPlayback(sess.video, 8000);
+  if (!playbackReady) {
+    if (btn) {
+      btn.textContent = sess._readMode ? '🔊等待播放' : '🎧等待播放';
+      btn.title = '视频尚未正常播放，暂不启动脚本';
+    }
+    sess.started = false;
+    return;
+  }
   await _settingsLoaded;   // 见上面定义处注释：避免设置还没读完就用默认女声发出第一批请求
   sess.started = true;
   sess._userPaused = false;
@@ -4085,10 +4103,6 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
   sess._autoVoice = null;
   if (sess._isPlaylistAutoContinue || sess._shouldAutoDetectVoice) {
     sess._shouldAutoDetectVoice = false;
-    const playbackReady = await waitForActualVideoPlayback(sess.video, 5000);
-    if (!playbackReady) {
-      console.warn('[配音插件] 视频尚未形成稳定播放，跳过取样并立即使用中文默认配音员');
-    }
     // 只快速检测一轮；识别失败立即使用默认配音员，绝不能阻塞配音。
     for (let round = 0; playbackReady && round < 1 && !sess._autoVoice; round++) {
       try {
@@ -4117,16 +4131,24 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     try { sess.video.pause(); } catch (_) {}
     showBufferIndicator(sess._readMode ? '🔊 朗读正在启动，请稍候…' : '🎧 配音正在启动，视频已暂停，请稍候…', sess.video);
   }
-  if (btn) { btn.textContent = sess._readMode ? '🔊取字幕…' : '🎧取字幕…'; btn.title = '正在获取字幕'; }
-  let rawSegments;
-  try {
-    rawSegments = await Promise.race([
-      getRawSegments(),
-      new Promise((_, reject) => setTimeout(
-        () => reject(new Error('字幕获取超过45秒，已停止等待')), 45000)),
-    ]);
-  } catch (e) {
-    return fail(`取字幕失败：${e?.message || '请求异常'}。请刷新视频页面后重试`);
+  let rawSegments = await getCachedSubs(videoId);
+  if (rawSegments?.length) {
+    console.log('[配音插件] 启动时命中本地字幕缓存，跳过重新取字幕');
+    captionsReadyForVideo(videoId, rawSegments);
+  } else if (btn) {
+    btn.textContent = sess._readMode ? '🔊取字幕…' : '🎧取字幕…';
+    btn.title = '正在获取字幕';
+  }
+  if (!rawSegments?.length) {
+    try {
+      rawSegments = await Promise.race([
+        getRawSegments(),
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error('字幕获取超过45秒，已停止等待')), 45000)),
+      ]);
+    } catch (e) {
+      return fail(`取字幕失败：${e?.message || '请求异常'}。请刷新视频页面后重试`);
+    }
   }
   if (!rawSegments || !rawSegments.length) {
     // 没拿到字幕，常见原因是请求令牌过期或被限流（见 fetchChineseFromPotUrl 注释，
@@ -4799,6 +4821,7 @@ if (IS_YOUTUBE) {
         const b = document.getElementById('dub-ext-btn') || document.getElementById('read-ext-btn');
         const video = document.querySelector('video');
         if (b && video) {
+          if (!isVideoOperational(video)) return;
           if (isYouTubeAdPlaying()) {
             if (b.dataset.backgroundDubState !== 'processing') {
               b.title = '广告播放中，等待正片开始后自动配音';
@@ -4809,8 +4832,7 @@ if (IS_YOUTUBE) {
           if (!sess || !sess.started) {
             _autoDubFired = true;
             b._autoContinuation = false;
-            console.log('[配音插件] 自动配音：当前视频播放器已就绪，触发中文字幕流程');
-            showBufferIndicator('🎧 自动配音已触发，正在等待当前视频字幕…', video);
+            console.log('[配音插件] 自动配音：视频已稳定播放，开始触发');
             b.click();
             // 触发时播放器数据可能仍在SPA切换。若这次没有真正进入配音，必须
             // 自动解除一次性锁，让下一轮重新触发；否则第一次抢跑失败后会永久沉默。
@@ -4936,6 +4958,8 @@ if (IS_YOUTUBE) {
   async function prefetchChineseCaptions() {
     // 朗读模式：不预取中文字幕（朗读读的是用户选中的原文字幕，配音那套完全不参与）
     if (dubMode === 'read') return;
+    const video = document.querySelector('video');
+    if (!isVideoOperational(video)) return;
     // 关键：同步上锁，必须在任何 await 之前，否则多次调用会在 await 间隙
     // 全部通过检查，导致 CC 被反复切换、字幕请求被放大十几倍触发限流。
     if (ytPrefetchStarted || ytInterceptedSegments?.length) return;
