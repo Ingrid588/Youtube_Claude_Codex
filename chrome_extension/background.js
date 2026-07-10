@@ -177,6 +177,22 @@ async function _hasCompleteLocalAudio(videoId, segments) {
   }
 }
 
+async function _serverHasEnoughDubSegments(videoId, expectedTotal) {
+  if (!expectedTotal) return false;
+  try {
+    const resp = await fetch(SERVER + '/dub_status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ video_ids: [videoId] }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    const count = Number(data?.status?.[videoId] || 0);
+    return resp.ok && count >= expectedTotal;
+  } catch (_) {
+    return false;
+  }
+}
+
 function loadJob() {
   return new Promise(r => chrome.storage.local.get({ [JOB_KEY]: null }, d => r(d[JOB_KEY])));
 }
@@ -333,8 +349,12 @@ async function processOne(videoId, errObj, onProgress) {
     // Completion is based on exact local cache keys, never on an approximate
     // server file count. This remains valid after a server restart/deployment.
     if (await _hasCompleteLocalAudio(videoId, options.captionSegments)) {
-      console.log(`[后台配音] ⏭ ${videoId} 浏览器本地音频逐句校验100%通过，跳过`);
-      return 'skipped';
+      const serverReady = await _serverHasEnoughDubSegments(videoId, options.captionSegments.length);
+      if (serverReady) {
+        console.log(`[后台配音] ⏭ ${videoId} 本地+服务器缓存均完整，跳过`);
+        return 'skipped';
+      }
+      console.log(`[后台配音] 本地缓存完整但服务器导出包不完整，继续补齐服务器缓存: ${videoId}`);
     }
 
     // 取字幕

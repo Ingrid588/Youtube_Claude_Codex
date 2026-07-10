@@ -26,7 +26,10 @@ import logging
 import subprocess
 import traceback
 import tempfile
+import io
+import zipfile
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 # 用 pythonw(无窗口) 启动时，子进程 yt-dlp/ffmpeg 会各自弹出黑色控制台窗口再消失，
 # 造成屏幕闪烁、甚至抢走键盘焦点。统一加这个标志让子进程不创建窗口。
@@ -1670,7 +1673,13 @@ def _list_seg_files(video_id):
     for fname in sorted(os.listdir(cache_dir)):
         if fname.startswith('seg_') and fname.endswith('.mp3'):
             try:
-                seg_files.append((int(fname[4:-4]), os.path.join(cache_dir, fname)))
+                # 实际文件名是 seg_<start_ms>_<voice>.mp3；旧逻辑只接受
+                # seg_<start_ms>.mp3，会把绝大多数后台配音片段漏掉，导致缓存列表、
+                # 进度校验和导出下载都不正确。
+                m = re.match(r'^seg_(\d+)(?:_.+)?\.mp3$', fname)
+                if not m:
+                    continue
+                seg_files.append((int(m.group(1)), os.path.join(cache_dir, fname)))
             except ValueError:
                 pass
     seg_files.sort(key=lambda x: x[0])
@@ -1765,6 +1774,145 @@ async def merged_audio_get(video_id: str):
         })
     except Exception as e:
         log.error(f'[合并音频GET] 异常: {e}\n{traceback.format_exc()}')
+        return JSONResponse(status_code=500, content={'error': str(e)})
+
+
+def _build_export_manifest(video_id, seg_files):
+    """构建后台配音导出包 manifest。
+
+    后台配音用于本地合成时，不能使用无间隙 merged.mp3；必须保留每个片段的
+    start/start_ms/file/duration，让本地脚本按原视频时间轴铺回并补静音。
+    """
+    cache_dir = dub9.get_cache_dir(video_id)
+    title = video_id
+    try:
+        with open(os.path.join(cache_dir, 'cache_meta.json'), encoding='utf-8') as f:
+            title = json.load(f).get('title') or video_id
+    except Exception:
+        pass
+
+    tts_cache = {}
+    try:
+        with open(os.path.join(cache_dir, 'tts_cache.json'), encoding='utf-8') as f:
+            tts_cache = json.load(f)
+    except Exception:
+        tts_cache = {}
+
+    segments = []
+    voices = set()
+    for idx, (start_ms, seg_path) in enumerate(seg_files, start=1):
+        fname = os.path.basename(seg_path)
+        m = re.match(r'^seg_(\d+)(?:_(.+))?\.mp3$', fname)
+        voice = (m.group(2) if m and m.group(2) else 'default')
+        voices.add(voice)
+        cached = tts_cache.get(seg_path) or {}
+        try:
+            duration = round(float(dub9.get_audio_duration(seg_path)), 3)
+        except Exception:
+            duration = 0.0
+        segments.append({
+            'index': idx,
+            'start': round(start_ms / 1000.0, 3),
+            'start_ms': start_ms,
+            'duration': duration,
+            'voice': voice,
+            'text': cached.get('text') or '',
+            'file': f'{idx:04d}.mp3',
+            'source_file': fname,
+        })
+
+    total_duration = 0.0
+    if segments:
+        last = segments[-1]
+        total_duration = float(last.get('start') or 0) + float(last.get('duration') or 0)
+    return {
+        'format': 'youtube-dub-background-package-v1',
+        'video_id': video_id,
+        'title': title,
+        'exported_at': datetime.now(timezone.utc).isoformat(),
+        'segment_count': len(segments),
+        'total_duration': round(total_duration, 3),
+        'voices': sorted(voices),
+        'merge_hint': (
+            '本包用于本地合成：把 segments/*.mp3 按 manifest.json 里的 start_ms 铺回'
+            '原视频时间轴，中间补静音；不要用无间隙 merged.mp3 直接替换音轨。'
+        ),
+        'segments': segments,
+    }
+
+
+def _manifest_to_srt(manifest):
+    def fmt(t):
+        ms = int(round(float(t or 0) * 1000))
+        h, ms = divmod(ms, 3600000)
+        m, ms = divmod(ms, 60000)
+        s, ms = divmod(ms, 1000)
+        return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
+
+    lines = []
+    idx = 1
+    for seg in manifest.get('segments') or []:
+        text = (seg.get('text') or '').strip()
+        if not text:
+            continue
+        start = float(seg.get('start') or 0)
+        end = start + float(seg.get('duration') or 0)
+        lines.extend([str(idx), f'{fmt(start)} --> {fmt(end)}', text, ''])
+        idx += 1
+    return '\n'.join(lines)
+
+
+_EXPORT_PACKAGE_README = """\
+后台配音包：{title}
+视频ID：{video_id}
+片段数：{segment_count}
+
+本包用于和本地下载的原视频合成。
+
+内容：
+- manifest.json：每个配音片段的 start/start_ms/duration/voice/text/file。
+- segments/*.mp3：逐句配音片段，文件名与 manifest.json 的 file 对应。
+- subtitle.srt：按配音片段生成的中文字幕参考。
+
+重要：
+后台配音不是实时播放录屏。实时播放可能会改变视频速度并产生 ratelog；
+后台包则按原视频时间轴合成：把每段 mp3 铺到 start_ms，中间补静音。
+因此不能把所有 mp3 无间隙合成一个 merged.mp3 后直接替换音轨，那样时间轴会错。
+"""
+
+
+@app.get("/export_package/{video_id}")
+async def export_package(video_id: str):
+    """导出完整后台配音包：manifest.json + subtitle.srt + segments/*.mp3。"""
+    try:
+        safe_id = re.sub(r'[^A-Za-z0-9_-]', '', str(video_id or ''))[:100]
+        if not safe_id:
+            return JSONResponse(status_code=400, content={'error': '无效 video_id'})
+
+        seg_files = [
+            (start, path) for start, path in _list_seg_files(safe_id)
+            if os.path.exists(path) and os.path.getsize(path) > 0
+        ]
+        if not seg_files:
+            return JSONResponse(status_code=404, content={'error': '没有可导出的配音片段'})
+
+        manifest = _build_export_manifest(safe_id, seg_files)
+        safe_title = dub9.sanitize_filename(manifest.get('title') or safe_id, max_len=120) or safe_id
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('manifest.json', json.dumps(manifest, ensure_ascii=False, indent=2))
+            zf.writestr('subtitle.srt', _manifest_to_srt(manifest))
+            zf.writestr('README.txt', _EXPORT_PACKAGE_README.format(**manifest))
+            for idx, (_, seg_path) in enumerate(seg_files, start=1):
+                zf.write(seg_path, f'segments/{idx:04d}.mp3')
+
+        filename = f'{safe_title}.zip'
+        return Response(content=buf.getvalue(), media_type='application/zip', headers={
+            'Content-Disposition': "attachment; filename*=UTF-8''" + quote(filename),
+        })
+    except Exception as e:
+        log.error(f'[导出配音包] 异常: {e}\n{traceback.format_exc()}')
         return JSONResponse(status_code=500, content={'error': str(e)})
 
 

@@ -54,7 +54,7 @@
     <button class="tab-btn" data-tab="collect">📺 内容收集</button>
     <button class="tab-btn" data-tab="search">🔍 搜索视频</button>
     <button class="tab-btn" data-tab="cache">💾 缓存管理</button>
-    <button class="tab-btn" data-tab="ready">🔔 配音就绪</button>
+    <button class="tab-btn" data-tab="ready">🔔 后台配音</button>
   </div>
 
   <!-- 实时配音标签页 -->
@@ -210,9 +210,9 @@
 
     <div class="row" style="margin-top:8px;">
       <button id="downloadDubPackage" style="width:100%;background:#4caf50;color:#fff;">
-        📦 下载当前视频完整配音包
+        📦 下载当前视频后台配音包
       </button>
-      <div class="hint">一次下载当前视频的完整配音音频（MP3），并导出本页已有的变速日志、SRT、ASS、诊断日志。</div>
+      <div class="hint">下载服务器上的后台配音包：manifest.json + segments/*.mp3 + subtitle.srt。用于和本地下载的原视频合成。</div>
       <div class="hint" id="dubPackageMsg"></div>
     </div>
 

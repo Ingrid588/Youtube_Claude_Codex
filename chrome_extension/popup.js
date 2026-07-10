@@ -576,7 +576,7 @@ function sanitizePackageBase(name, fallback) {
 
 document.getElementById('downloadDubPackage').addEventListener('click', async () => {
   const msg = document.getElementById('dubPackageMsg');
-  msg.textContent = '正在准备完整配音包…';
+  msg.textContent = '正在下载后台配音包…';
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id || !tab?.url) throw new Error('未找到当前视频页面');
@@ -584,37 +584,22 @@ document.getElementById('downloadDubPackage').addEventListener('click', async ()
     if (!videoId) throw new Error('当前页面不是可识别的视频页');
     const base = sanitizePackageBase(tab.title, `dubbing_${videoId}`);
 
-    const exportResult = await new Promise((resolve) => {
-      chrome.tabs.sendMessage(tab.id, { action: 'exportRateLog' }, (resp) => {
-        if (chrome.runtime.lastError) {
-          resolve({ ok: false, error: chrome.runtime.lastError.message });
-          return;
+    await new Promise((resolve, reject) => {
+      chrome.downloads.download({
+        url: `${SERVER}/export_package/${videoId}`,
+        filename: `dub_workspace/segments/${base}.zip`,
+        conflictAction: 'uniquify',
+      }, (downloadId) => {
+        if (chrome.runtime.lastError || downloadId === undefined) {
+          reject(new Error(chrome.runtime.lastError?.message || '下载启动失败'));
+        } else {
+          resolve(downloadId);
         }
-        resolve(resp || { ok: false, error: '导出日志失败' });
       });
     });
-
-    const audioResult = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({
-        type: 'downloadMergedAudio',
-        videoId,
-        filename: `${base}_dubbing.mp3`,
-        server: SERVER,
-      }, (resp) => {
-        resolve(resp || { ok: false, error: chrome.runtime.lastError?.message || 'MP3 下载失败' });
-      });
-    });
-
-    const parts = [];
-    if (audioResult?.ok) parts.push('MP3已开始下载');
-    else parts.push(`MP3失败：${audioResult?.error || '未知错误'}`);
-
-    if (exportResult?.ok) parts.push(`日志/字幕已导出（${exportResult.count}个会话）`);
-    else parts.push(`日志导出失败：${exportResult?.error || '当前页暂无可导出记录'}`);
-
-    msg.textContent = parts.join('；');
+    msg.textContent = '后台配音包已开始下载';
   } catch (e) {
-    msg.textContent = `完整配音包下载失败：${e.message || e}`;
+    msg.textContent = `后台配音包下载失败：${e.message || e}`;
   }
 });
 
@@ -811,10 +796,11 @@ function sanitizeFilename(name, videoId) {
   return cleaned || `dubbing_${videoId}`;
 }
 
-// 生成下载文件名：output/<播放列表名>/<原视频标题>.mp3（chrome 在默认下载夹下创建该路径）
-function dubFileName(videoId, folder, title) {
+// 生成后台配音包下载文件名：dub_workspace/segments/<播放列表名>/<原视频标题>.zip。
+// 这个 zip 包含 manifest.json + segments/*.mp3 + subtitle.srt，可和本地视频合成。
+function dubPackageFileName(videoId, folder, title) {
   const f = sanitizeFolder(folder);
-  return 'output/' + (f ? f + '/' : '') + sanitizeFilename(title, videoId) + '.mp3';
+  return 'dub_workspace/segments/' + (f ? f + '/' : '') + sanitizeFilename(title, videoId) + '.zip';
 }
 
 // 查询一批视频的配音状态：返回 {videoId: 分段数}（>0 即已配音）
@@ -834,13 +820,13 @@ async function getDubStatus(videoIds) {
   }
 }
 
-// 用 chrome.downloads 下载配音（关闭弹窗也不中断；支持子文件夹）。
+// 用 chrome.downloads 下载后台配音包（关闭弹窗也不中断；支持子文件夹）。
 // 返回 downloadId；视频未配音(404)时由下载管理器记为失败，调用方应先用 getDubStatus 过滤。
 window.downloadSingleDub = function(videoId, folder, title) {
   return new Promise((resolve, reject) => {
     chrome.downloads.download({
-      url: `${SERVER}/merged_audio/${videoId}`,
-      filename: dubFileName(videoId, folder, title),
+      url: `${SERVER}/export_package/${videoId}`,
+      filename: dubPackageFileName(videoId, folder, title),
       conflictAction: 'uniquify',
     }, (downloadId) => {
       if (chrome.runtime.lastError || downloadId === undefined) {
@@ -950,7 +936,7 @@ async function refreshCacheList() {
           </div>
           <span class="hint">${count} 个配音片段${sizeText}</span>
           <button class="js-cache-download" data-video-id="${item.videoId}"${folderAttr} data-title="${safeTitle}" style="width:100%;margin-top:4px;">
-            ${downloaded ? '✅ 已下载（可再次下载）' : '⬇ 下载配音音频'}
+            ${downloaded ? '✅ 已下载配音包（可再次下载）' : '📦 下载后台配音包'}
           </button>
         </div>`;
     }
