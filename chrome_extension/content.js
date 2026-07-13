@@ -3332,9 +3332,29 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
   // 反而意味着每碎片都要重新发一次请求、重新判断一次相关术语，效率更低。改用大得多的
   // 批量，让服务器一次拿到更完整的上下文。普通模式（已经是中文，不用翻译）维持原来的
   // 小批量节奏不变，那条路径不存在"按批次重复开销"的问题，没必要跟着改。
-  // 长视频只合成播放点之后这段窗口。无限制地一次生成3小时以上全部音频会让浏览器
-  // 同时持有数千段Base64并让服务器堆积大量进度对象，是旧机器静默断配音的主因。
-  const SYNTH_AHEAD_SECONDS = 20 * 60;
+  // 默认只保留约十分钟前瞻，避免用户刚打开视频就生产大量不会收看的音频。
+  // 但播放位置超过全片一半后，用户继续看完的概率很高；此时改为持续生成到结尾，
+  // 让长视频后段不再因为固定十分钟窗口而断粮。拖动到后半段也同样适用：此时
+  // 立即为用户实际要看的剩余部分铺好库存，而不会回头合成已跳过的前半段。
+  const SYNTH_AHEAD_SECONDS = 10 * 60;
+  const getSynthesisAheadSeconds = () => {
+    const duration = Number(video.duration || 0);
+    const current = Number(video.currentTime || 0);
+    if (!Number.isFinite(duration) || duration <= 0 || current < duration / 2) {
+      return SYNTH_AHEAD_SECONDS;
+    }
+    if (!sess._fullRemainderCaching) {
+      sess._fullRemainderCaching = true;
+      const remaining = Math.max(0, duration - current);
+      recordDiagnostic(sess, 'watched_half_switch_to_full_remainder_cache', {
+        currentTime: +current.toFixed(3),
+        duration: +duration.toFixed(3),
+        remaining: +remaining.toFixed(3),
+      });
+      console.log(`[配音插件] 已播放到视频后半段，缓存策略升级：持续生成剩余 ${formatHMS(remaining)} 配音`);
+    }
+    return Math.max(SYNTH_AHEAD_SECONDS, duration - current + 1);
+  };
   const STARTUP_PREROLL_SECONDS = 60;
   const STARTUP_PREROLL_MAX_SEGMENTS = 24;
   let firstDone = false;
@@ -3381,7 +3401,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
       const chunkStartIndex = idx;
       if (isPrimary) {
         while (idx < queue.length
-            && queue[idx].start > video.currentTime + SYNTH_AHEAD_SECONDS) {
+            && queue[idx].start > video.currentTime + getSynthesisAheadSeconds()) {
           if (!sess.started || sess.videoId !== videoId) return;
           sess._longVideoWaiting = true;
           await new Promise((resolve) => setTimeout(resolve, 3000));
