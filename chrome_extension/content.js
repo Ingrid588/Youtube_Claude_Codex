@@ -1592,6 +1592,49 @@ async function getAudio(sess, seg) {
   }
 }
 
+// 启动阶段不能只看服务器“已经合成”：长视频最前面的几句没有冗余时间，必须确认
+// 浏览器本机已把前三句解码成可播放 Audio，才允许视频从零点走。这样可提前发现
+// 404、失效 Blob、插件重载等问题，而不是画面播出去后才发现第一句无声。
+const STARTUP_PLAYABLE_SEGMENTS = 3;
+function waitForAudioCanPlay(audio, timeoutMs = 1400) {
+  if (!audio) return Promise.resolve(false);
+  if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      audio.removeEventListener('canplay', onReady);
+      audio.removeEventListener('canplaythrough', onReady);
+      audio.removeEventListener('error', onError);
+      resolve(ok);
+    };
+    const onReady = () => done(true);
+    const onError = () => done(false);
+    const timer = setTimeout(() => done(audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA), timeoutMs);
+    audio.addEventListener('canplay', onReady, { once: true });
+    audio.addEventListener('canplaythrough', onReady, { once: true });
+    audio.addEventListener('error', onError, { once: true });
+  });
+}
+async function startupAudioGateReady(sess, t) {
+  const candidates = (sess?.dubSegments || [])
+    .filter((seg) => seg.audio_url && seg.start >= (t || 0) - 0.5)
+    .sort((a, b) => a.start - b.start)
+    .slice(0, STARTUP_PLAYABLE_SEGMENTS);
+  if (candidates.length < STARTUP_PLAYABLE_SEGMENTS) return false;
+  try {
+    const decoded = await Promise.race([
+      Promise.all(candidates.map(async (seg) => waitForAudioCanPlay(await getAudio(sess, seg)))),
+      new Promise((resolve) => setTimeout(() => resolve(null), 1500)),
+    ]);
+    return Array.isArray(decoded) && decoded.every(Boolean);
+  } catch (_) {
+    return false;
+  }
+}
+
 async function loadAudioOnce(sess, seg) {
   if (!seg.audio_url) return null;
   if (!sess.audioCache[seg.audio_url]) {
@@ -4961,6 +5004,26 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     }
 
     async function onFirstChunkReady() {
+      // “首批生成”不等于“首批可以播放”。先验证前三句已经在本机解码；失败时
+      // 保持开场暂停、以极短间隔修复，而不是让视频先走八秒再发现开头漏配音。
+      const startupTime = video.currentTime || 0;
+      if (!await startupAudioGateReady(sess, startupTime)) {
+        const firstMissing = (sess._allSegments || []).find((seg) => {
+          if (seg.start < startupTime - 0.5) return false;
+          const ready = (sess.dubSegments || []).find((item) => _segKey(item) === _segKey(seg));
+          return !ready?.audio_url || !sess.audioCache?.[ready.audio_url];
+        });
+        if (firstMissing) requestRealtimeCurrentSentenceRepair(sess, firstMissing, startupTime);
+        showBufferIndicator('🎧 正在验证开场配音，视频将从第一句开始播放…', video);
+        recordDiagnostic(sess, 'startup_audio_decode_gate_wait', {
+          currentTime: +startupTime.toFixed(3),
+          cachedSegments: sess.dubSegments?.length || 0,
+        });
+        setTimeout(() => {
+          if (sess.started && sess.weArePausing && sess.videoId === videoId) onFirstChunkReady();
+        }, 300);
+        return;
+      }
       sess._phase = 'dubbing';
       // 捕获流在用户授权时已经占用，但准备阶段数据全部丢弃；从第一批配音真正就绪
       // 这一刻重新开一个干净分段，最终文件无需裁切前面的等待过程。
@@ -5326,7 +5389,7 @@ if (IS_YOUTUBE) {
         const lastAlive = Math.max(ws._lastDubAudioTs || 0, ws._startTs || 0, ws._lastAutoRepairTs || 0);
         const t = ws.video.currentTime;
         // 开头库存最关键，漏句要尽快补；中后段保留稍长窗口以避免把正常停顿误判。
-        const watchdogMs = t < 120 ? 8000 : 12000;
+        const watchdogMs = t < 180 ? 1500 : 12000;
         if (now - lastAlive > watchdogMs) {
           const have = new Set((ws.dubSegments || []).map(_segKey));
           const missedRecently = ws._allSegments.some(
