@@ -1660,6 +1660,32 @@ function prefetchAhead(sess, t) {
   }
 }
 
+// 长视频不能把已经播放数小时的 Audio/Blob 一直留在内存。音频的原始 Base64 已在
+// IndexedDB 持久化，用户 seek 回去时会由 hydrateLocalCacheWindow 按需取回；这里只
+// 释放播放点五分钟前的内存副本，既避免浏览器后半段内存压力，也不牺牲回看能力。
+const PLAYED_AUDIO_MEMORY_KEEP_SECONDS = 5 * 60;
+function prunePlayedAudioCache(sess, t) {
+  if (!sess?.audioCache || !sess?.dubSegments) return;
+  if (Date.now() - (sess._lastAudioCachePruneAt || 0) < 20000) return;
+  sess._lastAudioCachePruneAt = Date.now();
+  const cutoff = Math.max(0, Number(t || 0) - PLAYED_AUDIO_MEMORY_KEEP_SECONDS);
+  let freed = 0;
+  for (const seg of sess.dubSegments) {
+    const end = seg.start + (seg.tts_duration || seg.duration || 0);
+    if (end >= cutoff || seg === sess.curSegment || !seg.audio_url) continue;
+    const audio = sess.audioCache[seg.audio_url];
+    if (!audio) continue;
+    try {
+      audio.pause?.();
+      audio.onended = null;
+      if (audio.src?.startsWith('blob:')) URL.revokeObjectURL(audio.src);
+    } catch (_) {}
+    delete sess.audioCache[seg.audio_url];
+    freed++;
+  }
+  if (freed) recordDiagnostic(sess, 'played_audio_memory_pruned', { freed, cutoff: +cutoff.toFixed(3) });
+}
+
 const BUFFER_MISS_THRESHOLD = 8;
 
 // 可懂度优先「宁可慢视频不丢内容」：音频尽量自然语速，放不下时优先放慢视频，
@@ -2285,16 +2311,23 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
       const got = await sendChunk(sess.videoId, sess.title, requested, sess._baseRatePct || 0,
         false, null, sess._subtitleMode === 'gemini');
       if (!sess.started || !got?.length) return;
-      const have = new Set((sess.dubSegments || []).map(_segKey));
-      let added = 0;
+      await saveLocalDubBatch(sess.videoId, requested, got);
+      const existingByKey = new Map((sess.dubSegments || []).map((item) => [_segKey(item), item]));
+      let repaired = 0;
       for (const item of got) {
         const itemKey = _segKey(item);
-        if (have.has(itemKey)) continue;
-        sess.dubSegments.push({ ...item, played: false });
-        have.add(itemKey);
-        added++;
+        const existing = existingByKey.get(itemKey);
+        if (existing) {
+          const previousUrl = existing.audio_url;
+          if (previousUrl && previousUrl !== item.audio_url) delete sess.audioCache[previousUrl];
+          Object.assign(existing, item, { played: false, _loadRetryCount: 0, _invalidAudio: false });
+        } else {
+          sess.dubSegments.push({ ...item, played: false });
+          existingByKey.set(itemKey, item);
+        }
+        repaired++;
       }
-      if (added) {
+      if (repaired) {
         sess.dubSegments.sort((a, b) => a.start - b.start);
         const frontier = Math.max(...got.map((s) => s.start + (s.tts_duration || s.duration || 0)));
         sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
@@ -2302,7 +2335,7 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
         recordDiagnostic(sess, 'realtime_current_sentence_repair_done', {
           currentTime: +(sess.video?.currentTime || 0).toFixed(3),
           missingStart: +(seg.start || 0).toFixed(3),
-          added,
+          repaired,
           tries: state.tries,
         });
         playNextDue(sess, sess.video.currentTime);
@@ -2898,7 +2931,13 @@ function playNextDue(sess, t) {
     });
     if (best._loadRetryCount >= 3) {
       sess._forceConservativeDubbing = true;
-      recordDiagnostic(sess, 'audio_segment_skipped_after_load_failures', {
+      const staleUrl = best.audio_url;
+      if (staleUrl) delete sess.audioCache[staleUrl];
+      best.audio_url = '';
+      best.audio_b64 = null;
+      best.played = false;
+      best._invalidAudio = true;
+      recordDiagnostic(sess, 'audio_segment_repair_after_load_failures', {
         segIndex: sess.dubSegments.indexOf(best),
         segStart: +((best.start || 0).toFixed ? best.start.toFixed(3) : best.start || 0),
         segEnd: +((best.end || 0).toFixed ? best.end.toFixed(3) : best.end || 0),
@@ -2906,15 +2945,12 @@ function playNextDue(sess, t) {
         url: best.url || null,
         error: e?.message || String(e || ''),
       });
-      console.warn('[配音插件] 同一句音频连续加载失败，跳过防止整段卡死', best.start?.toFixed?.(1) + 's');
-      best.played = true;
-      showBufferIndicator(
-        `⚠️ ${best.start?.toFixed?.(1) || '?'}s 这句音频连续加载失败，已自动跳过并继续后面配音`,
-        sess.video);
+      console.warn('[配音插件] 同一句音频连续加载失败，已清除失效音频并重新合成', best.start?.toFixed?.(1) + 's');
+      requestRealtimeCurrentSentenceRepair(sess, best, sess.video.currentTime);
       setVideoRate(sess, defaultVideoRate(sess));
       setTimeout(() => {
         if (sess.started && !sess._userPaused) playNextDue(sess, sess.video.currentTime);
-      }, 80);
+      }, 500);
       return;
     }
     best.played = false;
@@ -3206,7 +3242,7 @@ async function probeDubServiceHealth(timeoutMs = 10000) {
 
 // 网络断开或云端短暂重启时，不丢弃当前批次。先在不暂停视频的情况下确认：
 // 短暂请求抖动、单个大批次超时或页面跨域问题都不能直接暂停。只有连续三次
-// 后台健康检查失败才进入暂停等待；恢复仍需连续两次成功，避免闪断。
+// 后台健康检查失败也不暂停已经开始的实时视频；恢复仍需连续两次成功，避免闪断。
 async function waitForDubServiceRecovery(sess, videoId, lastError) {
   const errText = String(lastError || '');
   if (/扩展已重新加载|刷新页面后重试|Extension context invalidated|context invalidated|disconnected/i.test(errText)) {
@@ -3241,7 +3277,11 @@ async function waitForDubServiceRecovery(sess, videoId, lastError) {
     return true;
   }
 
-  await pauseForNetworkRecovery(sess);
+  // 实时配音的首要原则是不因网络问题反向卡住视频。缺少的句子会在恢复后
+  // 重发当前批次，并由看门狗补齐；只有用户在开头主动等待时才允许另行暂停。
+  recordDiagnostic(sess, 'network_recovery_keeps_video_running', {
+    error: lastError || '', currentTime: +(sess.video?.currentTime || 0).toFixed(3),
+  });
   let consecutive = 0;
   let attempt = 0;
   showBufferIndicator(
@@ -4734,6 +4774,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       sampleDiarization(sess);
       playNextDue(sess, t);
       prefetchAhead(sess, t);
+      prunePlayedAudioCache(sess, t);
       // 结尾不再主动减慢视频。若尾音略长于画面，就保持最后一帧，等待配音自然说完；
       // 这样观感比明显慢放更自然，也更接近用户期望。
       // 字幕显示：自绘覆盖层（所有平台）
@@ -5273,9 +5314,9 @@ if (IS_YOUTUBE) {
       // 没了，也不报任何错。根因通常是某一批合成请求失败后，那之后的句子永远没有
       // 音频，playNextDue 找不到可播的段就一直安静空转。补救机制（repairDubbing）
       // 一直都有，但只挂在右键菜单上靠人肉发现——这里改成自动检测：正在配音、
-      // 视频在播、但超过 25 秒没有任何一句真正出声，且当前时间往前 25 秒窗口内
+      // 视频在播、但短时间没有任何一句真正出声，且当前时间窗口内
       // 确实存在"该有音频却没有"的缺失句，就自动触发补救。纯粹的长间隙（视频里
-      // 本来就没人说话）不会误触发——那种情况窗口内没有缺失句。60 秒冷却防止
+      // 本来就没人说话）不会误触发——那种情况窗口内没有缺失句。动态冷却防止
       // 服务器持续故障时连环触发。
       const ws = _lastActiveSess;
       if (ws && ws.started && !ws._readMode && ws._phase === 'dubbing'
@@ -5283,14 +5324,16 @@ if (IS_YOUTUBE) {
           && ws.video && !ws.video.paused && ws._allSegments?.length) {
         const now = Date.now();
         const lastAlive = Math.max(ws._lastDubAudioTs || 0, ws._startTs || 0, ws._lastAutoRepairTs || 0);
-        if (now - lastAlive > 25000) {
-          const t = ws.video.currentTime;
+        const t = ws.video.currentTime;
+        // 开头库存最关键，漏句要尽快补；中后段保留稍长窗口以避免把正常停顿误判。
+        const watchdogMs = t < 120 ? 8000 : 12000;
+        if (now - lastAlive > watchdogMs) {
           const have = new Set((ws.dubSegments || []).map(_segKey));
           const missedRecently = ws._allSegments.some(
-            (s) => s.start >= t - 25 && s.start <= t && !have.has(_segKey(s)));
+            (s) => s.start >= t - (watchdogMs / 1000) && s.start <= t && !have.has(_segKey(s)));
           if (missedRecently) {
             ws._lastAutoRepairTs = now;
-            console.warn('[配音插件] 看门狗：超过25秒无配音且检测到缺失句，自动补救');
+            console.warn(`[配音插件] 看门狗：超过${watchdogMs / 1000}秒无配音且检测到缺失句，自动补救`);
             showBufferIndicator('🔧 检测到配音中断，自动补救中…', ws.video);
             repairDubbing(ws, document.getElementById('dub-ext-btn'), { resumeAfter: false });
           } else {

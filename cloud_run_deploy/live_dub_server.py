@@ -291,6 +291,18 @@ def _save_video_cache_meta(video_id, title):
     except Exception as e:
         log.warning(f'[缓存列表] 保存标题失败 video_id={video_id}: {e}')
 
+
+def _touch_video_cache_dir(video_id):
+    """Keep an in-use cache fresh so quota cleanup cannot evict a long video."""
+    if not video_id:
+        return
+    try:
+        video_dir = os.path.join(LIVE_TEMP_DIR, str(video_id))
+        os.makedirs(video_dir, exist_ok=True)
+        os.utime(video_dir, None)
+    except Exception:
+        pass
+
 # ===== Gemini翻译用量保护：服务器是所有装了这个插件的人共用的，没有账号体系，
 # 不防着点的话，一两个重度用户或者刷量就能把账单和免费额度都耗光（参考今天聊的
 # 同类插件"先不限制、用户多了才限制"的教训，咱们从一开始就上限额，不要等出事）。
@@ -919,6 +931,7 @@ async def dub(req: DubRequest):
         video_dir = os.path.join(LIVE_TEMP_DIR, req.video_id)
         os.makedirs(video_dir, exist_ok=True)
         _save_video_cache_meta(req.video_id, req.title)
+        _touch_video_cache_dir(req.video_id)
         # 不写全局 dub9.TEMP_DIR，video_dir 显式传给下面的 synthesize_all（temp_dir=）。
 
         segments = [{'start': s.start, 'end': s.end, 'text': s.text,
