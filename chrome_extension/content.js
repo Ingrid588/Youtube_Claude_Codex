@@ -780,32 +780,16 @@ function dedupPreparedSentenceSegments(segments) {
     const segExpandsPrev = isNormalizedPrefix(prev.text, seg.text, 4);
     const prevExpandsSeg = isNormalizedPrefix(seg.text, prev.text, 4);
     const close = gap < 1.2;
-    const startupWindow = Math.min(prev.start || 0, seg.start || 0) < 12;
-    if (close && (sameNorm || segExpandsPrev || prevExpandsSeg)) {
+    // 开头二十秒的字幕事件绝不按“文字像不像”删除。刷新、自动翻译和滚动轨都会
+    // 让前两句看起来相似，但只有来源事件的时间轴才能说明它们是否真是同一句。
+    const protectedOpening = Math.min(prev.start || 0, seg.start || 0) < 20;
+    if (!protectedOpening && close && (sameNorm || segExpandsPrev || prevExpandsSeg)) {
       if (segExpandsPrev) {
         out[out.length - 1] = { ...seg, start: prev.start, end: Math.max(prev.end || 0, seg.end || 0) };
       } else {
         prev.end = Math.max(prev.end || 0, seg.end || 0);
       }
       continue;
-    }
-    // 开头阶段更保守：即使中间被 groupChineseSentences 重新切了一次，只要两句规范化后高度重合，
-    // 仍按同一句处理，避免“第一句读两遍”。
-    if (startupWindow) {
-      const a = normalizeCaptionCompareText(prev.text);
-      const b = normalizeCaptionCompareText(seg.text);
-      if (a && b) {
-        const short = a.length <= b.length ? a : b;
-        const long = a.length > b.length ? a : b;
-        if (short.length >= 8 && long.includes(short) && gap < 2.2) {
-          if (b.length > a.length) {
-            out[out.length - 1] = { ...seg, start: prev.start, end: Math.max(prev.end || 0, seg.end || 0) };
-          } else {
-            prev.end = Math.max(prev.end || 0, seg.end || 0);
-          }
-          continue;
-        }
-      }
     }
     out.push(seg);
   }
@@ -982,7 +966,10 @@ function dedupRollingCaptions(segments) {
     const prev = out[out.length - 1];
     if (prev) {
       const closeInTime = (seg.start - prev.end) < 1.5;
-      if (closeInTime) {
+      // 开头二十秒保留每一个来自字幕源的事件，不按文字相似度推测重复。
+      // 这是刷新后第一、二句最容易被误删的根因。
+      const protectedOpening = Math.min(prev.start || 0, seg.start || 0) < 20;
+      if (closeInTime && !protectedOpening) {
         if (seg.text === prev.text
           || normalizeCaptionCompareText(seg.text) === normalizeCaptionCompareText(prev.text)) {
           prev.end = Math.max(prev.end, seg.end);
@@ -1426,7 +1413,7 @@ function updateSubtitle(sess) {
     // 不知道，等视频时间走到那条重复段自己的时间窗，照样把它的文字显示出来，
     // 表现就是"刚配完音的那句又显示了一遍，但没声音"。这里也查一下最近播过的记录，
     // 命中就当没有这一条，跟音频那边的判断保持一致。
-    const isDup = seg && sess._recentSpoken && sess._recentSpoken.some(
+    const isDup = seg && seg.start >= 20 && sess._recentSpoken && sess._recentSpoken.some(
       (r) => r.text === seg.text && (seg.start - r.end) < 12
     );
     if (seg && !isDup) {
@@ -2213,7 +2200,15 @@ function stopTabAudioRecordingAndDownload(sess, keepStream = false) {
 const SYNTH_GRACE_TICKS = 4;
 const AUTO_DOWNLOAD_SIDECARS = false; // 暂停自动下载 ASS/SRT/变速JSON；手动导出按钮仍可用
 
-const _segKey = (s) => Math.round(s.start * 1000);
+// 时间轴事件键必须同时含开始和结束，不能只用 start：YouTube 的开头滚动字幕可能有
+// 多个不同事件共享同一开始时间，只按 start 会让第二句被当成第一句的重复项。
+const _segKey = (s) => {
+  const start = Number(s?.start || 0);
+  // 前端字幕是 start/end，服务端返回是 start/duration；统一到同一个事件终点。
+  const end = Number.isFinite(Number(s?.end)) ? Number(s.end)
+    : start + Math.max(0, Number(s?.duration || 0));
+  return `${Math.round(start * 1000)}:${Math.round(end * 1000)}`;
+};
 function applySessionVoice(sess, segments) {
   return segments.map((seg) => {
     const manualVoice = getPreferredChineseVoice();
@@ -2780,7 +2775,7 @@ function playNextDue(sess, t) {
   // 紧挨着出现，隔几句也会有（滚动字幕去重在解析阶段没抓干净）。改成跟"最近几句"的
   // 历史记录比，而不是只看上一句，但仍然只在时间足够近（12秒内）才判定重复，相隔较远的
   // 真实重复台词（如歌词副歌）不受影响。
-  if (best.text.length >= 6 && sess._recentSpoken) {
+  if (best.start >= 20 && best.text.length >= 6 && sess._recentSpoken) {
     const dup = sess._recentSpoken.find((r) => {
       if (!r || r.text !== best.text) return false;
       if (r.videoId && sess.videoId && r.videoId !== sess.videoId) return false;
@@ -4739,6 +4734,18 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
   }
   if (!rawSegments.length) return fail('字幕全部是音乐/音效标记，无可配音正文');
 
+  // 留存字幕源开头事件，作为“第一、二句到底是不是实际字幕”的可核查证据。
+  // 后续去滚动、合句和送配音都不能覆盖这份原始时间轴记录。
+  sess._sourceOpeningSegments = rawSegments
+    .filter((s) => (s.start || 0) < 20)
+    .slice(0, 16)
+    .map((s) => ({ start: +(+s.start || 0).toFixed(3), end: +(+s.end || 0).toFixed(3), text: s.text }));
+  recordDiagnostic(sess, 'subtitle_source_opening_events', {
+    count: sess._sourceOpeningSegments.length,
+    events: sess._sourceOpeningSegments,
+  });
+  console.log('[配音插件] 字幕源开头事件（配音前，不做文字去重）：', sess._sourceOpeningSegments);
+
   // 去掉滚动字幕的渐进重复 cue（见 dedupRollingCaptions 注释），两种模式都要做——
   // 配音模式即使后面会合并整句，重叠的重复 cue 也会让合并逻辑产生错误的时间窗。
   rawSegments = dedupRollingCaptions(rawSegments);
@@ -5909,7 +5916,8 @@ if (IS_YOUTUBE) {
   //     cue，新增 dedupRollingCaptions 按"前缀关系+时间紧邻"合并，bump 版本失效旧缓存。
   // v4：相邻 cue 换行边界 1 字重叠（天天蝎座/双双鱼座，配音念出来像口吃）→
   //     textBoundaryOverlapLen 合并，bump 版本失效旧缓存。
-  const SUBS_CACHE_PREFIX = 'subs_v4_';
+  // v5：开头二十秒不再按文字相似度删事件，旧缓存可能已误删第一、二句，必须重取。
+  const SUBS_CACHE_PREFIX = 'subs_v5_';
   function getCachedSubs(vid) {
     return new Promise((resolve) => {
       try {
