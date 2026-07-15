@@ -4903,6 +4903,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       const t = video.currentTime;
       // 纪元 +1：让加载中的旧段在 .then 里发现位置已变而自动作废，避免错位/重叠
       sess._seekEpoch = (sess._seekEpoch || 0) + 1;
+      const seekEpoch = sess._seekEpoch;
       sess._audioLoading = false;
       if (sess.curAudio) {
         try { sess.curAudio.pause(); } catch (_) {}
@@ -4930,6 +4931,26 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
         try { sess.video.pause(); } catch (_) {}
         showBufferIndicator('🎧 正在对齐开头配音…', sess.video);
       }
+      const releaseStartSeekWhenPlayable = async () => {
+        if (!sess.started || sess._seekEpoch !== seekEpoch || video.currentTime >= 2.2) return;
+        const ready = await startupAudioGateReady(sess, video.currentTime || 0);
+        if (ready) {
+          sess._buffering = false;
+          sess.weArePausing = false;
+          hideBufferIndicator();
+          try { await video.play(); } catch (_) {}
+          recordDiagnostic(sess, 'seek_zero_audio_gate_released', { currentTime: +(video.currentTime || 0).toFixed(3) });
+          return;
+        }
+        const missing = (sess._allSegments || []).find((seg) => {
+          if (seg.start < (video.currentTime || 0) - 0.5) return false;
+          const item = (sess.dubSegments || []).find((candidate) => _segKey(candidate) === _segKey(seg));
+          return !item?.audio_url || !sess.audioCache?.[item.audio_url] || item._invalidAudio;
+        });
+        if (missing) requestRealtimeCurrentSentenceRepair(sess, missing, video.currentTime || 0);
+        showBufferIndicator('🎧 正在恢复开头前三句配音…', video);
+        setTimeout(releaseStartSeekWhenPlayable, 300);
+      };
       hydrateLocalCacheWindow(sess, t, shouldHoldAtStart ? 1.5 : 12, shouldHoldAtStart ? 300 : 240)
         .catch(() => 0)
         .finally(() => {
@@ -4944,12 +4965,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       sess._seekSettleTimer = setTimeout(() => {
         if (!sess.started) return;
         const tt = sess.video.currentTime;
-        if (tt < 2.2 && _segReadyAt(sess, tt)) {
-          sess._buffering = false;
-          sess.weArePausing = false;
-          hideBufferIndicator();
-          try { sess.video.play().catch(() => {}); } catch (_) {}
-        }
+        if (tt < 2.2) return releaseStartSeekWhenPlayable();
         if (maybeBufferForSynthesis(sess, tt)) return;
         playNextDue(sess, tt);
       }, 280);
