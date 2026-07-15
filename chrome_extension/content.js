@@ -780,10 +780,8 @@ function dedupPreparedSentenceSegments(segments) {
     const segExpandsPrev = isNormalizedPrefix(prev.text, seg.text, 4);
     const prevExpandsSeg = isNormalizedPrefix(seg.text, prev.text, 4);
     const close = gap < 1.2;
-    // 开头二十秒的字幕事件绝不按“文字像不像”删除。刷新、自动翻译和滚动轨都会
-    // 让前两句看起来相似，但只有来源事件的时间轴才能说明它们是否真是同一句。
-    const protectedOpening = Math.min(prev.start || 0, seg.start || 0) < 20;
-    if (!protectedOpening && close && (sameNorm || segExpandsPrev || prevExpandsSeg)) {
+    // 只合并时间紧邻且文本相同/渐进扩展的滚动 cue；不同内容的第一、二句不会命中。
+    if (close && (sameNorm || segExpandsPrev || prevExpandsSeg)) {
       if (segExpandsPrev) {
         out[out.length - 1] = { ...seg, start: prev.start, end: Math.max(prev.end || 0, seg.end || 0) };
       } else {
@@ -966,10 +964,7 @@ function dedupRollingCaptions(segments) {
     const prev = out[out.length - 1];
     if (prev) {
       const closeInTime = (seg.start - prev.end) < 1.5;
-      // 开头二十秒保留每一个来自字幕源的事件，不按文字相似度推测重复。
-      // 这是刷新后第一、二句最容易被误删的根因。
-      const protectedOpening = Math.min(prev.start || 0, seg.start || 0) < 20;
-      if (closeInTime && !protectedOpening) {
+      if (closeInTime) {
         if (seg.text === prev.text
           || normalizeCaptionCompareText(seg.text) === normalizeCaptionCompareText(prev.text)) {
           prev.end = Math.max(prev.end, seg.end);
@@ -1413,7 +1408,7 @@ function updateSubtitle(sess) {
     // 不知道，等视频时间走到那条重复段自己的时间窗，照样把它的文字显示出来，
     // 表现就是"刚配完音的那句又显示了一遍，但没声音"。这里也查一下最近播过的记录，
     // 命中就当没有这一条，跟音频那边的判断保持一致。
-    const isDup = seg && seg.start >= 20 && sess._recentSpoken && sess._recentSpoken.some(
+    const isDup = seg && sess._recentSpoken && sess._recentSpoken.some(
       (r) => r.text === seg.text && (seg.start - r.end) < 12
     );
     if (seg && !isDup) {
@@ -2775,7 +2770,7 @@ function playNextDue(sess, t) {
   // 紧挨着出现，隔几句也会有（滚动字幕去重在解析阶段没抓干净）。改成跟"最近几句"的
   // 历史记录比，而不是只看上一句，但仍然只在时间足够近（12秒内）才判定重复，相隔较远的
   // 真实重复台词（如歌词副歌）不受影响。
-  if (best.start >= 20 && best.text.length >= 6 && sess._recentSpoken) {
+  if (best.text.length >= 6 && sess._recentSpoken) {
     const dup = sess._recentSpoken.find((r) => {
       if (!r || r.text !== best.text) return false;
       if (r.videoId && sess.videoId && r.videoId !== sess.videoId) return false;
@@ -5933,7 +5928,8 @@ if (IS_YOUTUBE) {
   // v4：相邻 cue 换行边界 1 字重叠（天天蝎座/双双鱼座，配音念出来像口吃）→
   //     textBoundaryOverlapLen 合并，bump 版本失效旧缓存。
   // v5：开头二十秒不再按文字相似度删事件，旧缓存可能已误删第一、二句，必须重取。
-  const SUBS_CACHE_PREFIX = 'subs_v5_';
+  // v6：恢复滚动 cue 的时间轴去重；第一、二句依靠会话重置和可播放门槛保障，不靠取消去重。
+  const SUBS_CACHE_PREFIX = 'subs_v6_';
   function getCachedSubs(vid) {
     return new Promise((resolve) => {
       try {
