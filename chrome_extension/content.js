@@ -2241,7 +2241,11 @@ async function requestSynthAround(sess, t) {
   // onFirstChunkReady 会把 phase 改成 dubbing，届时快进和缺口补齐才允许走这里。
   if (sess._phase === 'preparing') return;
   sess._synthInFlight = sess._synthInFlight || new Set();
-  const have = new Set(sess.dubSegments.map(_segKey));
+  // 已有对象不等于已有可播放音频：404 后会保留同一时间轴对象以便替换，
+  // 不能再把它当作“已合成”而永远不重试。
+  const have = new Set(sess.dubSegments
+    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+    .map(_segKey));
   const pending = sess._allSegments
     .filter((s) => (s.end || s.start) >= t - 0.5)            // 当前位置及之后
     .filter((s) => !have.has(_segKey(s)) && !sess._synthInFlight.has(_segKey(s)))
@@ -2418,6 +2422,56 @@ function rememberMissedRealtimeSegment(sess, seg, reason = 'not_ready') {
       reason,
     });
   }
+}
+
+// 前十分钟是实时配音唯一没有冗余的区域。主流合成即使后来已经做到十分钟之后，
+// 也不能掩盖前面某批失败、坏音频或浏览器解码失败造成的洞。这里按“织地毯”方式：
+// 每 2 秒审计已播位置前后 90 秒，优先小批替换缺段/坏段；绝不暂停已开始的视频。
+function repairEarlyDubbingWindow(sess, t) {
+  if (!sess?.started || sess._readMode || sess._phase !== 'dubbing' || t > 600) return;
+  const now = Date.now();
+  if (sess._earlyWindowRepairing || now - (sess._lastEarlyWindowAuditAt || 0) < 2000) return;
+  sess._lastEarlyWindowAuditAt = now;
+  const valid = new Set((sess.dubSegments || [])
+    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+    .map(_segKey));
+  const end = Math.min(600, Math.max(120, t + 90));
+  const missing = (sess._allSegments || [])
+    .filter((s) => s.start <= end && !valid.has(_segKey(s)))
+    .filter((s) => !sess._synthInFlight?.has(_segKey(s)))
+    .slice(0, 12);
+  if (!missing.length) return;
+  sess._earlyWindowRepairing = true;
+  const keys = missing.map(_segKey);
+  sess._synthInFlight = sess._synthInFlight || new Set();
+  keys.forEach((key) => sess._synthInFlight.add(key));
+  recordDiagnostic(sess, 'early_window_gap_repair_start', {
+    currentTime: +(+t || 0).toFixed(3), end, count: missing.length,
+  });
+  (async () => {
+    try {
+      const requested = applySessionVoice(sess, missing.map((s) => ({ start: s.start, end: s.end, text: s.text })));
+      const got = await sendChunk(sess.videoId, sess.title, requested, sess._baseRatePct || 0,
+        false, null, sess._subtitleMode === 'gemini');
+      if (!sess.started || !got?.length) return;
+      await saveLocalDubBatch(sess.videoId, requested, got);
+      const existing = new Map((sess.dubSegments || []).map((s) => [_segKey(s), s]));
+      for (const item of got) {
+        const old = existing.get(_segKey(item));
+        if (old) Object.assign(old, item, { played: old.played && old.start < (sess.video.currentTime || 0) - 1, _invalidAudio: false, _loadRetryCount: 0 });
+        else sess.dubSegments.push({ ...item, played: false });
+      }
+      sess.dubSegments.sort((a, b) => a.start - b.start);
+      recordDiagnostic(sess, 'early_window_gap_repair_done', { count: got.length, end });
+      playNextDue(sess, sess.video.currentTime);
+    } catch (e) {
+      recordDiagnostic(sess, 'early_window_gap_repair_failed', { error: e?.message || String(e || ''), end });
+      console.warn('[配音插件] 前十分钟缺段补救暂时失败，将继续短间隔审计', e?.message || e);
+    } finally {
+      keys.forEach((key) => sess._synthInFlight?.delete(key));
+      sess._earlyWindowRepairing = false;
+    }
+  })();
 }
 
 // 当前时间 t 处是否已有"就绪(已合成带音频)"的配音段
@@ -3455,7 +3509,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
     const required = startupPrerollSegments();
     if (!required.length) return !!sess.dubSegments?.length;
     const have = new Set((sess.dubSegments || [])
-      .filter((s) => s.audio_url || s.web_speech)
+      .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
       .map(_segKey));
     return required.every((s) => have.has(_segKey(s)));
   };
@@ -3696,7 +3750,9 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
   // 做一次"补漏"：比对应该有的全量句子(_allSegments)和实际拿到的(dubSegments)，
   // 把缺的那些再尝试几轮，仍然失败也不再无限重试（避免真没法生成时卡死收尾）。
   for (let round = 0; round < 3 && sess.started && sess.videoId === videoId; round++) {
-    const have = new Set(sess.dubSegments.map(_segKey));
+    const have = new Set(sess.dubSegments
+      .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+      .map(_segKey));
     const missing = (sess._allSegments || []).filter((s) => !have.has(_segKey(s)));
     if (!missing.length) break;
     console.warn(`[配音插件] 收尾补漏第${round + 1}轮：发现 ${missing.length} 句之前没成功合成，重新尝试`);
@@ -3791,7 +3847,9 @@ async function repairDubbing(sess, btn, { resumeAfter = false, silent = false } 
   if (sess._repairing && Date.now() - (sess._repairingSince || 0) < 120000) return;
   sess._repairing = true;
   sess._repairingSince = Date.now();
-  const have = new Set((sess.dubSegments || []).map(_segKey));
+  const have = new Set((sess.dubSegments || [])
+    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+    .map(_segKey));
   const missing = sess._allSegments.filter((s) => !have.has(_segKey(s)));
 
   // 补救完成后如果是"恢复并续播"（比如右键菜单选的、或翻译失败暂停后用户确认恢复），
@@ -3856,8 +3914,12 @@ async function repairDubbing(sess, btn, { resumeAfter = false, silent = false } 
       stillMissing += missing.length - i - batch.length;
       break;
     } else if (got && got.length) {
-      const have2 = new Set((sess.dubSegments || []).map(_segKey));
-      for (const s of got) if (!have2.has(_segKey(s))) sess.dubSegments.push({ ...s, played: false });
+      const existing = new Map((sess.dubSegments || []).map((s) => [_segKey(s), s]));
+      for (const s of got) {
+        const old = existing.get(_segKey(s));
+        if (old) Object.assign(old, s, { played: old.played, _invalidAudio: false, _loadRetryCount: 0 });
+        else sess.dubSegments.push({ ...s, played: false });
+      }
       recovered += got.length;
     } else {
       stillMissing += batch.length;
@@ -4814,6 +4876,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       // 合成跟不上播放时，暂停视频缓冲，等合成前沿超过当前时间再继续，
       // 避免视频跑到未合成区域导致后到的句子被当作"已播"而丢句。
       if (maybeBufferForSynthesis(sess, t)) return;
+      repairEarlyDubbingWindow(sess, t);
       sampleDiarization(sess);
       playNextDue(sess, t);
       prefetchAhead(sess, t);
@@ -5391,7 +5454,9 @@ if (IS_YOUTUBE) {
         // 开头库存最关键，漏句要尽快补；中后段保留稍长窗口以避免把正常停顿误判。
         const watchdogMs = t < 180 ? 1500 : 12000;
         if (now - lastAlive > watchdogMs) {
-          const have = new Set((ws.dubSegments || []).map(_segKey));
+          const have = new Set((ws.dubSegments || [])
+            .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+            .map(_segKey));
           const missedRecently = ws._allSegments.some(
             (s) => s.start >= t - (watchdogMs / 1000) && s.start <= t && !have.has(_segKey(s)));
           if (missedRecently) {
