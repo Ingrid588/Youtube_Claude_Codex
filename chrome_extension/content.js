@@ -2195,15 +2195,9 @@ function stopTabAudioRecordingAndDownload(sess, keepStream = false) {
 const SYNTH_GRACE_TICKS = 4;
 const AUTO_DOWNLOAD_SIDECARS = false; // 暂停自动下载 ASS/SRT/变速JSON；手动导出按钮仍可用
 
-// 时间轴事件键必须同时含开始和结束，不能只用 start：YouTube 的开头滚动字幕可能有
-// 多个不同事件共享同一开始时间，只按 start 会让第二句被当成第一句的重复项。
-const _segKey = (s) => {
-  const start = Number(s?.start || 0);
-  // 前端字幕是 start/end，服务端返回是 start/duration；统一到同一个事件终点。
-  const end = Number.isFinite(Number(s?.end)) ? Number(s.end)
-    : start + Math.max(0, Number(s?.duration || 0));
-  return `${Math.round(start * 1000)}:${Math.round(end * 1000)}`;
-};
+// 服务器会按文字长度重算 duration，返回值不能再用原字幕的 end 对齐；跨端唯一稳定的
+// 事件锚点仍是字幕开始时间。此前把 end 纳入键会让同一句被误判“缺失”并重复补合成。
+const _segKey = (s) => Math.round((s?.start || 0) * 1000);
 function applySessionVoice(sess, segments) {
   return segments.map((seg) => {
     const manualVoice = getPreferredChineseVoice();
