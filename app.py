@@ -162,7 +162,7 @@ def _genders_from_male_nums(text, n):
 
 def run_pipeline(links_text, male_nums_text, subtitle_mode, bilingual,
                   male_voice, female_voice, target_lang,
-                  original_volume, vocal_separation, source_video_dir):
+                  original_volume, vocal_separation, source_video_dir, bilibili_charging):
     links = [l.strip() for l in links_text.splitlines() if l.strip()]
     if not links:
         yield "请至少粘贴一个视频链接。"
@@ -187,6 +187,7 @@ def run_pipeline(links_text, male_nums_text, subtitle_mode, bilingual,
     dub8.VOICE_MAP = {'男': male_voice, '女': female_voice}
     dub8.ORIGINAL_AUDIO_VOLUME = original_volume
     dub8.VOCAL_SEPARATION_ENABLED = vocal_separation
+    dub8.BILIBILI_CHARGING_ENABLED = bool(bilibili_charging)
     dub8.CURRENT_BG_MIX_VOLUME = None
     if source_video_dir.strip():
         dub8.SOURCE_VIDEO_DIR = source_video_dir.strip()
@@ -305,6 +306,11 @@ with gr.Blocks(title="YouTube 自动配音工具") as demo:
                 label="合并后自动投稿B站（按转载投稿，需先配置bilibili_upload.py中的cookies，"
                       "请确保内容来源合法、有授权）",
                 value=False
+            )
+            bilibili_charging = gr.Checkbox(
+                label="更多设置 → 充电设置（情感类塔罗/占卜加入充电合集）",
+                value=dub8.BILIBILI_CHARGING_ENABLED,
+                info="勾选：加入《充电塔罗占卜翻译&配音》；未勾选：加入《免费塔罗占卜配音》。",
             )
             confirm_before_merge = gr.Checkbox(
                 label="合并前先确认匹配结果（可手动修正配错的音视频）",
@@ -436,15 +442,16 @@ with gr.Blocks(title="YouTube 自动配音工具") as demo:
     run_event = run_btn.click(
         fn=run_pipeline,
         inputs=[links_box, male_nums_box, subtitle_mode, bilingual, male_voice, female_voice, target_lang,
-                original_volume, vocal_separation, source_video_dir],
+                original_volume, vocal_separation, source_video_dir, bilibili_charging],
         outputs=log_box,
     )
     stop_btn.click(fn=None, inputs=None, outputs=None, cancels=[run_event])
 
-    def run_batch_merge(subtitle_mode, source_video_dir, auto_upload, confirm_before_merge,
+    def run_batch_merge(subtitle_mode, source_video_dir, auto_upload, bilibili_charging, confirm_before_merge,
                         shutdown_flag):
         dub8.SUBTITLE_MODE = subtitle_mode
         dub8.AUTO_UPLOAD_BILIBILI = auto_upload
+        dub8.BILIBILI_CHARGING_ENABLED = bool(bilibili_charging)
         if source_video_dir.strip():
             dub8.SOURCE_VIDEO_DIR = source_video_dir.strip()
 
@@ -474,16 +481,17 @@ with gr.Blocks(title="YouTube 自动配音工具") as demo:
 
     merge_btn.click(
         fn=run_batch_merge,
-        inputs=[subtitle_mode, source_video_dir, auto_upload, confirm_before_merge,
+        inputs=[subtitle_mode, source_video_dir, auto_upload, bilibili_charging, confirm_before_merge,
                 shutdown_after],
         outputs=[log_box, merge_confirm_title, merge_preview, merge_pair_row,
                  merge_audio_sel, merge_video_sel, merge_confirm_btn],
     )
 
-    def run_confirmed_merge(subtitle_mode, source_video_dir, auto_upload, preview_rows,
+    def run_confirmed_merge(subtitle_mode, source_video_dir, auto_upload, bilibili_charging, preview_rows,
                             shutdown_flag):
         dub8.SUBTITLE_MODE = subtitle_mode
         dub8.AUTO_UPLOAD_BILIBILI = auto_upload
+        dub8.BILIBILI_CHARGING_ENABLED = bool(bilibili_charging)
         if source_video_dir.strip():
             dub8.SOURCE_VIDEO_DIR = source_video_dir.strip()
         pairs = preview_rows.values.tolist() if hasattr(preview_rows, 'values') else preview_rows
@@ -500,7 +508,7 @@ with gr.Blocks(title="YouTube 自动配音工具") as demo:
 
     merge_confirm_btn.click(
         fn=run_confirmed_merge,
-        inputs=[subtitle_mode, source_video_dir, auto_upload, merge_preview, shutdown_after],
+        inputs=[subtitle_mode, source_video_dir, auto_upload, bilibili_charging, merge_preview, shutdown_after],
         outputs=[log_box, merge_confirm_title, merge_preview, merge_pair_row,
                  merge_audio_sel, merge_video_sel, merge_confirm_btn],
     )
@@ -545,7 +553,8 @@ with gr.Blocks(title="YouTube 自动配音工具") as demo:
         outputs=[log_box, upload_select, upload_extra_files, upload_confirm_btn],
     )
 
-    def run_confirmed_upload(selected_files, extra_files, shutdown_flag):
+    def run_confirmed_upload(selected_files, extra_files, bilibili_charging, shutdown_flag):
+        dub8.BILIBILI_CHARGING_ENABLED = bool(bilibili_charging)
         extra_paths = [f.name if hasattr(f, 'name') else f for f in (extra_files or [])]
         # 流式显示上传进度（含每个分片的百分比/速度/ETA，由 bilibili_upload 内打印）
         # 上传开始后立即隐藏选择/确认控件，避免它们各自显示一个"处理中"转圈，只在日志处保留一个。
@@ -563,7 +572,7 @@ with gr.Blocks(title="YouTube 自动配音工具") as demo:
 
     upload_confirm_btn.click(
         fn=run_confirmed_upload,
-        inputs=[upload_select, upload_extra_files, shutdown_after],
+        inputs=[upload_select, upload_extra_files, bilibili_charging, shutdown_after],
         outputs=[log_box, upload_select, upload_extra_files, upload_confirm_btn],
     )
 

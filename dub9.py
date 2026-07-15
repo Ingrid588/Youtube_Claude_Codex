@@ -234,13 +234,13 @@ CURRENT_BG_MIX_VOLUME = None
 AUTO_UPLOAD_BILIBILI = False
 
 # 自动投稿到B站时不直接公开发布，设为"当前时间+该分钟数"定时发布，便于发布前人工检查
-BILIBILI_UPLOAD_DELAY_MINUTES = 120
+BILIBILI_UPLOAD_DELAY_MINUTES = 5
 
 # 是否启用"定时发布自动排期"（之后仍可在B站草稿箱里手动调整每个视频的定时发布时间）。
 # 关闭则每个视频都使用下面的固定 BILIBILI_UPLOAD_DELAY_MINUTES。
 BILIBILI_SCHEDULE_ENABLED = True
 # 第一个视频的起始延迟（分钟）
-BILIBILI_SCHEDULE_START_DELAY_MINUTES = 120
+BILIBILI_SCHEDULE_START_DELAY_MINUTES = 5
 
 # "情感"类：当天发布，同批多个之间间隔（分钟）
 BILIBILI_SCHEDULE_EMOTION_INTERVAL_MINUTES = 120
@@ -272,9 +272,12 @@ def compute_publish_delay_minutes(category, index):
                  + day * 24 * 60)
         return min(delay, max_minutes)
 
-    max_days = max_minutes // (24 * 60)
-    day = index % max_days
-    return BILIBILI_SCHEDULE_START_DELAY_MINUTES + day * BILIBILI_SCHEDULE_KNOWLEDGE_INTERVAL_MINUTES
+    max_days = max(max_minutes // (24 * 60), 1)
+    day = min(index, max_days - 1)
+    return min(
+        BILIBILI_SCHEDULE_START_DELAY_MINUTES + day * BILIBILI_SCHEDULE_KNOWLEDGE_INTERVAL_MINUTES,
+        max_minutes,
+    )
 
 # ---------- 字幕选项 ----------
 # 'none'  : 不加字幕
@@ -2634,40 +2637,86 @@ def get_playlist_video_urls(playlist_url):
     return urls
 
 
-def get_video_description(src):
-    """获取YouTube视频简介全文（"显示更多"里的完整内容），非URL或失败时返回空字符串"""
+_VIDEO_ONLINE_INFO_CACHE = {}
+
+
+def get_video_online_info(src):
+    """读取一次并复用视频在线信息，避免简介/频道/订阅判断分别请求造成漏取或限流。"""
+    if not isinstance(src, str) or not src.startswith('http'):
+        return None
+    if src in _VIDEO_ONLINE_INFO_CACHE:
+        return _VIDEO_ONLINE_INFO_CACHE[src]
     if not src.startswith('http'):
-        return ''
+        return None
     try:
         opts = {'quiet': True, 'skip_download': True}
         apply_cookies(opts)
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(src, download=False)
-        return info.get('description') or ''
-    except Exception:
-        return ''
+        _VIDEO_ONLINE_INFO_CACHE[src] = info
+        return info
+    except Exception as e:
+        log_event(f"读取视频在线信息失败，按情感类处理：{e}")
+        _VIDEO_ONLINE_INFO_CACHE[src] = None
+        return None
 
 
-CHAPTER_LINE_RE = re.compile(r'^(\d{1,2}:\d{2}(?::\d{2})?)\s+(.+)$')
+def get_video_description(src):
+    """获取YouTube视频简介全文（"显示更多"里的完整内容），非URL或失败时返回空字符串。"""
+    info = get_video_online_info(src)
+    return (info or {}).get('description') or ''
+
+
+CHAPTER_LINE_RE = re.compile(
+    r'^\s*(?:[-*•#▶️]\s*)?((?:\d{1,2}:)?\d{1,2}:\d{2})\s*(?:[-—–:：|]\s*)?(.+?)\s*$'
+)
 
 
 def extract_chapters(description):
-    """从视频简介中提取"时间码 章节标题"格式的行，返回[(时间码, 标题), ...]"""
+    """从简介中提取常见的 YouTube 章节行，兼容 0:00、00:00、0:00:00、项目符号和短横线。"""
     chapters = []
     for line in description.splitlines():
         m = CHAPTER_LINE_RE.match(line.strip())
         if m:
-            chapters.append((m.group(1), m.group(2).strip()))
+            chapter_title = m.group(2).strip()
+            if chapter_title:
+                chapters.append((m.group(1), chapter_title))
     return chapters
+
+
+def _seconds_to_timestamp(seconds):
+    seconds = max(int(float(seconds or 0)), 0)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+
+def get_video_chapters(src):
+    """优先使用 yt-dlp 结构化 chapters；只有平台没有返回时才解析简介文本。"""
+    info = get_video_online_info(src)
+    structured = (info or {}).get('chapters') or []
+    chapters = []
+    for chapter in structured:
+        title = str(chapter.get('title') or '').strip()
+        if title and chapter.get('start_time') is not None:
+            chapters.append((_seconds_to_timestamp(chapter['start_time']), title))
+    return chapters or extract_chapters((info or {}).get('description') or '')
 
 
 def translate_title(title, target_lang=TARGET_LANG):
     """把视频标题翻译成目标语言，用于B站投稿标题；失败时返回原标题"""
+    # 播放列表/下载器附带的“3-”“#3-”是排序号，不是标题正文；B站标题中不保留。
+    title = re.sub(r'^\s*#?\d+\s*[-—–_]\s*', '', str(title or '')).strip()
     if not GEMINI_API_KEY:
         return title
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        prompt = f"将这个视频标题翻译成{target_lang}，简洁自然，保持原意，只输出译文，不要解释：{title}"
+        prompt = f"""将下面的视频标题翻译成{target_lang}。
+必须忠实对应原文：不得擅自改写、补充、删减、融合标题中的信息，也不得把多个意思合并成新表述；
+保留原题的语气、限定词、人物/品牌/专有名词和编号含义。只在目标语言自然表达所必需的范围内调整语序。
+只输出一行译文，不要解释、引号或任何前后缀。
+
+原题：{title}"""
         response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
         result = (response.text or '').strip().strip('"\'')
         return result.splitlines()[0].strip() if result else title
@@ -2683,7 +2732,8 @@ def translate_chapters(chapters, target_lang=TARGET_LANG):
         return chapters
 
     titles_block = '\n'.join(f"{i+1}|{title}" for i, (_, title) in enumerate(chapters))
-    prompt = f"""将以下视频章节标题翻译成{target_lang}，简洁自然，保持原意。
+    prompt = f"""将以下视频章节标题翻译成{target_lang}。必须逐行忠实对应原文，
+不得擅自改写、补充、删减或把多行/多个含义融合；保留专有名词和标题层级。
 每行格式为：序号|标题
 
 {titles_block}
@@ -2711,8 +2761,7 @@ def build_bilibili_description(src, title):
     获取YouTube视频简介，提取其中的章节时间轴并翻译成中文，
     生成可直接填入B站投稿"简介"的文本（时间轴+原视频标题），失败时返回空字符串。
     """
-    description = get_video_description(src)
-    chapters = extract_chapters(description)
+    chapters = get_video_chapters(src)
     if not chapters:
         return ''
     chapters_zh = translate_chapters(chapters)
@@ -2743,12 +2792,13 @@ BILIBILI_CATEGORY_CONFIG = {
 
 
 _SUBSCRIPTIONS_CACHE = None
+_SUBSCRIPTIONS_LOADED = False
 
 
 def get_subscribed_channel_ids():
-    """获取当前登录YouTube账号订阅的频道id集合（用cookies读取订阅页，失败返回空集合）"""
-    global _SUBSCRIPTIONS_CACHE
-    if _SUBSCRIPTIONS_CACHE is not None:
+    """获取当前登录YouTube账号订阅的频道 id 集合；失败返回 None，不能误当作“未订阅”。"""
+    global _SUBSCRIPTIONS_CACHE, _SUBSCRIPTIONS_LOADED
+    if _SUBSCRIPTIONS_LOADED:
         return _SUBSCRIPTIONS_CACHE
     ids = set()
     try:
@@ -2762,39 +2812,44 @@ def get_subscribed_channel_ids():
                 ids.add(cid)
         log_event(f"已读取订阅频道列表：{len(ids)}个")
     except Exception as e:
-        log_event(f"读取订阅列表失败，跳过订阅判断：{e}")
+        log_event(f"读取订阅列表失败，按情感类处理，不把未知频道误归为知识：{e}")
+        ids = None
     _SUBSCRIPTIONS_CACHE = ids
+    _SUBSCRIPTIONS_LOADED = True
     return ids
 
 
 def is_subscribed_channel(src):
-    """判断src对应视频的频道是否在当前账号的订阅列表中"""
+    """判断 src 对应频道是否订阅；无法获取在线信息时返回 None。"""
     if not src.startswith('http'):
-        return False
-    try:
-        opts = {'quiet': True, 'skip_download': True, 'extract_flat': True}
-        apply_cookies(opts)
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(src, download=False)
-        cid = info.get('channel_id') or info.get('uploader_id')
-    except Exception:
-        return False
-    return bool(cid) and cid in get_subscribed_channel_ids()
+        return None
+    info = get_video_online_info(src)
+    if not info:
+        return None
+    cid = info.get('channel_id') or info.get('uploader_id')
+    subscribed_ids = get_subscribed_channel_ids()
+    if not cid or subscribed_ids is None:
+        return None
+    return cid in subscribed_ids
 
 
 def classify_bilibili_category(title_zh, src=''):
     """
     判断B站分区：
-    - 情感：该视频所属频道是你已订阅的频道。
-    - 知识：其它（未订阅频道）。
+    - 情感：该视频所属频道是你已订阅的频道，或在线信息不可用。
+    - 知识：仅在成功读取订阅列表且确认该频道未订阅时使用。
     """
-    if src and is_subscribed_channel(src):
+    subscribed = is_subscribed_channel(src) if src else None
+    if subscribed is not False:
         return '情感'
     return '知识'
 
 
 # 频道名缩略的特殊固定映射（"-"后的名词替换之前的整个频道名）
 CHANNEL_TAG_OVERRIDES = {
+    'indigomystery': 'Indigo',
+    'taroverse': 'VERSE',
+    'miss hawaii': 'Hawaii',
     'c ниной': 'Nina',
     'white feather tarot': 'WF',
     'goddess energy': 'goddess',
@@ -2802,6 +2857,9 @@ CHANNEL_TAG_OVERRIDES = {
     'red fairy tarot': 'RedFairy',
     '222 tarot readings': '222印',
     'anita sirene': '星女Anita',
+    'moonlight guidance': 'Moonlight Guidance',
+    'tookie🌞': 'Tookie🌞',
+    'tookie': 'Tookie🌞',
 }
 
 
@@ -2815,14 +2873,8 @@ def get_channel_short_tag(src):
     """
     if not src.startswith('http'):
         return ''
-    try:
-        opts = {'quiet': True, 'skip_download': True, 'extract_flat': True}
-        apply_cookies(opts)
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(src, download=False)
-        channel = info.get('uploader') or info.get('channel') or ''
-    except Exception:
-        channel = ''
+    info = get_video_online_info(src)
+    channel = (info or {}).get('uploader') or (info or {}).get('channel') or ''
     if not channel:
         return ''
 
@@ -2873,9 +2925,36 @@ def build_bilibili_meta(src, title_zh):
         'tags': config['tags'],
         'category': category,
         'channel_tag': channel_tag,
-        'collection': suggest_bilibili_collection(category, channel_tag, bilibili_title),
+        'collection': suggest_bilibili_collection(
+            category, channel_tag, bilibili_title,
+            channel_name=(get_video_online_info(src) or {}).get('uploader') or '',
+            description=(get_video_online_info(src) or {}).get('description') or '',
+        ),
         'source_url': src if isinstance(src, str) and src.startswith('http') else None,
     }
+
+
+def refresh_bilibili_meta_for_upload(meta, fallback_title):
+    """上传前按当前规则刷新旧 meta，避免旧文件继续沿用错误的分区、合集或频道标签。"""
+    meta = dict(meta or {})
+    src = meta.get('source_url')
+    if not src:
+        # 手动加入、没有在线来源信息的文件按用户规则归为情感类。
+        config = BILIBILI_CATEGORY_CONFIG['情感']
+        title = meta.get('title') or fallback_title
+        return {
+            **meta,
+            'title': title[:80],
+            'tid': config['tid'],
+            'tags': config['tags'],
+            'category': '情感',
+            'collection': suggest_bilibili_collection('情感', meta.get('channel_tag', ''), title),
+            'source_url': None,
+        }
+
+    # meta 中的 title 已经是中文；去掉旧频道前缀后重新按最新规则加前缀、分区和合集。
+    title_zh = re.sub(r'^【[^】]*】\s*', '', meta.get('title') or fallback_title).strip() or fallback_title
+    return build_bilibili_meta(src, title_zh)
 
 
 # 标题前缀【】内容 -> 合集名称的固定对应
@@ -2883,6 +2962,8 @@ CHANNEL_TAG_COLLECTIONS = {
     '星女Anita': '星女普通话合集',
     'Hawaii': '夏威夷小姐',
     'RedFairy': '【Redfairy】你注定遇到',
+    'Tookie🌞': '美女神准Tookie',
+    'Moonlight Guidance': 'Moonlight月光指引合集',
 }
 
 # 合集名称 -> (season_id, section_id)，从B站创作中心 /x2/creative/web/seasons 接口抓取
@@ -2898,7 +2979,26 @@ BILIBILI_COLLECTION_IDS = {
 }
 
 
-def suggest_bilibili_collection(category, channel_tag, title_zh, charging_enabled=None):
+def resolve_bilibili_collection_ids(collection_name):
+    """固定 ID 优先；新增合集则在投稿前从当前账号的合集列表按名称自动解析。"""
+    ids = BILIBILI_COLLECTION_IDS.get(collection_name)
+    if ids:
+        return ids
+    try:
+        import bilibili_upload
+        ids = asyncio.run(bilibili_upload.get_collection_ids_by_name(collection_name))
+        if ids:
+            BILIBILI_COLLECTION_IDS[collection_name] = ids
+            return ids
+    except Exception as e:
+        log_event(f"未能解析合集「{collection_name}」的 ID：{e}")
+    return (None, None)
+
+
+TAROT_CHANNEL_TAGS = {'222', '222印', 'WF', 'RedFairy', '星女Anita', 'Hawaii', 'Moonlight Guidance', 'Tookie🌞'}
+
+
+def suggest_bilibili_collection(category, channel_tag, title_zh, charging_enabled=None, channel_name='', description=''):
     """
     根据分区/频道缩略名/标题/是否开启充电设置，给出投稿时"加入合集"的建议名称（仅作提示，
     B站合集需通过单独API在上传后添加，此处先生成建议供人工/后续自动化参考）。
@@ -2909,13 +3009,15 @@ def suggest_bilibili_collection(category, channel_tag, title_zh, charging_enable
     if category == '知识':
         return '精神&身体健康'
 
-    if '双生火焰' in title_zh:
+    searchable = f"{title_zh} {channel_tag} {channel_name} {description}".lower()
+    if '双生火焰' in searchable or 'twin flame' in searchable:
         return '双生火焰'
 
     if channel_tag in CHANNEL_TAG_COLLECTIONS:
         return CHANNEL_TAG_COLLECTIONS[channel_tag]
 
-    if any(kw in title_zh for kw in ('塔罗', '占卜', '星座', '占星', '算命')):
+    if (channel_tag in TAROT_CHANNEL_TAGS or
+            any(kw in searchable for kw in ('塔罗', '占卜', '星座', '占星', '算命', 'tarot', 'astrology', 'oracle', 'zodiac'))):
         return '充电塔罗占卜翻译&配音' if charging_enabled else '免费塔罗占卜配音'
 
     return '免费励志&疗愈'
@@ -3393,9 +3495,9 @@ def batch_merge_videos(audio_dir=None, video_dir=None, subtitle_mode='none', pai
             try:
                 import asyncio
                 import bilibili_upload
-                desc = load_bilibili_desc(audio_dir, base, title)
                 meta = load_bilibili_meta(audio_dir, base, title)
-                season_id, section_id = BILIBILI_COLLECTION_IDS.get(meta['collection'], (None, None))
+                desc = load_bilibili_desc(audio_dir, base, title, meta)
+                season_id, section_id = resolve_bilibili_collection_ids(meta['collection'])
                 result = asyncio.run(bilibili_upload.upload_video(
                     output_path, title=meta['title'], desc=desc, tid=meta['tid'], tags=meta['tags'],
                     source_url=meta.get('source_url'),
@@ -3413,29 +3515,39 @@ def batch_merge_videos(audio_dir=None, video_dir=None, subtitle_mode='none', pai
     return results
 
 
-def load_bilibili_desc(folder, base, title):
-    """读取dub_video生成的简介/章节时间轴文件（{base}.desc.txt），没有则用默认简介"""
+def load_bilibili_desc(folder, base, title, meta=None):
+    """读取章节简介；旧文件缺少时间轴时，用原视频链接重新提取并覆盖保存。"""
     desc_path = os.path.join(folder, base + '.desc.txt')
     if os.path.exists(desc_path):
         with open(desc_path, 'r', encoding='utf-8') as f:
-            return f.read()
+            existing = f.read()
+        if '时间轴：' in existing:
+            return existing
+    src = (meta or {}).get('source_url')
+    if src:
+        rebuilt = build_bilibili_description(src, re.sub(r'^【[^】]*】\s*', '', (meta or {}).get('title') or title))
+        if rebuilt:
+            with open(desc_path, 'w', encoding='utf-8') as f:
+                f.write(rebuilt)
+            return rebuilt
     return f"中文配音：{title}"
 
 
 def load_bilibili_meta(folder, base, title):
-    """读取dub_video生成的B站投稿元数据（{base}.meta.json：标题/分区/标签），没有则用默认值"""
+    """读取并刷新B站投稿元数据，确保旧文件也遵从最新分区/合集规则。"""
     meta_path = os.path.join(folder, base + '.meta.json')
     if os.path.exists(meta_path):
         try:
             with open(meta_path, 'r', encoding='utf-8') as f:
                 meta = json.load(f)
-            if meta.get('title') and meta.get('tid') and meta.get('tags'):
-                return meta
+            if meta.get('title'):
+                refreshed = refresh_bilibili_meta_for_upload(meta, title)
+                with open(meta_path, 'w', encoding='utf-8') as f:
+                    json.dump(refreshed, f, ensure_ascii=False, indent=2)
+                return refreshed
         except Exception:
             pass
-    config = BILIBILI_CATEGORY_CONFIG['知识']
-    return {'title': title, 'tid': config['tid'], 'tags': config['tags'], 'category': '知识',
-            'channel_tag': '', 'collection': '精神&身体健康'}
+    return refresh_bilibili_meta_for_upload({}, title)
 
 
 UPLOADED_SUBDIR = '已上传'
@@ -3514,9 +3626,9 @@ def upload_selected_videos(video_dir=None, selected_files=None, extra_paths=None
         base = os.path.splitext(fname)[0]
         print(f"\n▶ 投稿 ({idx}/{total})：{fname}", flush=True)
         try:
-            desc = load_bilibili_desc(folder, base, title)
             meta = load_bilibili_meta(folder, base, title)
-            season_id, section_id = BILIBILI_COLLECTION_IDS.get(meta['collection'], (None, None))
+            desc = load_bilibili_desc(folder, base, title, meta)
+            season_id, section_id = resolve_bilibili_collection_ids(meta['collection'])
             cat_idx = category_counters.get(meta['category'], 0)
             category_counters[meta['category']] = cat_idx + 1
             result = asyncio.run(bilibili_upload.upload_video(

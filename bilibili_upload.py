@@ -48,7 +48,8 @@ COVER_EXTS = ('.jpg', '.jpeg', '.png', '.webp')
 
 # 是否在封面图上叠加标题文字（在原图中央加大号描边文字，
 # 而不是用B站网页"封面设置"里的模板编辑器——那个没有API，无法自动化）。
-ADD_TITLE_TO_COVER = True
+# 优先使用文件夹内已有封面；找不到时只截取视频帧，绝不自动往封面叠文字。
+ADD_TITLE_TO_COVER = False
 
 # Windows自带的中文字体，找不到则跳过文字叠加
 COVER_FONT_PATHS = [
@@ -229,6 +230,38 @@ DRAFT_ADD_API = {
     'method': 'POST',
 }
 
+COLLECTION_LIST_API = {
+    'url': 'https://member.bilibili.com/x2/creative/web/seasons',
+    'method': 'GET',
+}
+
+
+async def get_collection_ids_by_name(collection_name):
+    """从当前B站账号的合集列表按名称找到 (season_id, section_id)。
+
+    新增合集不需要再把 ID 写死在代码中；优先使用第一个小节作为投稿小节。
+    """
+    from bilibili_api.utils.network import Api
+
+    credential = load_credential()
+    if not credential or not collection_name:
+        return (None, None)
+    data = await (
+        Api(**COLLECTION_LIST_API, credential=credential)
+        .update_params(pn=1, ps=100, order='mtime', sort='desc')
+        .result
+    )
+    for item in (data or {}).get('seasons') or []:
+        season = item.get('season') or {}
+        if str(season.get('title') or '').strip() != collection_name:
+            continue
+        sections = ((item.get('sections') or {}).get('sections') or [])
+        if sections:
+            return (season.get('id'), sections[0].get('id'))
+        # 没有小节时无法安全地把草稿加入合集，明确返回空而不是误投到其它合集。
+        return (None, None)
+    return (None, None)
+
 
 async def upload_video(video_path, title, desc='', tags=None, source_url=None,
                         tid=DEFAULT_TID, cover_path=None, delay_minutes=5, charging_enabled=False,
@@ -236,7 +269,7 @@ async def upload_video(video_path, title, desc='', tags=None, source_url=None,
     """
     上传视频文件到B站，并以"草稿"形式保存（不会公开发布、不会进入审核），
     需要去B站创作中心的"草稿箱"里手动检查后再点击发布。
-    source_url：原视频链接，填写后会按"转载"标注来源；不填则按"自制"。
+    所有投稿均按"转载"提交；source_url 是原视频链接，会写入B站的转载来源字段。
     delay_minutes：定时发布的延迟分钟数（写入draft的dtime字段，"当前时间+该分钟数"后定时发布），
     传None则不设置定时。
     返回B站接口的响应数据。
@@ -267,8 +300,8 @@ async def upload_video(video_path, title, desc='', tags=None, source_url=None,
         desc=desc,
         cover=Picture.from_file(cover_path),
         tags=(tags or DEFAULT_TAGS)[:10],
-        original=not bool(source_url),
-        source=source_url,
+        original=False,
+        source=source_url or '',
     )
 
     uploader = video_uploader.VideoUploader([page], meta, credential)
@@ -363,7 +396,7 @@ async def upload_video(video_path, title, desc='', tags=None, source_url=None,
         }],
         'cover': cover_url,
         'title': title[:80],
-        'copyright': 2 if source_url else 1,
+        'copyright': 2,
         'source': source_url or '',
         'creation_statement_id': CREATION_STATEMENT_NONE,
         'tid': tid,
