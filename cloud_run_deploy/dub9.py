@@ -51,6 +51,31 @@ VOICE_MAP = {
     '男': MALE_VOICES[0],
     '女': FEMALE_VOICES[0],
 }
+
+CHINESE_TTS_FALLBACK_VOICES = {
+    'male': ['en-US-AndrewMultilingualNeural', 'en-US-BrianMultilingualNeural'],
+    'female': ['en-US-AvaMultilingualNeural', 'en-US-EmmaMultilingualNeural'],
+}
+
+def _voice_gender_hint(voice):
+    v = (voice or '').lower()
+    if any(x in v for x in ('yunxi', 'yunyang', 'yunjian', 'yunxia', 'wanlung', 'yunjhe')):
+        return 'male'
+    return 'female'
+
+def _tts_voice_candidates(voice):
+    """Prefer the requested Chinese voice, but keep multilingual neural fallbacks.
+
+    edge-tts occasionally lists zh-CN voices while returning NoAudioReceived for
+    them. The multilingual neural voices still read Chinese text and keep the
+    pipeline moving instead of dropping the segment entirely.
+    """
+    requested = voice or TTS_VOICE
+    voices = [requested]
+    if requested.lower().startswith('zh-'):
+        voices.extend(CHINESE_TTS_FALLBACK_VOICES[_voice_gender_hint(requested)])
+    # Preserve order and remove duplicates.
+    return list(dict.fromkeys(voices))
 # 本机访问 edge-tts 用的代理（绕本地网络限制）。默认值是本机专用配置，不要改动，
 # 否则会影响本地批量配音工具。云端部署（HF Space等）不需要这个代理，那边的启动脚本
 # 会在导入后把 dub9.PROXY 设成 None，不动这里的默认值。
@@ -1614,25 +1639,37 @@ async def synthesize_segment(seg, voice=TTS_VOICE, tts_cache=None, title=None, b
             except Exception:
                 pass
 
-    for attempt in range(4):
-        try:
-            communicate = edge_tts.Communicate(text, voice, rate=base_rate_str, proxy=PROXY)
-            await communicate.save(audio_path)
-            # edge-tts 偶尔不抛异常却写出 0 字节空文件 → 视为失败重试，否则这句配音会丢、
-            # 观众看不懂。必须确认产出非空才算成功。
-            if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
-                break
-            raise RuntimeError("TTS 返回空音频(0字节)")
-        except Exception as e:
+    synthesis_voice = voice
+    last_tts_error = None
+    for candidate_voice in _tts_voice_candidates(voice):
+        for attempt in range(4):
             try:
-                if os.path.exists(audio_path) and os.path.getsize(audio_path) == 0:
-                    os.remove(audio_path)
-            except Exception:
-                pass
-            if attempt == 3:
-                print(f"\n  警告：片段合成多次失败，跳过。({e})")
-                return None
-            await asyncio.sleep(1.5 * (attempt + 1))
+                communicate = edge_tts.Communicate(text, candidate_voice, rate=base_rate_str, proxy=PROXY)
+                await communicate.save(audio_path)
+                # edge-tts 偶尔不抛异常却写出 0 字节空文件 → 视为失败重试，否则这句配音会丢、
+                # 观众看不懂。必须确认产出非空才算成功。
+                if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+                    synthesis_voice = candidate_voice
+                    if candidate_voice != voice:
+                        print(f"\n  提示：{voice} 暂不可用，已用 {candidate_voice} 兜底合成。")
+                    break
+                raise RuntimeError("TTS 返回空音频(0字节)")
+            except Exception as e:
+                last_tts_error = e
+                try:
+                    if os.path.exists(audio_path) and os.path.getsize(audio_path) == 0:
+                        os.remove(audio_path)
+                except Exception:
+                    pass
+                if attempt == 3:
+                    break
+                await asyncio.sleep(1.5 * (attempt + 1))
+        if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+            break
+
+    if not (os.path.exists(audio_path) and os.path.getsize(audio_path) > 0):
+        print(f"\n  警告：片段合成多次失败，跳过。({last_tts_error})")
+        return None
 
     if not (os.path.exists(audio_path) and os.path.getsize(audio_path) > 0):
         return None
@@ -1647,7 +1684,7 @@ async def synthesize_segment(seg, voice=TTS_VOICE, tts_cache=None, title=None, b
             for attempt in range(3):
                 try:
                     communicate = edge_tts.Communicate(
-                        text, voice, rate=adj_rate_str, proxy=PROXY)
+                        text, synthesis_voice, rate=adj_rate_str, proxy=PROXY)
                     await communicate.save(adj_path)
                     # 仅当加速版有效(非空)才替换基准版，避免把已合好的好音频覆盖成空 → 丢句
                     if os.path.exists(adj_path) and os.path.getsize(adj_path) > 0:
@@ -1667,8 +1704,12 @@ async def synthesize_segment(seg, voice=TTS_VOICE, tts_cache=None, title=None, b
     final_dur = get_audio_duration(audio_path)
     if final_dur:
         seg['tts_duration'] = final_dur
+    seg['_tts_voice_used'] = synthesis_voice
     if tts_cache is not None:
-        tts_cache[audio_path] = {'text': text, 'voice': voice, 'base_rate_pct': base_rate_pct}
+        tts_cache[audio_path] = {
+            'text': text, 'voice': voice, 'synthesis_voice': synthesis_voice,
+            'base_rate_pct': base_rate_pct,
+        }
     return audio_path
 
 

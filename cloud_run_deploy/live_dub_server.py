@@ -581,6 +581,16 @@ class ReadAloudTTSRequest(BaseModel):
 _read_aloud_tts_semaphore = asyncio.Semaphore(8)
 
 
+def _read_aloud_voice_candidates(voice):
+    requested = (voice or 'zh-CN-XiaoxiaoNeural').strip()
+    voices = [requested]
+    if requested.lower().startswith('zh-'):
+        gender = dub9._voice_gender_hint(requested) if hasattr(dub9, '_voice_gender_hint') else 'female'
+        fallbacks = getattr(dub9, 'CHINESE_TTS_FALLBACK_VOICES', {})
+        voices.extend(fallbacks.get(gender) or fallbacks.get('female') or ['en-US-AvaMultilingualNeural'])
+    return list(dict.fromkeys(voices))
+
+
 _gemini_progress_cache = {}
 
 
@@ -623,20 +633,25 @@ async def read_aloud_tts(req: ReadAloudTTSRequest):
     rate_pct = max(-50, min(100, int(req.rate_pct or 0)))
     async with _read_aloud_tts_semaphore:
         last_error = None
-        for attempt in range(3):
-            try:
-                communicate = edge_tts.Communicate(text, voice, rate=f'{rate_pct:+d}%')
-                audio = bytearray()
-                async for chunk in communicate.stream():
-                    if chunk['type'] == 'audio':
-                        audio.extend(chunk['data'])
-                if audio:
-                    return Response(content=bytes(audio), media_type='audio/mpeg')
-                last_error = '合成结果为空'
-            except Exception as exc:
-                last_error = str(exc)
-                log.warning(f'[朗读TTS] 第{attempt + 1}次失败 voice={voice}: {exc}')
-            await asyncio.sleep(0.5 * (attempt + 1))
+        for candidate_voice in _read_aloud_voice_candidates(voice):
+            for attempt in range(3):
+                try:
+                    communicate = edge_tts.Communicate(text, candidate_voice, rate=f'{rate_pct:+d}%')
+                    audio = bytearray()
+                    async for chunk in communicate.stream():
+                        if chunk['type'] == 'audio':
+                            audio.extend(chunk['data'])
+                    if audio:
+                        headers = {}
+                        if candidate_voice != voice:
+                            headers['X-TTS-Fallback-Voice'] = candidate_voice
+                            log.warning(f'[朗读TTS] {voice} 不可用，已切换 {candidate_voice}')
+                        return Response(content=bytes(audio), media_type='audio/mpeg', headers=headers)
+                    last_error = '合成结果为空'
+                except Exception as exc:
+                    last_error = str(exc)
+                    log.warning(f'[朗读TTS] 第{attempt + 1}次失败 voice={candidate_voice}: {exc}')
+                await asyncio.sleep(0.5 * (attempt + 1))
     return JSONResponse(status_code=500, content={'error': last_error or 'TTS 合成失败'})
 
 
