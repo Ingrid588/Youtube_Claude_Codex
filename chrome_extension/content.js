@@ -1879,6 +1879,7 @@ function exportDiagnosticLog(sess) {
     generatedAt: new Date().toISOString(),
     counts: sess._diagnosticCounts || {},
     entries: sess._diagnosticLog || [],
+    playedSourceEvents: sess._playedSourceEvents || [],
   };
   try {
     downloadBlob(
@@ -1887,6 +1888,55 @@ function exportDiagnosticLog(sess) {
     );
   } catch (e) {
     console.warn('[配音插件] 导出诊断日志失败', e);
+  }
+}
+
+function buildSourceSubtitleLedger(rawSegments, stage = 'source') {
+  return (rawSegments || []).map((s, i) => {
+    const item = {
+      index: i + 1,
+      stage,
+      start: +(+s.start || 0).toFixed(3),
+      end: +(+s.end || +s.start || 0).toFixed(3),
+      text: String(s.text || ''),
+    };
+    item.sourceKey = makeSourceSegKey(item);
+    return item;
+  });
+}
+
+function exportRawSourceSubtitles(sess) {
+  const entries = sess?._sourceRawSubtitles || [];
+  if (!entries.length) return;
+  const payload = {
+    videoId: sess.videoId,
+    title: sess.title,
+    videoUrl: location.href,
+    generatedAt: new Date().toISOString(),
+    note: '这是平台返回的原始字幕事件账本；原始字幕本身重复不算脚本重复。判断脚本重复时，请对照 playedSourceEvents/sourceKey。',
+    entries,
+    processedTimeline: sess._processedSourceSubtitles || [],
+    playedSourceEvents: sess._playedSourceEvents || [],
+  };
+  try {
+    downloadBlob(
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      `${buildExportFilenamePrefix(sess)}_source_subtitles.json`
+    );
+  } catch (e) {
+    console.warn('[配音插件] 导出原始字幕JSON失败', e);
+  }
+
+  try {
+    const lines = entries.map((e, i) =>
+      `${i + 1}\n${_srtTimestamp(e.start)} --> ${_srtTimestamp(Math.max(e.end, e.start + 0.05))}\n${e.text}\n`
+    );
+    downloadBlob(
+      new Blob([lines.join('\n')], { type: 'text/srt' }),
+      `${buildExportFilenamePrefix(sess)}_source_subtitles.srt`
+    );
+  } catch (e) {
+    console.warn('[配音插件] 导出原始字幕SRT失败', e);
   }
 }
 
@@ -2551,6 +2601,30 @@ function _currentSegReadyAt(sess, t) {
   });
 }
 
+function rememberPlayedSourceEvent(sess, seg, mode = 'audio') {
+  if (!sess || !seg) return;
+  sess._playedSourceEvents = sess._playedSourceEvents || [];
+  const key = _segKey(seg);
+  const epoch = sess._seekEpoch || 0;
+  const countSameEpoch = sess._playedSourceEvents.filter(
+    (e) => e.sourceKey === key && e.seekEpoch === epoch).length;
+  const entry = {
+    sourceKey: key,
+    seekEpoch: epoch,
+    mode,
+    start: +(+seg.start || 0).toFixed(3),
+    end: +(+(seg.end ?? (seg.start + (seg.tts_duration || seg.duration || 0))) || 0).toFixed(3),
+    text: String(seg.translation || seg.text || ''),
+    playedAt: new Date().toISOString(),
+    duplicateWithinSeek: countSameEpoch > 0,
+  };
+  sess._playedSourceEvents.push(entry);
+  if (sess._playedSourceEvents.length > 2000) sess._playedSourceEvents.shift();
+  if (entry.duplicateWithinSeek) {
+    recordDiagnostic(sess, 'played_source_event_duplicate', entry);
+  }
+}
+
 function _hasForwardDubCache(sess, t, windowSec = 45) {
   const end = t + windowSec;
   if (sess._maxSynthedTime && sess._maxSynthedTime >= t + 0.5) return true;
@@ -2896,6 +2970,7 @@ function playNextDue(sess, t) {
       utter.onerror = finish;
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utter);
+      rememberPlayedSourceEvent(sess, best, 'web_speech');
       console.warn('[配音插件] 云端音频为空，使用默认配音员继续：',
         best.start.toFixed(1) + 's');
       return;
@@ -3040,6 +3115,7 @@ function playNextDue(sess, t) {
       sess._lastDubAudioTs = Date.now();
       best._loadRetryCount = 0;
       best._playRetryCount = 0;
+      rememberPlayedSourceEvent(sess, best, 'audio');
       console.log('[配音插件] ▶ 播放音频段', best.start.toFixed(1) + 's');
       // 朗读模式：第一段真正出声 → 结束"初始化"倒计时，按钮转为"朗读中"
       if (sess._readMode && !sess._reading) {
@@ -4107,6 +4183,7 @@ function finalizeSessionExports(sess, keepRecordingForNextVideo = false) {
     try { exportRateLog(sess); } catch (e) { console.warn('[配音插件] 导出变速日志异常', e); }
     try { exportSubtitles(sess); } catch (e) { console.warn('[配音插件] 导出字幕异常', e); }
     try { exportKaraokeSubtitles(sess); } catch (e) { console.warn('[配音插件] 导出卡拉OK字幕异常', e); }
+    try { exportRawSourceSubtitles(sess); } catch (e) { console.warn('[配音插件] 导出原始字幕异常', e); }
     try { exportDiagnosticLog(sess); } catch (e) { console.warn('[配音插件] 导出诊断日志异常', e); }
   }
   // 始终额外下载服务器合成的完整MP3。它不依赖tabCapture，即使Chrome录屏权限/
@@ -4841,6 +4918,10 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     return fail('未获取到字幕，请打开“自动翻译→配音指定字幕”后重试');
   }
 
+  // 完整保留平台返回的原始字幕事件，供排查“字幕源本来重复”还是“脚本重复播放”。
+  // 这份账本必须早于音效过滤、滚动去重和合句；后续任何处理都不能覆盖它。
+  sess._sourceRawSubtitles = buildSourceSubtitleLedger(rawSegments, 'platform_raw');
+
   // 所有字幕来源在任何滚动去重/合句之前统一清除音效标记。服务器缓存和本地缓存
   // 返回的是已解析segments，不一定经过parseTimedText里的过滤；旧顺序先合句，
   // 会把独立“音乐”拼进前后正文（如“我花了20年时间研究”+“音乐”），之后就
@@ -4973,6 +5054,9 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     sess._dubVideoRate = computeReadVideoRate(dubPaceRatio);
     console.log(`[配音插件] 全局视频调速：语速比=${dubPaceRatio.toFixed(2)}，统一基准=${sess._dubVideoRate.toFixed(2)}x`);
   }
+  sess._processedSourceSubtitles = buildSourceSubtitleLedger(
+    rawSegments,
+    sess._readMode ? 'read_timeline' : 'dub_sentence_timeline');
 
   // 自绘字幕的回退分段也用合并后的整句，避免播放间隙显示碎片旧行
   sess._displaySegments = rawSegments.map((s) => ({ start: s.start, end: s.end, text: s.text }));
@@ -7355,12 +7439,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // popup里手动点"下载变速日志"——正常情况点"停止配音"会自动导出，这个按钮
     // 是给"忘了点停止就关页面/中途想先导出看一下"这种情况兜底用的。字幕（SRT）
     // 跟变速日志同一套时间轴，一起导出，省得用户再单独找一个按钮。
-    const sessions = activeSessions().filter((s) => (s._rateLog && s._rateLog.length) || (s._subtitleLog && s._subtitleLog.length));
+    const sessions = activeSessions().filter((s) =>
+      (s._rateLog && s._rateLog.length)
+      || (s._subtitleLog && s._subtitleLog.length)
+      || (s._sourceRawSubtitles && s._sourceRawSubtitles.length));
     if (!sessions.length) {
       sendResponse({ ok: false, error: '当前没有可导出的记录（还没开始配音，或这个session还没产生过变速/字幕）' });
       return true;
     }
-    sessions.forEach((s) => { exportRateLog(s); exportSubtitles(s); exportKaraokeSubtitles(s); exportDiagnosticLog(s); });
+    sessions.forEach((s) => {
+      exportRateLog(s);
+      exportSubtitles(s);
+      exportKaraokeSubtitles(s);
+      exportRawSourceSubtitles(s);
+      exportDiagnosticLog(s);
+    });
     sendResponse({ ok: true, count: sessions.length });
     return true;
   }
