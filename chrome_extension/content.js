@@ -1649,7 +1649,7 @@ function waitForAudioCanPlay(audio, timeoutMs = 1400) {
 async function startupAudioGateReady(sess, t) {
   const candidates = (sess?.dubSegments || [])
     .filter((seg) => seg.audio_url && seg.start >= (t || 0) - 0.5)
-    .sort((a, b) => a.start - b.start)
+    .sort(compareDubSegments)
     .slice(0, STARTUP_PLAYABLE_SEGMENTS);
   if (candidates.length < STARTUP_PLAYABLE_SEGMENTS) return false;
   try {
@@ -1893,8 +1893,10 @@ function exportDiagnosticLog(sess) {
 
 function buildSourceSubtitleLedger(rawSegments, stage = 'source') {
   return (rawSegments || []).map((s, i) => {
+    const sourceIndex = Number.isFinite(Number(s._sourceIndex)) ? Number(s._sourceIndex) : i;
     const item = {
       index: i + 1,
+      sourceIndex,
       stage,
       start: +(+s.start || 0).toFixed(3),
       end: +(+s.end || +s.start || 0).toFixed(3),
@@ -2312,6 +2314,27 @@ function makeSourceSegKey(seg) {
   return `${start}:${end}:${localDubHash(text)}`;
 }
 
+function sourceOrderOf(seg) {
+  const n = Number(seg?._sourceIndex);
+  return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+function segEndForOrder(seg) {
+  const directEnd = Number(seg?.end);
+  if (Number.isFinite(directEnd)) return directEnd;
+  const sourceEnd = Number(seg?._sourceEnd);
+  if (Number.isFinite(sourceEnd)) return sourceEnd;
+  return Number(seg?.start || 0) + Math.max(0, Number(seg?.tts_duration || seg?.duration || 0));
+}
+
+function compareDubSegments(a, b) {
+  const startDiff = Number(a?.start || 0) - Number(b?.start || 0);
+  if (Math.abs(startDiff) > 0.001) return startDiff;
+  const orderDiff = sourceOrderOf(a) - sourceOrderOf(b);
+  if (Number.isFinite(orderDiff) && orderDiff !== 0) return orderDiff;
+  return segEndForOrder(a) - segEndForOrder(b);
+}
+
 // 跨端唯一键不能只看 start：YouTube 开头滚动字幕可能多个事件共享同一个 start。
 // 也不能直接用服务端返回的 duration/end：服务端会按 TTS 时长重算。解决办法是把
 // 字幕源事件键(_sourceKey)随请求带着走；服务端没返回时，前端按请求顺序补回来。
@@ -2337,6 +2360,7 @@ function applySessionVoice(sess, segments) {
       _sourceStart: seg.start,
       _sourceEnd: seg.end,
       _sourceText: seg._sourceText || seg.text,
+      _sourceIndex: Number.isFinite(Number(seg._sourceIndex)) ? Number(seg._sourceIndex) : null,
     };
     return voice ? { ...withSource, voice } : withSource;
   }).filter((seg) => seg.text);
@@ -2370,6 +2394,7 @@ async function requestSynthAround(sess, t) {
     if (!(got && got.length && sess.started)) return;
     const exist = new Set(sess.dubSegments.map(_segKey));
     for (const s of got) if (!exist.has(_segKey(s))) sess.dubSegments.push({ ...s, played: false });
+    sess.dubSegments.sort(compareDubSegments);
     if (sess._buffering && _segReadyAt(sess, sess.video.currentTime)) {
       sess._buffering = false; sess.weArePausing = false;
       hideBufferIndicator();
@@ -2402,8 +2427,7 @@ async function requestSynthAround(sess, t) {
   }
 
   try {
-    const segs = applySessionVoice(sess,
-      pending.map((s) => ({ start: s.start, end: s.end, text: s.text })));
+    const segs = applySessionVoice(sess, pending);
     const got = await sendChunk(sess.videoId, sess.title, segs, sess._baseRatePct || 0, sess._readMode, sess._readLang, sess._subtitleMode === 'gemini');
     pushAndMaybeResume(got);
     if (got?.length) {
@@ -2465,7 +2489,7 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
 
   (async () => {
     try {
-      const requested = applySessionVoice(sess, [{ start: seg.start, end: seg.end, text: seg.text }]);
+      const requested = applySessionVoice(sess, [seg]);
       const got = await sendChunk(sess.videoId, sess.title, requested, sess._baseRatePct || 0,
         false, null, sess._subtitleMode === 'gemini');
       if (!sess.started || !got?.length) return;
@@ -2486,7 +2510,7 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
         repaired++;
       }
       if (repaired) {
-        sess.dubSegments.sort((a, b) => a.start - b.start);
+        sess.dubSegments.sort(compareDubSegments);
         const frontier = Math.max(...got.map((s) => s.start + (s.tts_duration || s.duration || 0)));
         sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
         if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
@@ -2561,7 +2585,7 @@ function repairEarlyDubbingWindow(sess, t) {
   });
   (async () => {
     try {
-      const requested = applySessionVoice(sess, missing.map((s) => ({ start: s.start, end: s.end, text: s.text })));
+      const requested = applySessionVoice(sess, missing);
       const got = await sendChunk(sess.videoId, sess.title, requested, sess._baseRatePct || 0,
         false, null, sess._subtitleMode === 'gemini');
       if (!sess.started || !got?.length) return;
@@ -2572,7 +2596,7 @@ function repairEarlyDubbingWindow(sess, t) {
         if (old) Object.assign(old, item, { played: old.played && old.start < (sess.video.currentTime || 0) - 1, _invalidAudio: false, _loadRetryCount: 0 });
         else sess.dubSegments.push({ ...item, played: false });
       }
-      sess.dubSegments.sort((a, b) => a.start - b.start);
+      sess.dubSegments.sort(compareDubSegments);
       recordDiagnostic(sess, 'early_window_gap_repair_done', { count: got.length, end });
       playNextDue(sess, sess.video.currentTime);
     } catch (e) {
@@ -2710,7 +2734,7 @@ function _ensureLocalCacheLead(sess, t) {
         frontier = Math.max(frontier, item.start + (item.tts_duration || item.duration || 0));
       }
       if (!loaded) return;
-      sess.dubSegments.sort((a, b) => a.start - b.start);
+      sess.dubSegments.sort(compareDubSegments);
       sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
       if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
       recordDiagnostic(sess, 'loaded_forward_local_cache_into_play_queue', {
@@ -3271,7 +3295,12 @@ async function loadLocalDubBatch(videoId, requested) {
       const req = store.get(localDubKey(videoId, seg));
       req.onsuccess = () => {
         const cached = req.result || null;
-        resolve(cached ? { ...seg, ...cached, _sourceKey: seg._sourceKey || makeSourceSegKey(seg) } : null);
+        resolve(cached ? {
+          ...seg,
+          ...cached,
+          _sourceKey: seg._sourceKey || cached._sourceKey || makeSourceSegKey(seg),
+          _sourceIndex: Number.isFinite(Number(seg._sourceIndex)) ? Number(seg._sourceIndex) : cached._sourceIndex,
+        } : null);
       };
       req.onerror = () => resolve(null);
     })));
@@ -3303,6 +3332,7 @@ async function saveLocalDubBatch(videoId, requested, returned) {
           _sourceStart: source.start,
           _sourceEnd: source.end,
           _sourceText: source._sourceText || source.text,
+          _sourceIndex: Number.isFinite(Number(source._sourceIndex)) ? Number(source._sourceIndex) : null,
           audio_url: item.audio_url || `local://${videoId}/${item.start}`,
         },
         localDubKey(videoId, source));
@@ -3350,7 +3380,7 @@ async function hydrateLocalCacheWindow(sess, centerTime, beforeSec = 12, afterSe
     count++;
   }
   if (count) {
-    sess.dubSegments.sort((a, b) => a.start - b.start);
+    sess.dubSegments.sort(compareDubSegments);
     sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
     if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
   }
@@ -3399,6 +3429,28 @@ async function clearLocalDubVideo(videoId) {
 async function sendChunkToServer(server, videoId, title, segments, baseRatePct, readMode, lang, allowGemini, onProgress) {
   const requestId = allowGemini
     ? `${videoId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` : '';
+  const requestSegments = segments || [];
+  const sourceByKey = new Map(requestSegments.map((s) => [s._sourceKey || makeSourceSegKey(s), s]));
+  const sourceByStart = new Map();
+  for (const s of requestSegments) {
+    const k = Math.round((s.start || 0) * 1000);
+    if (!sourceByStart.has(k)) sourceByStart.set(k, []);
+    sourceByStart.get(k).push(s);
+  }
+  const attachSourceMetadata = (s, i = 0) => {
+    if (!s) return;
+    const byStart = sourceByStart.get(Math.round((s?.start || 0) * 1000)) || [];
+    const source = sourceByKey.get(s._sourceKey || '')
+      || requestSegments[i]
+      || byStart[sourceOrderOf(s)]
+      || byStart[0];
+    if (!source) return;
+    s._sourceKey = source._sourceKey || makeSourceSegKey(source);
+    s._sourceStart = source.start;
+    s._sourceEnd = source.end;
+    s._sourceText = source._sourceText || source.text;
+    s._sourceIndex = Number.isFinite(Number(source._sourceIndex)) ? Number(source._sourceIndex) : i;
+  };
   let progressTimer = null;
   const seenProgress = new Set();
   if (allowGemini && onProgress) {
@@ -3408,13 +3460,14 @@ async function sendChunkToServer(server, videoId, title, segments, baseRatePct, 
         options: { method: 'GET' },
       }, (r) => {
         const items = r?.data?.items || [];
-        const fresh = items.filter((x) => {
-          const k = Math.round(x.start * 1000);
+        const fresh = items.filter((x, i) => {
+          attachSourceMetadata(x, i);
+          const k = x._sourceKey || `${Math.round(x.start * 1000)}:${sourceOrderOf(x)}:${localDubHash(x.text || x.translation || '')}`;
           if (seenProgress.has(k)) return false;
           seenProgress.add(k);
           return true;
         });
-        if (fresh.length) onProgress(fresh);
+        if (fresh.length) onProgress(fresh.sort(compareDubSegments));
       });
     };
     progressTimer = setInterval(poll, 500);
@@ -3459,18 +3512,12 @@ async function sendChunkToServer(server, videoId, title, segments, baseRatePct, 
           if (!resp?.ok) return reject(new Error(resp?.error || '后端请求失败'));
           const segs = resp.data?.segments || [];
           if (segments?.length && !segs.length) return reject(new Error('后端未返回配音段'));
-          const sourceByStart = new Map((segments || []).map((s) => [Math.round((s.start || 0) * 1000), s]));
           for (let i = 0; i < segs.length; i++) {
             const s = segs[i];
-            const source = (segments || [])[i] || sourceByStart.get(Math.round((s?.start || 0) * 1000));
-            if (s && source) {
-              s._sourceKey = source._sourceKey || makeSourceSegKey(source);
-              s._sourceStart = source.start;
-              s._sourceEnd = source.end;
-              s._sourceText = source._sourceText || source.text;
-            }
+            attachSourceMetadata(s, i);
             if (s && s.audio_url && !/^blob:|^https?:\/\//i.test(s.audio_url)) s._dubServer = server;
           }
+          segs.sort(compareDubSegments);
           // 翻译失败的句子数（Gemini模式才会有），挂在数组对象上当副信息带出去——
           // 不改变 segs 本身还是个普通数组这一点，调用方原有的 for/.length 用法不用改，
           // 想要失败信息的调用方（目前只有 runStream）多读一下这个属性就行。
@@ -3660,7 +3707,7 @@ async function resumeAfterNetworkRecovery(sess) {
 async function processDubbingChunked(rawSegments, videoId, title, sess, fail, onFirstChunkReady) {
   const video = sess.video;
   const t0 = video.currentTime;
-  const ordered = rawSegments.slice().sort((a, b) => a.start - b.start);
+  const ordered = rawSegments.slice().sort(compareDubSegments);
   const upcoming = ordered.filter((s) => s.end >= t0 - 1);
   const pastAll = ordered.filter((s) => s.end < t0 - 1);
   const head = pastAll.slice(0, Math.min(6, pastAll.length));
@@ -3789,6 +3836,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
             existing.add(_segKey(s));
           }
         }
+        sess.dubSegments.sort(compareDubSegments);
         const frontier = Math.max(...fresh.map(s => s.start + (s.duration || 0)));
         sess._maxSynthedTime = Math.max(sess._maxSynthedTime, frontier);
         if (!sess._networkRecoveryPaused && sess._buffering
@@ -3859,6 +3907,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
             existing.add(_segKey(s));
           }
         }
+        sess.dubSegments.sort(compareDubSegments);
 
         // ASR 识别结果处理：
         // - 若立即返回了 asr_segments（前几批），直接用
@@ -3964,8 +4013,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
     for (let offset = 0; offset < missing.length; offset += 40) {
       try {
         const repairPart = missing.slice(offset, offset + 40);
-        const segs = applySessionVoice(sess,
-          repairPart.map((s) => ({ start: s.start, end: s.end, text: s.text })));
+        const segs = applySessionVoice(sess, repairPart);
         const got = await sendChunk(videoId, title, segs, sess._baseRatePct || 0,
           sess._readMode, sess._readLang, sess._subtitleMode === 'gemini');
         if (!sess.started || sess.videoId !== videoId) return;
@@ -3978,6 +4026,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
           for (const s of got) {
             if (!have2.has(_segKey(s))) sess.dubSegments.push({ ...s, played: false });
           }
+          sess.dubSegments.sort(compareDubSegments);
           console.log(`[配音插件] 收尾补漏第${round + 1}轮：补回 ${got.length} 句`);
         }
       } catch (e) {
@@ -4060,7 +4109,7 @@ async function repairDubbing(sess, btn, { resumeAfter = false, silent = false } 
   // 正常配音的位置，重新听一下衔接，体验更顺，不会觉得"突然冒出来"。
   const finishResume = () => {
     if (!resumeAfter) return;
-    const ordered = sess._allSegments.slice().sort((a, b) => a.start - b.start);
+    const ordered = sess._allSegments.slice().sort(compareDubSegments);
     const anchor = sess._lastTranslateFailureStart ?? sess.video.currentTime;
     let idx = ordered.findIndex((s) => s.start >= anchor);
     if (idx < 0) idx = ordered.length - 1;
@@ -4099,8 +4148,7 @@ async function repairDubbing(sess, btn, { resumeAfter = false, silent = false } 
   let lastFetchError = null;
   for (let i = 0; i < missing.length; i += REPAIR_CHUNK) {
     const batch = missing.slice(i, i + REPAIR_CHUNK);
-    const segs = applySessionVoice(sess,
-      batch.map((s) => ({ start: s.start, end: s.end, text: s.text })));
+    const segs = applySessionVoice(sess, batch);
     let got = null;
     for (let attempt = 0; attempt < 2; attempt++) {   // 单批失败重试一次，不连累其它批
       try {
@@ -4123,6 +4171,7 @@ async function repairDubbing(sess, btn, { resumeAfter = false, silent = false } 
         if (old) Object.assign(old, s, { played: old.played, _invalidAudio: false, _loadRetryCount: 0 });
         else sess.dubSegments.push({ ...s, played: false });
       }
+      sess.dubSegments.sort(compareDubSegments);
       recovered += got.length;
     } else {
       stillMissing += batch.length;
@@ -4724,6 +4773,11 @@ async function resynthesizeFuture(sess) {
     start: seg.start,
     end: seg.start + (seg.duration || 3),
     text: seg.translation || seg.text,
+    _sourceKey: seg._sourceKey,
+    _sourceStart: seg._sourceStart,
+    _sourceEnd: seg._sourceEnd,
+    _sourceText: seg._sourceText,
+    _sourceIndex: seg._sourceIndex,
   }));
   const withVoice = applySessionVoice(sess, rawFuture);
   const voiced = withVoice.filter((s) => s.voice).length;
@@ -5062,6 +5116,10 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     sess._dubVideoRate = computeReadVideoRate(dubPaceRatio);
     console.log(`[配音插件] 全局视频调速：语速比=${dubPaceRatio.toFixed(2)}，统一基准=${sess._dubVideoRate.toFixed(2)}x`);
   }
+  rawSegments = rawSegments.map((s, i) => ({
+    ...s,
+    _sourceIndex: Number.isFinite(Number(s._sourceIndex)) ? Number(s._sourceIndex) : i,
+  }));
   sess._processedSourceSubtitles = buildSourceSubtitleLedger(
     rawSegments,
     sess._readMode ? 'read_timeline' : 'dub_sentence_timeline');

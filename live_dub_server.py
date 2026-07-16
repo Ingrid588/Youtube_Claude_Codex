@@ -54,7 +54,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # ===== pyannote-audio 说话人分离（可选）=====
 try:
@@ -506,6 +506,11 @@ class RawSeg(BaseModel):
     end: float
     text: str
     voice: str | None = None  # 前端说话人分析指定的 TTS 声音
+    source_key: str | None = Field(default=None, alias='_sourceKey')
+    source_start: float | None = Field(default=None, alias='_sourceStart')
+    source_end: float | None = Field(default=None, alias='_sourceEnd')
+    source_text: str | None = Field(default=None, alias='_sourceText')
+    source_index: int | None = Field(default=None, alias='_sourceIndex')
 
 
 class DubRequest(BaseModel):
@@ -779,8 +784,15 @@ def _prepare_dub_segments(req: 'DubRequest'):
 
     朗读项目不做翻译：字幕已经是 /prefetch_captions 按用户选的目标语言抓回来的，
     这里只是原文照读（中文目标时额外做一次术语校正）。翻译留给以后的"配音"项目。"""
-    segments = [{'start': s.start, 'end': s.end, 'text': s.text,
-                 **(({'voice': s.voice}) if s.voice else {})} for s in req.segments]
+    segments = [{
+        'start': s.start, 'end': s.end, 'text': s.text,
+        '_sourceKey': s.source_key,
+        '_sourceStart': s.source_start if s.source_start is not None else s.start,
+        '_sourceEnd': s.source_end if s.source_end is not None else s.end,
+        '_sourceText': s.source_text or s.text,
+        '_sourceIndex': s.source_index,
+        **(({'voice': s.voice}) if s.voice else {}),
+    } for s in req.segments]
     segments = dub9.dedupe_rolling_overlap(segments)
     segments = dub9.estimate_durations(segments)
 
@@ -839,9 +851,14 @@ async def _run_dub_incremental(video_id, segments, tts_voice, title, base_rate_p
                     'tts_duration': seg.get('tts_duration', seg['duration']),
                     'text': seg['text'],
                     'translation': seg.get('translation', ''),
+                    '_sourceKey': seg.get('_sourceKey'),
+                    '_sourceStart': seg.get('_sourceStart', seg.get('start')),
+                    '_sourceEnd': seg.get('_sourceEnd', seg.get('end')),
+                    '_sourceText': seg.get('_sourceText', seg.get('text')),
+                    '_sourceIndex': seg.get('_sourceIndex'),
                     'audio_url': f"/audio/{video_id}/{fname}",
                 })
-                cache['completed'].sort(key=lambda x: x['start'])
+                cache['completed'].sort(key=lambda x: (x.get('_sourceIndex') is None, x.get('_sourceIndex') or 0, x['start']))
 
     try:
         await asyncio.gather(*[run_one(s) for s in valid_segments])
@@ -938,8 +955,15 @@ async def dub(req: DubRequest):
         _touch_video_cache_dir(req.video_id)
         # 不写全局 dub9.TEMP_DIR，video_dir 显式传给下面的 synthesize_all（temp_dir=）。
 
-        segments = [{'start': s.start, 'end': s.end, 'text': s.text,
-                     **(({'voice': s.voice}) if s.voice else {})} for s in req.segments]
+        segments = [{
+            'start': s.start, 'end': s.end, 'text': s.text,
+            '_sourceKey': s.source_key,
+            '_sourceStart': s.source_start if s.source_start is not None else s.start,
+            '_sourceEnd': s.source_end if s.source_end is not None else s.end,
+            '_sourceText': s.source_text or s.text,
+            '_sourceIndex': s.source_index,
+            **(({'voice': s.voice}) if s.voice else {}),
+        } for s in req.segments]
         voiced = [(s.start, s.voice) for s in req.segments if s.voice]
         if voiced:
             log.info(f"收到 per-segment voice 分配 {len(voiced)} 条: {voiced[:4]}...")
@@ -1129,12 +1153,18 @@ async def dub(req: DubRequest):
                                 fname = os.path.basename(seg['audio_path'])
                                 with open(seg['audio_path'], 'rb') as af:
                                     audio_b64 = base64.b64encode(af.read()).decode('ascii')
-                                progress_state['items'][str(seg['start'])] = {
+                                progress_key = seg.get('_sourceKey') or f"{seg.get('_sourceIndex')}:{seg['start']}:{seg.get('text', '')[:24]}"
+                                progress_state['items'][progress_key] = {
                                     'start': seg['start'],
                                     'duration': seg['duration'],
                                     'tts_duration': seg.get('tts_duration', seg['duration']),
                                     'text': seg['text'],
                                     'translation': seg.get('translation', ''),
+                                    '_sourceKey': seg.get('_sourceKey'),
+                                    '_sourceStart': seg.get('_sourceStart', seg.get('start')),
+                                    '_sourceEnd': seg.get('_sourceEnd', seg.get('end')),
+                                    '_sourceText': seg.get('_sourceText', seg.get('text')),
+                                    '_sourceIndex': seg.get('_sourceIndex'),
                                     'audio_url': f"/audio/{req.video_id}/{fname}",
                                     'audio_b64': audio_b64,
                                 }
@@ -1238,6 +1268,11 @@ async def dub(req: DubRequest):
                 'tts_duration': seg.get('tts_duration', seg['duration']),
                 'text': seg['text'],
                 'translation': seg.get('translation', ''),
+                '_sourceKey': seg.get('_sourceKey'),
+                '_sourceStart': seg.get('_sourceStart', seg.get('start')),
+                '_sourceEnd': seg.get('_sourceEnd', seg.get('end')),
+                '_sourceText': seg.get('_sourceText', seg.get('text')),
+                '_sourceIndex': seg.get('_sourceIndex'),
                 'audio_url': f"/audio/{req.video_id}/{fname}",
             }
             # 直接把音频内容编码进返回结果，插件不用再额外发请求去取文件——避免"生成时
