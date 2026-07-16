@@ -194,7 +194,9 @@ async function sendChunkReadAloudCloud(segments, lang) {
       }
     }
     return { start: seg.start, end: seg.end, text: seg.text, translation: text,
-             duration, tts_duration: duration, audio_url };
+             duration, tts_duration: duration, audio_url,
+             _sourceKey: makeSourceSegKey(seg),
+             _sourceStart: seg.start, _sourceEnd: seg.end, _sourceText: seg.text };
   }));
 }
 
@@ -2251,9 +2253,19 @@ function stopTabAudioRecordingAndDownload(sess, keepStream = false) {
 const SYNTH_GRACE_TICKS = 4;
 const AUTO_DOWNLOAD_SIDECARS = false; // 暂停自动下载 ASS/SRT/变速JSON；手动导出按钮仍可用
 
-// 服务器会按文字长度重算 duration，返回值不能再用原字幕的 end 对齐；跨端唯一稳定的
-// 事件锚点仍是字幕开始时间。此前把 end 纳入键会让同一句被误判“缺失”并重复补合成。
-const _segKey = (s) => Math.round((s?.start || 0) * 1000);
+function makeSourceSegKey(seg) {
+  if (seg?._sourceKey) return seg._sourceKey;
+  const start = Math.round(Number(seg?.start || 0) * 1000);
+  const endValue = Number.isFinite(Number(seg?.end)) ? Number(seg.end) : Number(seg?._sourceEnd);
+  const end = Number.isFinite(endValue) ? Math.round(endValue * 1000) : '';
+  const text = normalizeCaptionCompareText(seg?._sourceText || seg?.text || seg?.translation || '');
+  return `${start}:${end}:${localDubHash(text)}`;
+}
+
+// 跨端唯一键不能只看 start：YouTube 开头滚动字幕可能多个事件共享同一个 start。
+// 也不能直接用服务端返回的 duration/end：服务端会按 TTS 时长重算。解决办法是把
+// 字幕源事件键(_sourceKey)随请求带着走；服务端没返回时，前端按请求顺序补回来。
+const _segKey = (s) => makeSourceSegKey(s);
 function applySessionVoice(sess, segments) {
   return segments.map((seg) => {
     const manualVoice = getPreferredChineseVoice();
@@ -2267,7 +2279,16 @@ function applySessionVoice(sess, segments) {
       || null;
     if (voice) console.log(`[配音插件] seg${seg.start.toFixed(1)}s → ${voice}`);
     const cleanText = sanitizeDubbingText(seg.text);
-    return voice ? { ...seg, text: cleanText, voice } : { ...seg, text: cleanText };
+    const sourceKey = makeSourceSegKey(seg);
+    const withSource = {
+      ...seg,
+      text: cleanText,
+      _sourceKey: sourceKey,
+      _sourceStart: seg.start,
+      _sourceEnd: seg.end,
+      _sourceText: seg._sourceText || seg.text,
+    };
+    return voice ? { ...withSource, voice } : withSource;
   }).filter((seg) => seg.text);
 }
 
@@ -2820,11 +2841,25 @@ function playNextDue(sess, t) {
   // 紧挨着出现，隔几句也会有（滚动字幕去重在解析阶段没抓干净）。改成跟"最近几句"的
   // 历史记录比，而不是只看上一句，但仍然只在时间足够近（12秒内）才判定重复，相隔较远的
   // 真实重复台词（如歌词副歌）不受影响。
-  if (best.text.length >= 6 && sess._recentSpoken) {
-    const dup = sess._recentSpoken.find((r) => {
-      if (!r || r.text !== best.text) return false;
+  if (sess._recentSpoken) {
+    const sameEventDup = sess._recentSpoken.find((r) => {
+      if (!r?.key || r.key !== _segKey(best)) return false;
       if (r.videoId && sess.videoId && r.videoId !== sess.videoId) return false;
       if (r.seekEpoch != null && sess._seekEpoch != null && r.seekEpoch !== sess._seekEpoch) return false;
+      return true;
+    });
+    if (sameEventDup) {
+      console.warn('[配音插件] 检测到同一字幕事件重复调度，跳过朗读：', best.start.toFixed(1) + 's', String(best.text || '').slice(0, 20));
+      best.played = true;
+      return playNextDue(sess, t);
+    }
+  }
+  if (best.text.length >= 6 && sess._recentSpoken) {
+    const dup = sess._recentSpoken.find((r) => {
+      if (!r) return false;
+      if (r.videoId && sess.videoId && r.videoId !== sess.videoId) return false;
+      if (r.seekEpoch != null && sess._seekEpoch != null && r.seekEpoch !== sess._seekEpoch) return false;
+      if (r.text !== best.text) return false;
       const gap = best.start - r.end;
       if (gap < -0.6 || gap > 4) return false;
       if ((best.start || 0) <= (r.start || 0)) return false;
@@ -2896,6 +2931,7 @@ function playNextDue(sess, t) {
     // 不只是"刚念完那一句"，这样隔几句出现的残留重复也能被挡住（见上面的检测逻辑）。
     if (!sess._recentSpoken) sess._recentSpoken = [];
     sess._recentSpoken.push({
+      key: _segKey(best),
       text: best.text,
       start: best.start,
       end: best.start + (best.tts_duration || best.duration || 0),
@@ -3129,7 +3165,7 @@ function localDubHash(text) {
 }
 
 function localDubKey(videoId, seg) {
-  return `${videoId}|${Math.round((seg.start || 0) * 1000)}|`
+  return `${videoId}|${makeSourceSegKey(seg)}|`
     + `${seg.voice || ''}|${localDubHash(seg.text || '')}`;
 }
 
@@ -3149,7 +3185,10 @@ async function loadLocalDubBatch(videoId, requested) {
     const store = tx.objectStore('segments');
     const values = await Promise.all(requested.map((seg) => new Promise((resolve) => {
       const req = store.get(localDubKey(videoId, seg));
-      req.onsuccess = () => resolve(req.result || null);
+      req.onsuccess = () => {
+        const cached = req.result || null;
+        resolve(cached ? { ...seg, ...cached, _sourceKey: seg._sourceKey || makeSourceSegKey(seg) } : null);
+      };
       req.onerror = () => resolve(null);
     })));
     db.close();
@@ -3165,14 +3204,23 @@ async function saveLocalDubBatch(videoId, requested, returned) {
     const db = await openLocalDubDB();
     const tx = db.transaction('segments', 'readwrite');
     const store = tx.objectStore('segments');
+    const byKey = new Map(requested.map(
+      (s) => [s._sourceKey || makeSourceSegKey(s), s]));
     const byStart = new Map(requested.map(
       (s) => [Math.round((s.start || 0) * 1000), s]));
     for (const item of returned) {
       if (!item?.audio_b64) continue;
-      const source = byStart.get(Math.round((item.start || 0) * 1000));
+      const source = byKey.get(item._sourceKey || '') || byStart.get(Math.round((item.start || 0) * 1000));
       if (!source) continue;
       store.put(
-        { ...item, audio_url: item.audio_url || `local://${videoId}/${item.start}` },
+        {
+          ...item,
+          _sourceKey: source._sourceKey || makeSourceSegKey(source),
+          _sourceStart: source.start,
+          _sourceEnd: source.end,
+          _sourceText: source._sourceText || source.text,
+          audio_url: item.audio_url || `local://${videoId}/${item.start}`,
+        },
         localDubKey(videoId, source));
     }
     await new Promise((resolve) => {
@@ -3327,7 +3375,16 @@ async function sendChunkToServer(server, videoId, title, segments, baseRatePct, 
           if (!resp?.ok) return reject(new Error(resp?.error || '后端请求失败'));
           const segs = resp.data?.segments || [];
           if (segments?.length && !segs.length) return reject(new Error('后端未返回配音段'));
-          for (const s of segs) {
+          const sourceByStart = new Map((segments || []).map((s) => [Math.round((s.start || 0) * 1000), s]));
+          for (let i = 0; i < segs.length; i++) {
+            const s = segs[i];
+            const source = (segments || [])[i] || sourceByStart.get(Math.round((s?.start || 0) * 1000));
+            if (s && source) {
+              s._sourceKey = source._sourceKey || makeSourceSegKey(source);
+              s._sourceStart = source.start;
+              s._sourceEnd = source.end;
+              s._sourceText = source._sourceText || source.text;
+            }
             if (s && s.audio_url && !/^blob:|^https?:\/\//i.test(s.audio_url)) s._dubServer = server;
           }
           // 翻译失败的句子数（Gemini模式才会有），挂在数组对象上当副信息带出去——
