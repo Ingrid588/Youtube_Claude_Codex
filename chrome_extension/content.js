@@ -2625,6 +2625,20 @@ function rememberPlayedSourceEvent(sess, seg, mode = 'audio') {
   }
 }
 
+function rememberCompletedSpoken(sess, seg) {
+  if (!sess || !seg) return;
+  if (!sess._recentSpoken) sess._recentSpoken = [];
+  sess._recentSpoken.push({
+    key: _segKey(seg),
+    text: seg.text,
+    start: seg.start,
+    end: seg.start + (seg.tts_duration || seg.duration || 0),
+    videoId: sess.videoId,
+    seekEpoch: sess._seekEpoch || 0,
+  });
+  if (sess._recentSpoken.length > 6) sess._recentSpoken.shift();
+}
+
 function _hasForwardDubCache(sess, t, windowSec = 45) {
   const end = t + windowSec;
   if (sess._maxSynthedTime && sess._maxSynthedTime >= t + 0.5) return true;
@@ -2961,16 +2975,21 @@ function playNextDue(sess, t) {
       else utter.lang = 'zh-CN';
       sess._webSpeechActive = true;
       sess.curSegment = best;
-      const finish = () => {
+      utter.onend = () => {
         sess._webSpeechActive = false;
+        if (sess.curSegment === best) sess.curSegment = null;
+        rememberCompletedSpoken(sess, best);
+        rememberPlayedSourceEvent(sess, best, 'web_speech');
+        if (sess.started) playNextDue(sess, sess.video.currentTime);
+      };
+      utter.onerror = () => {
+        sess._webSpeechActive = false;
+        best.played = false;
         if (sess.curSegment === best) sess.curSegment = null;
         if (sess.started) playNextDue(sess, sess.video.currentTime);
       };
-      utter.onend = finish;
-      utter.onerror = finish;
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utter);
-      rememberPlayedSourceEvent(sess, best, 'web_speech');
       console.warn('[配音插件] 云端音频为空，使用默认配音员继续：',
         best.start.toFixed(1) + 's');
       return;
@@ -3002,18 +3021,6 @@ function playNextDue(sess, t) {
     if (sess.curAudio) { best.played = false; return; }
     sess.curAudio = audio;
     sess.curSegment = best;
-    // 记录"最近念过的几句"，供下一次 playNextDue 的重复检测使用——保留最近6句，
-    // 不只是"刚念完那一句"，这样隔几句出现的残留重复也能被挡住（见上面的检测逻辑）。
-    if (!sess._recentSpoken) sess._recentSpoken = [];
-    sess._recentSpoken.push({
-      key: _segKey(best),
-      text: best.text,
-      start: best.start,
-      end: best.start + (best.tts_duration || best.duration || 0),
-      videoId: sess.videoId,
-      seekEpoch: sess._seekEpoch || 0,
-    });
-    if (sess._recentSpoken.length > 6) sess._recentSpoken.shift();
     // 跟随音频进度逐句刷新字幕（视频放慢时 video 的 timeupdate 较稀疏，靠音频自身的更稳）
     audio.addEventListener('timeupdate', () => { if (sess.curAudio === audio) updateSubtitle(sess); });
     updateSubtitle(sess);   // 立即把字幕切到这一段，与配音同步
@@ -3094,6 +3101,7 @@ function playNextDue(sess, t) {
       delete sess.audioCache[best.audio_url];
       if (sess.curAudio === audio) { sess.curAudio = null; sess.curSegment = null; }
       sess.lastSubText = null;
+      rememberCompletedSpoken(sess, best);
       // 句末恢复默认速率：配音档3慢放只作用于这一句，读完即恢复1.0x；
       // 朗读恢复到整体调过的 sess._readVideoRate，不是1.0x。
       setVideoRate(sess, defaultVideoRate(sess));
