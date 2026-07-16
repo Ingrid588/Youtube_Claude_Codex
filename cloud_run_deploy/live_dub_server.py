@@ -23,6 +23,7 @@ import json
 import base64
 import asyncio
 import logging
+import edge_tts
 import subprocess
 import traceback
 import tempfile
@@ -570,6 +571,16 @@ class DubRequest(BaseModel):
     request_id: str = ''  # 插件每批生成，用于边翻译边返回已完成的配音
 
 
+class ReadAloudTTSRequest(BaseModel):
+    """朗读模式的无状态单句 TTS；默认 Cloud Run 也提供此端点。"""
+    text: str
+    voice: str = 'zh-CN-XiaoxiaoNeural'
+    rate_pct: int = 0
+
+
+_read_aloud_tts_semaphore = asyncio.Semaphore(8)
+
+
 _gemini_progress_cache = {}
 
 
@@ -600,6 +611,33 @@ async def gemini_progress(request_id: str):
 @app.get("/health")
 async def health():
     return {"ok": True}
+
+
+@app.post("/tts")
+async def read_aloud_tts(req: ReadAloudTTSRequest):
+    """给插件朗读模式使用；直接返回 MP3，不写入视频配音缓存。"""
+    text = (req.text or '').strip()
+    if not text:
+        return JSONResponse(status_code=400, content={'error': '缺少 text'})
+    voice = (req.voice or 'zh-CN-XiaoxiaoNeural').strip()
+    rate_pct = max(-50, min(100, int(req.rate_pct or 0)))
+    async with _read_aloud_tts_semaphore:
+        last_error = None
+        for attempt in range(3):
+            try:
+                communicate = edge_tts.Communicate(text, voice, rate=f'{rate_pct:+d}%')
+                audio = bytearray()
+                async for chunk in communicate.stream():
+                    if chunk['type'] == 'audio':
+                        audio.extend(chunk['data'])
+                if audio:
+                    return Response(content=bytes(audio), media_type='audio/mpeg')
+                last_error = '合成结果为空'
+            except Exception as exc:
+                last_error = str(exc)
+                log.warning(f'[朗读TTS] 第{attempt + 1}次失败 voice={voice}: {exc}')
+            await asyncio.sleep(0.5 * (attempt + 1))
+    return JSONResponse(status_code=500, content={'error': last_error or 'TTS 合成失败'})
 
 
 class RedeemKeyRequest(BaseModel):

@@ -36,8 +36,37 @@ chrome.storage.local.get({ ytdClientId: '' }, (cfg) => {
   chrome.storage.local.set({ ytdClientId: id });
 });
 
-// ===== 朗读模式专用：云端 TTS（不依赖本机服务器，Space 必须设为 public 才能被插件直接调用）=====
-const CLOUD_TTS_SERVER = 'https://ingrid919-read-video-tts.hf.space';
+// ===== 朗读模式专用：云端 TTS =====
+// 默认生产服务器（Cloud Run）也提供 /tts；HF 是备用 TTS。两个端点互相补位：
+// 当前首选端点拿不到有效音频时，立即切到另一个端点，避免退到浏览器机械音。
+const HF_READ_ALOUD_TTS_SERVER = 'https://ingrid919-read-video-tts.hf.space';
+function normalizeServerUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '');
+}
+function pushUniqueServer(list, url) {
+  const normalized = normalizeServerUrl(url);
+  if (normalized && !list.includes(normalized)) list.push(normalized);
+  return list;
+}
+function getDubServerCandidates() {
+  const list = [];
+  pushUniqueServer(list, SERVER || DEFAULT_SERVER);
+  pushUniqueServer(list, DEFAULT_SERVER);
+  pushUniqueServer(list, TEST_SERVER);
+  return list;
+}
+function getCloudTtsServers() {
+  const list = [];
+  if (normalizeServerUrl(SERVER) === normalizeServerUrl(TEST_SERVER)) {
+    pushUniqueServer(list, HF_READ_ALOUD_TTS_SERVER);
+    pushUniqueServer(list, DEFAULT_SERVER);
+  } else {
+    pushUniqueServer(list, SERVER || DEFAULT_SERVER);
+    pushUniqueServer(list, DEFAULT_SERVER);
+    pushUniqueServer(list, HF_READ_ALOUD_TTS_SERVER);
+  }
+  return list;
+}
 
 // 朗读语言码 -> edge-tts 语音名。覆盖 edge-tts 当前全部 75 种语言（不再是挑常见的二十来种），
 // 跟 live_dub_server.py 的 lang_prefix_voice/full_voice_map 保持同一套默认音色，避免
@@ -87,15 +116,15 @@ function pickVoiceForLang(lang) {
 }
 
 // 调云端 TTS，成功返回一个 blob: URL（可直接当 Audio.src 用，同源、不用走 background 中转）。
-async function _fetchCloudTTSOnce(text, voice, ratePct) {
-  const res = await fetch(`${CLOUD_TTS_SERVER}/tts`, {
+async function _fetchCloudTTSOnce(server, text, voice, ratePct) {
+  const res = await fetch(`${server}/tts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, voice, rate_pct: ratePct || 0 }),
   });
-  if (!res.ok) throw new Error(`云端TTS HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`${server} 云端TTS HTTP ${res.status}`);
   const blob = await res.blob();
-  if (!blob.size) throw new Error('云端TTS返回空音频');
+  if (!blob.size) throw new Error(`${server} 云端TTS返回空音频`);
   return URL.createObjectURL(blob);
 }
 
@@ -104,14 +133,19 @@ async function _fetchCloudTTSOnce(text, voice, ratePct) {
 // 云端 TTS 调用加几次重试，挡掉这种瞬时失败，避免一次抽风就把后面一长段都搭进浏览器
 // 自带语音的兜底（兜底语音音色差、还可能选错语言，见 speakWithWebSpeech 的说明）。
 async function fetchCloudTTS(text, voice, ratePct) {
-  const delays = [0, 600, 1500];
+  const delays = [0, 350];
   let lastErr = null;
-  for (let i = 0; i < delays.length; i++) {
-    if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]));
-    try {
-      return await _fetchCloudTTSOnce(text, voice, ratePct);
-    } catch (e) {
-      lastErr = e;
+  for (const server of getCloudTtsServers()) {
+    for (let i = 0; i < delays.length; i++) {
+      if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]));
+      try {
+        const audioUrl = await _fetchCloudTTSOnce(server, text, voice, ratePct);
+        if (server !== getCloudTtsServers()[0]) console.warn('[朗读] 主TTS失败后已切换备用服务器', server);
+        return audioUrl;
+      } catch (e) {
+        lastErr = e;
+        if (i === delays.length - 1) console.warn('[朗读] TTS服务器未返回有效音频，尝试下一个', server, e?.message || e);
+      }
     }
   }
   throw lastErr;
@@ -1498,6 +1532,16 @@ async function fetchAudioViaBackground(url) {
   throw lastErr || new Error('音频获取失败');
 }
 
+function getDubAudioUrlCandidates(seg) {
+  const raw = seg?.audio_url || '';
+  if (!raw) return [];
+  if (/^https?:\/\//i.test(raw) || raw.startsWith('blob:')) return [raw];
+  const servers = [];
+  pushUniqueServer(servers, seg._dubServer || seg.server_url || '');
+  for (const server of getDubServerCandidates()) pushUniqueServer(servers, server);
+  return servers.map((server) => `${server}${raw.startsWith('/') ? raw : `/${raw}`}`);
+}
+
 function audioFromBase64(audioB64) {
   const bin = atob(audioB64);
   const bytes = new Uint8Array(bin.length);
@@ -1643,7 +1687,19 @@ async function loadAudioOnce(sess, seg) {
         if (localAudioB64) {
           sess.audioCache[seg.audio_url] = audioFromBase64(localAudioB64);
         } else {
-          sess.audioCache[seg.audio_url] = await fetchAudioViaBackground(SERVER + seg.audio_url);
+          const urls = getDubAudioUrlCandidates(seg);
+          let lastFetchErr = null;
+          for (const url of urls) {
+            try {
+              sess.audioCache[seg.audio_url] = await fetchAudioViaBackground(url);
+              lastFetchErr = null;
+              break;
+            } catch (err) {
+              lastFetchErr = err;
+              console.warn('[配音插件] 音频URL加载失败，尝试备用来源', url, err?.message || err);
+            }
+          }
+          if (lastFetchErr) throw lastFetchErr;
         }
       }
     } catch (e) {
@@ -3208,14 +3264,7 @@ async function clearLocalDubVideo(videoId) {
   }
 }
 
-async function sendChunk(videoId, title, segments, baseRatePct, readMode, lang, useGemini, onProgress) {
-  // 朗读模式：走云端 TTS，不碰本机服务器，下面这条本地 /dub 请求路径只服务配音模式。
-  if (readMode) {
-    return sendChunkReadAloudCloud(segments, lang);
-  }
-  // 费用硬开关：调用方即使因为旧session状态或备用路径误传了true，只要用户当前
-  // 没有勾选“Gemini翻译”，这里就强制关掉，绝不把Gemini标志发给服务器。
-  const allowGemini = !!useGemini && !!useGeminiTranslate;
+async function sendChunkToServer(server, videoId, title, segments, baseRatePct, readMode, lang, allowGemini, onProgress) {
   const requestId = allowGemini
     ? `${videoId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` : '';
   let progressTimer = null;
@@ -3223,7 +3272,7 @@ async function sendChunk(videoId, title, segments, baseRatePct, readMode, lang, 
   if (allowGemini && onProgress) {
     const poll = () => {
       chrome.runtime.sendMessage({
-        type: 'fetch', url: `${SERVER}/gemini_progress/${requestId}`,
+        type: 'fetch', url: `${server}/gemini_progress/${requestId}`,
         options: { method: 'GET' },
       }, (r) => {
         const items = r?.data?.items || [];
@@ -3253,7 +3302,7 @@ async function sendChunk(videoId, title, segments, baseRatePct, readMode, lang, 
       chrome.runtime.sendMessage(
         {
           type: 'fetch',
-          url: `${SERVER}/dub`,
+          url: `${server}/dub`,
           options: {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3277,6 +3326,10 @@ async function sendChunk(videoId, title, segments, baseRatePct, readMode, lang, 
           }
           if (!resp?.ok) return reject(new Error(resp?.error || '后端请求失败'));
           const segs = resp.data?.segments || [];
+          if (segments?.length && !segs.length) return reject(new Error('后端未返回配音段'));
+          for (const s of segs) {
+            if (s && s.audio_url && !/^blob:|^https?:\/\//i.test(s.audio_url)) s._dubServer = server;
+          }
           // 翻译失败的句子数（Gemini模式才会有），挂在数组对象上当副信息带出去——
           // 不改变 segs 本身还是个普通数组这一点，调用方原有的 for/.length 用法不用改，
           // 想要失败信息的调用方（目前只有 runStream）多读一下这个属性就行。
@@ -3291,6 +3344,31 @@ async function sendChunk(videoId, title, segments, baseRatePct, readMode, lang, 
       if (!sent) reject(new Error('扩展已重新加载，请刷新页面后重试'));
     }
   });
+}
+
+async function sendChunk(videoId, title, segments, baseRatePct, readMode, lang, useGemini, onProgress) {
+  // 朗读模式：走云端 TTS，不碰本机服务器，下面这条 /dub 请求路径只服务配音模式。
+  if (readMode) {
+    return sendChunkReadAloudCloud(segments, lang);
+  }
+  // 费用硬开关：调用方即使因为旧session状态或备用路径误传了true，只要用户当前
+  // 没有勾选“Gemini翻译”，这里就强制关掉，绝不把Gemini标志发给服务器。
+  const allowGemini = !!useGemini && !!useGeminiTranslate;
+  let lastErr = null;
+  const candidates = getDubServerCandidates();
+  for (let i = 0; i < candidates.length; i++) {
+    const server = candidates[i];
+    try {
+      const segs = await sendChunkToServer(server, videoId, title, segments, baseRatePct,
+        readMode, lang, allowGemini, onProgress);
+      if (i > 0) console.warn('[配音插件] 主配音服务器失败后已切换备用服务器', server);
+      return segs;
+    } catch (e) {
+      lastErr = e;
+      console.warn('[配音插件] 配音服务器未拿到有效音频，尝试下一个', server, e?.message || e);
+    }
+  }
+  throw lastErr || new Error('所有配音服务器均未返回有效音频');
 }
 
 // 健康检查必须走扩展后台，和 /dub 使用完全相同的网络路径。直接在 YouTube 页面
