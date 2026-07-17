@@ -791,9 +791,20 @@ def load_glossary():
     log.info(f'[术语表] 加载 {len(mapping)} 条误译映射')
     return keys, mapping
 
+def collapse_repeated_yes(text):
+    """只压缩连续“是的”口头重复：是的，是的 / 是的。是的 / 是的是的 → 是的。"""
+    if not text:
+        return text
+    text = re.sub(r'(^|[，。！？、,.!?；;\s]+)是的(?:[，。！？、,.!?；;\s]*是的){1,}(?=([，。！？、,.!?；;\s]|$))',
+                  lambda m: f"{m.group(1)}是的", text)
+    return re.sub(r'(^|[，。！？、,.!?；;\s]+)(?:是的){2,}(?=([，。！？、,.!?；;\s]|$))',
+                  lambda m: f"{m.group(1)}是的", text)
+
+
 def apply_glossary(text):
     if not text:
         return text
+    text = collapse_repeated_yes(text)
     text = re.sub(r'(?:鸡巴|鸡吧|屌|吊|阴茎|老二|生殖器)', '下体', text, flags=re.I)
     keys, mapping = load_glossary()
     if not keys:
@@ -801,7 +812,7 @@ def apply_glossary(text):
     for w in keys:
         if w in text:
             text = text.replace(w, mapping[w])
-    return text
+    return collapse_repeated_yes(text)
 
 
 # ===== 语言 -> TTS 语音映射（供 /dub 与 /dub_start 共用）=====

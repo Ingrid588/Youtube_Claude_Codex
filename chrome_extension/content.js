@@ -767,6 +767,17 @@ function stripNonSpeechMarker(text) {
   return t;
 }
 
+function collapseRepeatedYes(text) {
+  let t = String(text || '');
+  // YouTube/Gemini 偶尔会把连续口头确认翻成“是的，是的，是的”。
+  // 只压缩这一种明确重复，避免把“对/好/嗯”等真实短句误删。
+  t = t.replace(/(?:^|([，。！？、,.!?；;\s]+))是的(?:[，。！？、,.!?；;\s]*是的){1,}(?=([，。！？、,.!?；;\s]|$))/g,
+    (_m, prefix = '') => `${prefix}是的`);
+  t = t.replace(/(?:^|([，。！？、,.!?；;\s]+))(?:是的){2,}(?=([，。！？、,.!?；;\s]|$))/g,
+    (_m, prefix = '') => `${prefix}是的`);
+  return t;
+}
+
 // 送入配音前的最后清洗。YouTube自动翻译偶尔会先把[Music]滚动合并到前一句，
 // 再把它翻译成正文里的裸词“音乐”，届时方括号已经消失。用户明确要求这类音效
 // 一律不配音，因此这里同时删除所有括号内容和混入正文的常见音效词。
@@ -777,6 +788,7 @@ function sanitizeDubbingText(text) {
     /(?:background\s+music|upbeat\s+music|music|applause|laughter|laughing|cheering|clapping|singing|背景音乐|音乐|掌声|笑声|鼓掌|欢呼|静音|無音|無声|歓声|拍手|음악|박수|웃음|환호)/gi,
     ' ');
   t = t.replace(/(?:鸡巴|鸡吧|屌|吊|阴茎|老二|生殖器)/gi, '下体');
+  t = collapseRepeatedYes(t);
   return t
     .replace(/\s+/g, ' ')
     .replace(/\s+([，。！？、,.!?])/g, '$1')
