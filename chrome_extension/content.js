@@ -778,6 +778,59 @@ function collapseRepeatedYes(text) {
   return t;
 }
 
+function countStandaloneYes(text) {
+  return (String(text || '').match(/(?:^|[，。！？、,.!?；;\s]+)是的(?=([，。！？、,.!?；;\s]|$))/g) || []).length;
+}
+
+function stripStandaloneYesFiller(text) {
+  let t = String(text || '');
+  t = t.replace(/(?:^|([，。！？、,.!?；;\s]+))是的(?=([，。！？、,.!?；;\s]|$))([，。！？、,.!?；;\s]*)/g,
+    (_m, prefix = '') => prefix || '');
+  return t
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([，。！？、,.!?；;])/g, '$1')
+    .replace(/([，。！？、,.!?；;])\1+/g, '$1')
+    .replace(/^[，。！？、,.!?；;\s]+|[，。！？、,.!?；;\s]+$/g, '')
+    .trim();
+}
+
+function estimateCjkChars(text) {
+  return [...String(text || '')].filter((ch) => ch >= '一' && ch <= '鿿').length;
+}
+
+function pruneExcessYesFillers(segments, label = '字幕') {
+  if (!Array.isArray(segments) || !segments.length) return segments || [];
+  const yesCount = segments.reduce((sum, s) => sum + countStandaloneYes(s.text), 0);
+  const yesSegCount = segments.filter((s) => countStandaloneYes(s.text) > 0).length;
+  // 日语自动翻译常把语气/应答词翻成大量“是的”。出现密度明显偏高时，
+  // 把“是的”当填充词删除；否则只在时间窗很紧的单句里删除。
+  const contextHeavy = yesCount >= 5 && yesSegCount / Math.max(segments.length, 1) >= 0.08;
+  let changed = 0;
+  const out = [];
+  for (const seg of segments) {
+    let text = collapseRepeatedYes(seg.text);
+    const hasYes = countStandaloneYes(text) > 0;
+    if (hasYes) {
+      const dur = Math.max(0.2, Number(seg.end || seg.start || 0) - Number(seg.start || 0));
+      const tightWindow = estimateCjkChars(text) / dur > 4.8
+        || (dur < 1.6 && estimateCjkChars(text) >= 5);
+      if (contextHeavy || tightWindow) {
+        const stripped = stripStandaloneYesFiller(text);
+        if (stripped !== text) {
+          text = stripped;
+          changed++;
+        }
+      }
+    }
+    if (text) out.push({ ...seg, text });
+  }
+  if (changed) {
+    console.log(`[配音插件] ${label}清理“是的”填充词 ${changed} 处`
+      + (contextHeavy ? '（上下文高频）' : '（时间窗紧张）'));
+  }
+  return out;
+}
+
 // 送入配音前的最后清洗。YouTube自动翻译偶尔会先把[Music]滚动合并到前一句，
 // 再把它翻译成正文里的裸词“音乐”，届时方括号已经消失。用户明确要求这类音效
 // 一律不配音，因此这里同时删除所有括号内容和混入正文的常见音效词。
@@ -5188,6 +5241,8 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     // 把碎片字幕按标点合并成完整句子再配音：避免一句话被拆成两段读。
     // 字幕跟随配音段（curSegment）显示，合并后屏幕字幕自动变成整句。
     rawSegments = groupChineseSentences(rawSegments);
+    rawSegments = pruneExcessYesFillers(rawSegments, '配音字幕');
+    if (!rawSegments.length) return fail('字幕清理后无可配音正文');
     sess._hasMerged = before > rawSegments.length;
     console.log(`[配音插件] 按句合并：${before} 行 → ${rawSegments.length} 句`);
     // 全局视频调速：跟朗读模式同一个思路——提前算一个全视频统一的基准速率，而不是

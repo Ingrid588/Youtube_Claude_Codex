@@ -801,6 +801,56 @@ def collapse_repeated_yes(text):
                   lambda m: f"{m.group(1)}是的", text)
 
 
+def count_standalone_yes(text):
+    return len(re.findall(r'(^|[，。！？、,.!?；;\s]+)是的(?=([，。！？、,.!?；;\s]|$))',
+                          text or ''))
+
+
+def strip_standalone_yes_filler(text):
+    if not text:
+        return text
+    text = re.sub(r'(^|[，。！？、,.!?；;\s]+)是的(?=([，。！？、,.!?；;\s]|$))([，。！？、,.!?；;\s]*)',
+                  lambda m: m.group(1) or '', text)
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'\s+([，。！？、,.!?；;])', r'\1', text)
+    text = re.sub(r'([，。！？、,.!?；;])\1+', r'\1', text)
+    return re.sub(r'^[，。！？、,.!?；;\s]+|[，。！？、,.!?；;\s]+$', '', text).strip()
+
+
+def _cjk_len(text):
+    return sum(1 for ch in (text or '') if '\u4e00' <= ch <= '\u9fff')
+
+
+def is_yes_tight_window(seg, field='text'):
+    text = seg.get(field) or ''
+    if count_standalone_yes(text) <= 0:
+        return False
+    dur = float(seg.get('duration') or max((seg.get('end') or seg.get('start') or 0) - (seg.get('start') or 0), 0.2))
+    dur = max(dur, 0.2)
+    return (_cjk_len(text) / dur > 4.8) or (dur < 1.6 and _cjk_len(text) >= 5)
+
+
+def prune_excess_yes_fillers(segments, field='text', label='字幕'):
+    if not segments:
+        return 0
+    yes_count = sum(count_standalone_yes(s.get(field) or '') for s in segments)
+    yes_seg_count = sum(1 for s in segments if count_standalone_yes(s.get(field) or '') > 0)
+    context_heavy = yes_count >= 5 and yes_seg_count / max(len(segments), 1) >= 0.08
+    changed = 0
+    for seg in segments:
+        text = collapse_repeated_yes(seg.get(field) or '')
+        if count_standalone_yes(text) and (context_heavy or is_yes_tight_window({**seg, field: text}, field)):
+            text2 = strip_standalone_yes_filler(text)
+            if text2 != text:
+                text = text2
+                changed += 1
+        seg[field] = text
+    if changed:
+        log.info(f"[配音] {label}清理“是的”填充词 {changed} 处"
+                 + ("（上下文高频）" if context_heavy else "（时间窗紧张）"))
+    return changed
+
+
 def apply_glossary(text):
     if not text:
         return text
@@ -1144,6 +1194,9 @@ async def dub(req: DubRequest):
             for seg in segments:
                 seg['text'] = apply_glossary(seg['text'])
                 seg['translation'] = seg['text']
+            prune_excess_yes_fillers(segments, 'text', '中文字幕')
+            for seg in segments:
+                seg['translation'] = seg['text']
             log.info(f"配音模式：中文字幕 {len(segments)} 段，术语校正已应用")
         elif req.use_gemini_translate and not req.read_mode:
             progress_state = None
@@ -1195,6 +1248,9 @@ async def dub(req: DubRequest):
                         pass
                 synth_semaphore = asyncio.Semaphore(6)
                 synth_tasks = []
+                gemini_seen = 0
+                gemini_yes = 0
+                gemini_yes_segments = 0
 
                 async def _synth_one(seg):
                     async with synth_semaphore:
@@ -1233,7 +1289,19 @@ async def dub(req: DubRequest):
                                     progress_state.get('failed_starts', []) + [seg['start']]))
 
                 def _on_segment_ready(seg):
+                    nonlocal gemini_seen, gemini_yes, gemini_yes_segments
                     seg['translation'] = apply_glossary(seg.get('translation', '') or seg['text'])
+                    gemini_seen += 1
+                    yc = count_standalone_yes(seg.get('translation') or '')
+                    gemini_yes += yc
+                    if yc:
+                        gemini_yes_segments += 1
+                    context_heavy_so_far = gemini_yes >= 5 and gemini_yes_segments / max(gemini_seen, 1) >= 0.08
+                    if yc and (context_heavy_so_far or is_yes_tight_window(seg, 'translation')):
+                        stripped = strip_standalone_yes_filler(seg['translation'])
+                        if stripped != seg['translation']:
+                            seg['translation'] = stripped
+                            log.info(f"[配音] Gemini流式清理“是的”填充词 start={seg.get('start')}")
                     synth_tasks.append(asyncio.create_task(_synth_one(seg)))
 
                 try:
