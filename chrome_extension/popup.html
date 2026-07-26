@@ -14,6 +14,7 @@
     .val { color: #c00; font-weight: bold; }
     input[type=range] { width: 100%; }
     .hint { font-size: 11px; color: #888; margin-top: 4px; line-height: 1.4; }
+    .version-badge { float: right; color: #999; font-size: 11px; font-weight: normal; }
     .row { margin-bottom: 12px; }
     hr { border: none; border-top: 1px solid #e0e0e0; margin: 10px 0; }
     select, input[type=text], textarea { font-size: 12px; padding: 4px; width: 100%; margin-top: 3px; box-sizing: border-box; }
@@ -59,7 +60,7 @@
 
   <!-- 实时配音标签页 -->
   <div id="realtime" class="tab-content active">
-    <h3>🎧 实时配音 Codex 设置</h3>
+    <h3>🎧 实时配音 Codex 设置 <span id="extensionVersion" class="version-badge"></span></h3>
 
     <div class="row">
       <label>功能模式：</label>
@@ -93,7 +94,7 @@
       <div class="hint">开启后进入视频页面自动配音，关闭则手动点按钮触发。</div>
     </div>
 
-    <div class="row">
+    <div class="row" style="display:none">
       <label><input type="checkbox" id="autoExportFiles" /> 自动下载配音文件（变速日志+字幕+录音/录像）</label>
       <div class="hint">勾选后，不管是单个视频还是播放列表连续配音，视频配音结束时都会自动下载这一整套文件，
         不用再去popup里手动点"下载本次配音变速日志+字幕"。用浏览器的标签页录音/录屏功能，

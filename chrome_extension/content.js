@@ -225,6 +225,7 @@ let speakerCfg = {
 // 朗读（pickVoiceForLang）和配音（sendChunk 给每段附带 voice 字段）都读这份表，
 // 同一种语言在两个功能里用同一个用户选的音色，没设置就都退回默认。
 let langVoiceOverrides = {};
+let dubCacheVoiceAutoPick = false;
 
 // chrome.storage.local.get 是异步的：如果用户点"开始配音"很快（或开了自动配音），
 // 第一批字幕段可能在这个回调跑完之前就已经在拼 voice 字段了，那时 langVoiceOverrides
@@ -241,7 +242,8 @@ chrome.storage.local.get(
     maleCount: 0, femaleCount: 2,
     maleVoices: ['zh-CN-YunxiNeural','zh-CN-YunyangNeural'],
     femaleVoices: ['zh-CN-XiaoxiaoNeural','zh-CN-XiaohanNeural'],
-    langVoiceOverrides: {} },
+    langVoiceOverrides: {},
+    dubCacheVoiceAutoPick: false },
   (cfg) => {
     origVolume = cfg.origVolume;
     showSubs = cfg.showSubs;
@@ -253,8 +255,11 @@ chrome.storage.local.get(
     // 主开关=false），不重新点一次复选框是不会被纠正的。这里直接在消费端做"或"处理，
     // 不管 storage 里两个值具体是什么组合，只要三合一开着就一定会触发导出，不依赖
     // 用户记得手动去 popup 里再点一下。
-    autoExportFiles = cfg.autoExportFiles || cfg.autoRecordVideo;
-    autoRecordVideo = cfg.autoRecordVideo;
+    // 2026-07-26：录音/录像/自动下载链路暂时从实时配音主流程移除。
+    // storage 里可能残留旧的 true；这里强制关闭，避免它抢 tabCapture、刷下载失败、
+    // 或在首批配音就绪时插入额外异步步骤，导致“有缓存也迟迟不开声”。
+    autoExportFiles = false;
+    autoRecordVideo = false;
     useGeminiTranslate = cfg.useGeminiTranslate;
     dubMode = cfg.dubMode || 'dub';
     subFontScale = cfg.subFontScale || 1.0;
@@ -263,6 +268,7 @@ chrome.storage.local.get(
     speakerCfg = { maleCount: cfg.maleCount, femaleCount: cfg.femaleCount,
                    maleVoices: cfg.maleVoices, femaleVoices: cfg.femaleVoices };
     langVoiceOverrides = cfg.langVoiceOverrides || {};
+    dubCacheVoiceAutoPick = !!cfg.dubCacheVoiceAutoPick;
     _settingsLoadedResolve();
   }
 );
@@ -272,12 +278,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.showSubs) showSubs = changes.showSubs.newValue;
   if (changes.multiSpeaker) multiSpeakerEnabled = changes.multiSpeaker.newValue;
   if (changes.autoDub) autoDub = changes.autoDub.newValue;
-  if (changes.autoExportFiles) autoExportFiles = changes.autoExportFiles.newValue || autoRecordVideo;
+  if (changes.autoExportFiles) autoExportFiles = false;
   if (changes.autoRecordVideo) {
-    autoRecordVideo = changes.autoRecordVideo.newValue;
-    if (autoRecordVideo) autoExportFiles = true;   // 同上：三合一开着就一定视为导出开关也开着
+    autoRecordVideo = false;
+    autoExportFiles = false;
   }
   if (changes.useGeminiTranslate) useGeminiTranslate = changes.useGeminiTranslate.newValue;
+  if (changes.dubCacheVoiceAutoPick) dubCacheVoiceAutoPick = !!changes.dubCacheVoiceAutoPick.newValue;
   if (changes.langVoiceOverrides) {
     langVoiceOverrides = changes.langVoiceOverrides.newValue || {};
     if (IS_YOUTUBE) {
@@ -481,6 +488,10 @@ function getDubRiskState(sess) {
 
 function getAdaptiveChunkSize(sess, chunkNo) {
   const risk = getDubRiskState(sess);
+  const current = Number(sess?.video?.currentTime || 0);
+  if (current < REALTIME_START_CRITICAL_SECONDS && !risk.troubleSignals) {
+    return chunkNo <= 1 ? 12 : 18;
+  }
   if (risk.conservative) {
     if (!sess._conservativeModeLogged) {
       sess._conservativeModeLogged = true;
@@ -509,6 +520,18 @@ function getPreferredChineseVoice() {
     || langVoiceOverrides['zh']
     || langVoiceOverrides['zh-cn']
     || null;
+}
+
+function getDefaultChineseDubVoice() {
+  const preferred = getPreferredChineseVoice();
+  if (isChineseDubVoice(preferred)) return preferred;
+  const enabledVoices = [
+    ...(speakerCfg.femaleVoices || []).slice(0, speakerCfg.femaleCount || 0),
+    ...(speakerCfg.maleVoices || []).slice(0, speakerCfg.maleCount || 0),
+    ...(speakerCfg.femaleVoices || []),
+    ...(speakerCfg.maleVoices || []),
+  ].filter(isChineseDubVoice);
+  return enabledVoices[0] || 'zh-CN-XiaoxiaoNeural';
 }
 
 function setDubButtonBackgroundState(state, videoId = '', percent = null) {
@@ -550,9 +573,9 @@ function setDubButtonBackgroundState(state, videoId = '', percent = null) {
 }
 
 function backgroundVoiceMatchesCurrent(job) {
-  const current = getPreferredChineseVoice() || 'zh-CN-XiaoxiaoNeural';
+  const current = getDefaultChineseDubVoice();
   const cachedVoices = Array.isArray(job?.voices) && job.voices.length
-    ? job.voices : ['zh-CN-XiaoxiaoNeural'];
+    ? job.voices : [getDefaultChineseDubVoice()];
   return cachedVoices.includes(current);
 }
 
@@ -747,10 +770,8 @@ function isExtensionContextValid() {
 }
 
 // ===== 字幕解析 =====
-// 非台词的音效/状态标注（YouTube字幕常见），整条字幕【完全等于】（不是包含
-// 关系，避免误删真正提到"音乐"的句子）这些词时才当成噪音过滤掉。覆盖原始的
-// "[Music]"方括号写法，以及YouTube自动翻译有时把方括号一起译没了、只剩裸词
-// "音乐"的情况——这正是配音里反复冒出一个不知所云的"音乐"的根因。
+// 非台词的音效/状态标注（YouTube字幕常见）。现在只删除带 []/()/【】/（） 的
+// 明确标记；裸词“音乐/掌声”等可能是正文名词，不能再直接删除，避免只剩动词。
 const NON_SPEECH_MARKERS = new Set([
   'music', 'applause', 'laughter', 'laughing', 'silence', 'inaudible',
   'background music', 'upbeat music', 'cheering', 'clapping', 'singing',
@@ -761,10 +782,15 @@ const NON_SPEECH_MARKERS = new Set([
 
 function stripNonSpeechMarker(text) {
   if (!text) return text;
-  const t = text.replace(/[\[(（【][^\])）】]*[\])）】]/g, '').replace(/\s+/g, ' ').trim();
-  const bare = t.replace(/^[，。！？、,.!?~～\-—…·*\s]+|[，。！？、,.!?~～\-—…·*\s]+$/g, '').toLowerCase();
-  if (!t || NON_SPEECH_MARKERS.has(bare)) return '';
-  return t;
+  const raw = String(text);
+  const markerOnly = raw.match(/^\s*[\[(（【]\s*([^\])）】]*)\s*[\])）】]\s*$/);
+  if (markerOnly) {
+    const bare = markerOnly[1]
+      .replace(/^[，。！？、,.!?~～\-—…·*\s]+|[，。！？、,.!?~～\-—…·*\s]+$/g, '')
+      .toLowerCase();
+    if (!bare || NON_SPEECH_MARKERS.has(bare)) return '';
+  }
+  return raw.replace(/[\[(（【][^\])）】]*[\])）】]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 function collapseRepeatedYes(text) {
@@ -831,15 +857,11 @@ function pruneExcessYesFillers(segments, label = '字幕') {
   return out;
 }
 
-// 送入配音前的最后清洗。YouTube自动翻译偶尔会先把[Music]滚动合并到前一句，
-// 再把它翻译成正文里的裸词“音乐”，届时方括号已经消失。用户明确要求这类音效
-// 一律不配音，因此这里同时删除所有括号内容和混入正文的常见音效词。
+// 送入配音前的最后清洗。只删除括号/方括号/书名号式音效标记；
+// 裸词“音乐/掌声”等一律保留，避免把正常正文删成只剩动词。
 function sanitizeDubbingText(text) {
   let t = String(text || '');
   t = t.replace(/[\[(（【][^\])）】]*[\])）】]/g, ' ');
-  t = t.replace(
-    /(?:background\s+music|upbeat\s+music|music|applause|laughter|laughing|cheering|clapping|singing|背景音乐|音乐|掌声|笑声|鼓掌|欢呼|静音|無音|無声|歓声|拍手|음악|박수|웃음|환호)/gi,
-    ' ');
   t = t.replace(/(?:鸡巴|鸡吧|屌|吊|阴茎|老二|生殖器)/gi, '下体');
   t = collapseRepeatedYes(t);
   return t
@@ -1509,10 +1531,11 @@ function updateSubtitle(sess) {
     // 不知道，等视频时间走到那条重复段自己的时间窗，照样把它的文字显示出来，
     // 表现就是"刚配完音的那句又显示了一遍，但没声音"。这里也查一下最近播过的记录，
     // 命中就当没有这一条，跟音频那边的判断保持一致。
+    const suppressed = seg && isRealtimeSubtitleSuppressed(sess, seg);
     const isDup = seg && sess._recentSpoken && sess._recentSpoken.some(
       (r) => r.text === seg.text && (seg.start - r.end) < 12
     );
-    if (seg && !isDup) {
+    if (seg && !isDup && !suppressed) {
       // _displaySegments 存的是原始（外语）字幕，不是译文——之前这里直接显示
       // seg.text，配音真正播放时显示的是中文译文（绿色高亮），两者一对比就像
       // "突然冒出一句不相关的黑色字幕"。这里按时间戳去 dubSegments 里找同一句，
@@ -1614,7 +1637,13 @@ function audioFromBase64(audioB64) {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   const blob = new Blob([bytes], { type: 'audio/mpeg' });
-  return new Audio(URL.createObjectURL(blob));
+  const audio = new Audio(URL.createObjectURL(blob));
+  // 新建的 Audio 在部分 Chrome 版本不会立刻开始读取 blob，直到第一次 play()
+  // 才触发解码。这会让“开头三句已就绪”的验证永久等不到 canplay。显式预加载，
+  // 但不播放，既不打断视频也不会产生声音。
+  audio.preload = 'auto';
+  try { audio.load(); } catch (_) {}
+  return audio;
 }
 
 async function readLocalDubAudio(videoId, seg) {
@@ -1639,22 +1668,23 @@ async function readLocalDubAudioLoose(videoId, seg) {
     const db = await openLocalDubDB();
     const tx = db.transaction('segments', 'readonly');
     const store = tx.objectStore('segments');
-    const targetStart = Math.round((seg?.start || 0) * 1000);
-    const targetUrl = String(seg?.audio_url || '');
-    const targetText = String(seg?.text || '').trim();
+    const targetVoice = seg?._strictCacheVoice ? String(seg?.voice || '') : '';
     const row = await new Promise((resolve) => {
       let found = null;
-      const req = store.openCursor();
+      const lower = `${videoId}|`;
+      const upper = `${videoId}|\uffff`;
+      const req = store.openCursor(IDBKeyRange.bound(lower, upper));
       req.onsuccess = () => {
         const cursor = req.result;
         if (!cursor) return resolve(found);
         const key = String(cursor.primaryKey || '');
         const value = cursor.value || {};
-        const sameVideo = key.startsWith(`${videoId}|`);
-        const sameStart = Math.abs(Math.round((value.start || 0) * 1000) - targetStart) <= 20;
-        const sameUrl = targetUrl && value.audio_url === targetUrl;
-        const sameText = targetText && String(value.text || '').trim() === targetText;
-        if (sameVideo && value.audio_b64 && (sameUrl || (sameStart && sameText) || sameStart)) {
+        const voice = localDubRowVoice(value, key);
+        if (targetVoice && voice && voice !== targetVoice) {
+          cursor.continue();
+          return;
+        }
+        if (localDubRowMatchesSegment(value, key, seg)) {
           found = value;
           return resolve(found);
         }
@@ -1685,10 +1715,15 @@ async function getAudio(sess, seg) {
   }
 }
 
-// 启动阶段不能只看服务器“已经合成”：长视频最前面的几句没有冗余时间，必须确认
-// 浏览器本机已把前三句解码成可播放 Audio，才允许视频从零点走。这样可提前发现
-// 404、失效 Blob、插件重载等问题，而不是画面播出去后才发现第一句无声。
+// 启动阶段保持轻量：前三句已合成并能在浏览器本机播放，就允许从零点开播。
+// 不再把十几分钟库存或大段护栏塞到开头，否则会出现“字幕出来了、配音迟迟不启动”。
 const STARTUP_PLAYABLE_SEGMENTS = 3;
+function startupRequiredSegmentCount(sess, t) {
+  const available = (sess?._allSegments || [])
+    .filter((seg) => seg.end >= (t || 0) - 0.5).length;
+  // 很短的视频或字幕极少的视频不能因为凑不满三句永远卡在准备中。
+  return Math.max(1, Math.min(STARTUP_PLAYABLE_SEGMENTS, available || STARTUP_PLAYABLE_SEGMENTS));
+}
 function waitForAudioCanPlay(audio, timeoutMs = 1400) {
   if (!audio) return Promise.resolve(false);
   if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return Promise.resolve(true);
@@ -1712,20 +1747,100 @@ function waitForAudioCanPlay(audio, timeoutMs = 1400) {
   });
 }
 async function startupAudioGateReady(sess, t) {
+  const requiredCount = startupRequiredSegmentCount(sess, t);
   const candidates = (sess?.dubSegments || [])
-    .filter((seg) => seg.audio_url && seg.start >= (t || 0) - 0.5)
+    .filter((seg) => {
+      const end = Math.max(seg.end || seg.start, seg.start + 0.5);
+      return seg.audio_url && end >= (t || 0) - 0.5;
+    })
     .sort(compareDubSegments)
-    .slice(0, STARTUP_PLAYABLE_SEGMENTS);
-  if (candidates.length < STARTUP_PLAYABLE_SEGMENTS) return false;
+    .slice(0, requiredCount);
+  if (candidates.length < requiredCount) return false;
   try {
     const decoded = await Promise.race([
-      Promise.all(candidates.map(async (seg) => waitForAudioCanPlay(await getAudio(sess, seg)))),
+      Promise.all(candidates.map(async (seg) => {
+        const audio = await getAudio(sess, seg);
+        return {
+          seg,
+          audio,
+          ready: await waitForAudioCanPlay(audio),
+        };
+      })),
       new Promise((resolve) => setTimeout(() => resolve(null), 1500)),
     ]);
-    return Array.isArray(decoded) && decoded.every(Boolean);
+  if (!Array.isArray(decoded)) return false;
+    // 失败的缓存 URL 不能继续伪装成“已有配音”。但“旧电脑/大文件 blob 解码超时”
+    // 不能当坏缓存，否则明明有缓存也会被反复 invalid 掉、卡在开头。
+    for (const item of decoded) {
+      if (item?.ready) continue;
+      if (item?.seg && (!item.audio || item.audio.error)) {
+        item.seg._invalidAudio = true;
+        delete sess.audioCache?.[item.seg.audio_url];
+      }
+    }
+    if (decoded.every((item) => item?.ready)) return true;
+    // 本地缓存命中的音频已经有完整 base64/blob，不能因为 Chrome 对离屏 Audio
+    // canplay 事件迟迟不触发就把开头卡住一分钟。只要 Audio 对象已创建且没有报错，
+    // 允许进入播放，由真正的 playNextDue 负责发声。
+    const localCacheUsable = decoded.every((item) =>
+      item?.seg?._localDubCacheHit && item.audio && !item.audio.error);
+    if (localCacheUsable) {
+      recordDiagnostic(sess, 'startup_audio_gate_released_for_local_cache', {
+        currentTime: +(t || 0).toFixed(3),
+        count: decoded.length,
+        voice: sess._cachedVoice || '',
+      });
+      return true;
+    }
+    return false;
   } catch (_) {
     return false;
   }
+}
+
+function primeStartupAudio(sess, t) {
+  const requiredCount = startupRequiredSegmentCount(sess, t);
+  const candidates = (sess?.dubSegments || [])
+    .filter((seg) => {
+      const end = Math.max(seg.end || seg.start, seg.start + 0.5);
+      return seg.audio_url && end >= (t || 0) - 0.5 && !seg._invalidAudio;
+    })
+    .sort(compareDubSegments)
+    .slice(0, requiredCount);
+  for (const seg of candidates) {
+    getAudio(sess, seg).catch(() => {});
+  }
+}
+
+function kickDubbingAfterSeek(sess, t, attempts = 6) {
+  if (!sess?.started) return;
+  sess._audioLoading = false;
+  sess._audioLoadingSince = null;
+  sess._pendingSeg = null;
+  const current = Number(t || sess.video?.currentTime || 0);
+  for (const seg of sess.dubSegments || []) {
+    const end = Math.max(seg.end || seg.start, seg.start + (seg.tts_duration || seg.duration || 0.5));
+    // 回到开头或任意 seek 点后，当前窗口附近的句子必须重新变成可播，
+    // 否则之前的“已播/跳过”状态会导致只显示字幕、不播放配音。
+    if (end >= current - 0.5 && seg.start <= current + 8) {
+      seg.played = false;
+      delete seg._skippedStale;
+      delete seg._invalidAudio;
+    }
+  }
+  let n = 0;
+  const tick = () => {
+    if (!sess.started || sess.weArePausing || sess._buffering) return;
+    if (sess.video?.paused) {
+      if (++n < attempts) setTimeout(tick, n < 2 ? 80 : 220);
+      return;
+    }
+    playNextDue(sess, sess.video.currentTime || current);
+    if (++n < attempts && !sess.curAudio && !sess._audioLoading && !sess._webSpeechActive) {
+      setTimeout(tick, n < 2 ? 80 : 220);
+    }
+  };
+  tick();
 }
 
 async function loadAudioOnce(sess, seg) {
@@ -2218,8 +2333,6 @@ async function startRecordingOnClick(sess) {
     if (!prep?.ok || !prep.streamId) {
       const errMsg = prep?.error || '未知错误';
       console.warn('[配音插件] 启动录制失败（不影响正常配音）', errMsg);
-      showBufferIndicator(`⚠ 录音启动失败（${errMsg}），其余文件照常下载`, sess.video);
-      setTimeout(() => hideBufferIndicator(), 4000);
       return;
     }
     chrome.runtime.sendMessage(
@@ -2232,8 +2345,6 @@ async function startRecordingOnClick(sess) {
         if (!resp?.ok) {
           const errMsg = resp?.error || chrome.runtime.lastError?.message || '未知错误';
           console.warn('[配音插件] 启动录制失败（不影响正常配音）', errMsg);
-          showBufferIndicator(`⚠ 录音启动失败（${errMsg}），其余文件照常下载`, sess.video);
-          setTimeout(() => hideBufferIndicator(), 4000);
         } else {
           sess._tabRecording = true;
           _continuousTabRecording = true;
@@ -2260,9 +2371,7 @@ function checkTabRecordingStatus(sess) {
       return;
     }
     if (!status?.active) {
-      console.error('[配音插件] 录音/录像未运行:', status?.error || status);
-      showBufferIndicator('⚠ 录音/录像未运行，请重新勾选自动下载', sess.video);
-      setTimeout(() => hideBufferIndicator(), 5000);
+      console.warn('[配音插件] 录音/录像未运行（不影响配音播放）:', status?.error || status);
       return;
     }
     console.log(
@@ -2307,7 +2416,7 @@ function beginCleanRecordingSegment(sess) {
       server: SERVER,
     }, (resp) => {
       if (chrome.runtime.lastError || !resp?.ok) {
-        console.error('[配音插件] ✗ 无法从配音起点重置录制:',
+        console.warn('[配音插件] 录音/录像无法从配音起点清零（不影响配音播放）:',
           chrome.runtime.lastError?.message || resp?.error || '未知错误');
       } else {
         sess._recordStartWallClock = Date.now();
@@ -2343,14 +2452,14 @@ function stopTabAudioRecordingAndDownload(sess, keepStream = false) {
               ` saved_at=${c.saved_at} path=${c.path}`
             );
           } else if (resp?.cache) {
-            console.error('[配音插件] ✗ 服务器录制缓存失败:', resp.cache.error);
+            console.warn('[配音插件] 服务器录制缓存失败（不影响配音播放）:', resp.cache.error);
           }
           if (chrome.runtime.lastError) {
             if (keepStream) _continuousTabRecording = false;
-            console.error('[配音插件] ✗ 录音/录像切分下载失败', chrome.runtime.lastError.message);
+            console.warn('[配音插件] 录音/录像切分未完成（不影响配音播放）', chrome.runtime.lastError.message);
           } else if (!resp?.ok) {
             if (keepStream) _continuousTabRecording = false;
-            console.error('[配音插件] ✗ 录音/录像切分下载失败', resp?.error);
+            console.warn('[配音插件] 录音/录像切分未完成（不影响配音播放）', resp?.error);
           } else {
             console.log('[配音插件] ✓ 录音/录像已直接下载到电脑', resp);
             if (resp.cache && (!resp.cache.ok || !resp.cache.verified)) {
@@ -2368,6 +2477,9 @@ function stopTabAudioRecordingAndDownload(sess, keepStream = false) {
 // 合成宽限：字幕没就绪时先让视频继续播多少个 timeupdate（约每秒4次）再考虑暂停。
 // 非常短暂的缺口（≈1秒内）能自己缓过来，不必停；连续没就绪才真暂停缓冲。
 const SYNTH_GRACE_TICKS = 4;
+const REALTIME_START_CRITICAL_SECONDS = 5 * 60;
+const REALTIME_NORMAL_AHEAD_SECONDS = 10 * 60;
+const REALTIME_START_AHEAD_SECONDS = 15 * 60;
 const AUTO_DOWNLOAD_SIDECARS = false; // 暂停自动下载 ASS/SRT/变速JSON；手动导出按钮仍可用
 
 function makeSourceSegKey(seg) {
@@ -2407,10 +2519,13 @@ const _segKey = (s) => makeSourceSegKey(s);
 function applySessionVoice(sess, segments) {
   return segments.map((seg) => {
     const manualVoice = getPreferredChineseVoice();
+    const cachedVoice = sess._cachedVoice || null;
     const preferredAutoVoice = autoDub ? (sess._autoVoice || null) : null;
     const preferredManualVoice = manualVoice || null;
-    // 单人自动检测结果优先并贯穿所有请求；只有明确开启多人配音时才按段分类。
-    const voice = (multiSpeakerEnabled ? classifySegmentVoice(sess, seg) : null)
+    // 已有缓存的声音优先：否则同一视频再次打开时，若自动识别误判或用户改了默认声音，
+    // 会查不到旧缓存并重新合成，既浪费又导致同一视频前后音色不一致。
+    const voice = cachedVoice
+      || (multiSpeakerEnabled ? classifySegmentVoice(sess, seg) : null)
       || preferredAutoVoice
       || preferredManualVoice
       || sess._autoVoice
@@ -2427,7 +2542,7 @@ function applySessionVoice(sess, segments) {
       _sourceText: seg._sourceText || seg.text,
       _sourceIndex: Number.isFinite(Number(seg._sourceIndex)) ? Number(seg._sourceIndex) : null,
     };
-    return voice ? { ...withSource, voice } : withSource;
+    return voice ? { ...withSource, voice, _strictCacheVoice: !!cachedVoice } : withSource;
   }).filter((seg) => seg.text);
 }
 
@@ -2465,7 +2580,7 @@ async function requestSynthAround(sess, t) {
       }
     }
     sess.dubSegments.sort(compareDubSegments);
-    if (sess._buffering && _segReadyAt(sess, sess.video.currentTime)) {
+    if (!sess._startupGatePending && sess._buffering && _segReadyAt(sess, sess.video.currentTime)) {
       sess._buffering = false; sess.weArePausing = false;
       hideBufferIndicator();
       try { sess.video.play().catch(() => {}); } catch (_) {}
@@ -2627,13 +2742,124 @@ function rememberMissedRealtimeSegment(sess, seg, reason = 'not_ready') {
   const key = _segKey(seg);
   if (!sess._missedRealtimeSegments.has(key)) {
     sess._missedRealtimeSegments.set(key, {
+      key,
       start: seg.start,
       end: seg.end,
-      text: seg.text,
+      text: seg.translation || seg.text,
+      sourceIndex: Number.isFinite(Number(seg._sourceIndex)) ? Number(seg._sourceIndex) : null,
       firstSeenAt: Date.now(),
       reason,
     });
   }
+}
+
+function getMissedRealtimeDisplayRows(sess) {
+  if (!sess?._missedRealtimeSegments?.size) return [];
+  const playedKeys = new Set((sess._playedSourceEvents || [])
+    .filter((item) => item?.mode === 'audio' || item?.mode === 'web_speech')
+    .map((item) => item.sourceKey));
+  const all = Array.isArray(sess._allSegments) ? sess._allSegments : [];
+  const lineByKey = new Map(all.map((seg, index) => [
+    _segKey(seg),
+    Number.isFinite(Number(seg._sourceIndex)) ? Number(seg._sourceIndex) + 1 : index + 1,
+  ]));
+  return [...sess._missedRealtimeSegments.values()]
+    .filter((item) => item?.key && !playedKeys.has(item.key))
+    .map((item) => ({
+      ...item,
+      line: Number.isFinite(Number(item.sourceIndex))
+        ? Number(item.sourceIndex) + 1
+        : (lineByKey.get(item.key) || 0),
+      text: String(item.text || '').trim(),
+    }))
+    .filter((item) => item.text)
+    .sort((a, b) => (a.line || 0) - (b.line || 0) || (a.start || 0) - (b.start || 0));
+}
+
+function showMissedRealtimeSummary(sess) {
+  const rows = getMissedRealtimeDisplayRows(sess);
+  if (!rows.length) return;
+  const old = document.getElementById('yt-dub-missed-summary');
+  if (old) old.remove();
+  const panel = document.createElement('div');
+  panel.id = 'yt-dub-missed-summary';
+  panel.style.cssText = [
+    'position:fixed',
+    'right:18px',
+    'bottom:18px',
+    'z-index:2147483647',
+    'max-width:min(620px,calc(100vw - 36px))',
+    'max-height:min(360px,60vh)',
+    'overflow:auto',
+    'background:#111827',
+    'color:#fff',
+    'font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+    'border:1px solid rgba(255,255,255,.18)',
+    'border-radius:14px',
+    'box-shadow:0 12px 36px rgba(0,0,0,.35)',
+    'padding:14px',
+  ].join(';');
+  const top = document.createElement('div');
+  top.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px';
+  const title = document.createElement('div');
+  title.textContent = `本次有 ${rows.length} 句未在视频中显示`;
+  title.style.cssText = 'font-weight:700;font-size:15px';
+  const close = document.createElement('button');
+  close.textContent = '×';
+  close.title = '关闭';
+  close.style.cssText = 'border:0;background:transparent;color:#fff;font-size:22px;line-height:1;cursor:pointer;padding:0 4px';
+  close.addEventListener('click', () => panel.remove());
+  top.append(title, close);
+
+  const hint = document.createElement('div');
+  hint.textContent = '以下内容为实时播放时自动跳过的句子；重新播放会优先使用/补齐缓存。';
+  hint.style.cssText = 'opacity:.82;margin-bottom:8px';
+  const list = document.createElement('div');
+  list.style.cssText = 'display:flex;flex-direction:column;gap:6px';
+  const visibleRows = rows.slice(0, 40);
+  for (const item of visibleRows) {
+    const div = document.createElement('div');
+    div.style.cssText = 'background:rgba(255,255,255,.08);border-radius:8px;padding:7px 9px';
+    const time = formatHMS(Number(item.start || 0));
+    const line = item.line ? `第${item.line}行 / ${time}` : `约 ${time}`;
+    div.textContent = `${line}：（${item.text}）未在视频中显示，重新播放会补全。`;
+    list.appendChild(div);
+  }
+  if (rows.length > visibleRows.length) {
+    const more = document.createElement('div');
+    more.style.cssText = 'opacity:.75;margin-top:4px';
+    more.textContent = `另有 ${rows.length - visibleRows.length} 句未显示，已记录在诊断日志中。`;
+    list.appendChild(more);
+  }
+  panel.append(top, hint, list);
+  const anchor = document.querySelector('#player') || document.querySelector('#movie_player')?.parentElement;
+  if (anchor?.parentElement) {
+    panel.style.position = 'relative';
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+    panel.style.margin = '10px 0';
+    anchor.insertAdjacentElement('afterend', panel);
+  } else {
+    document.documentElement.appendChild(panel);
+  }
+  recordDiagnostic(sess, 'realtime_missed_summary_shown', {
+    count: rows.length,
+    lines: rows.slice(0, 80).map((item) => ({
+      line: item.line,
+      start: item.start,
+      time: formatHMS(Number(item.start || 0)),
+      text: item.text,
+    })),
+  });
+}
+
+function isRealtimeSubtitleSuppressed(sess, seg) {
+  if (!sess?._missedRealtimeSegments || !seg) return false;
+  const key = _segKey(seg);
+  if (!sess._missedRealtimeSegments.has(key)) return false;
+  const ready = (sess.dubSegments || []).find(
+    (s) => _segKey(s) === key && (s.audio_url || s.web_speech) && !s._invalidAudio);
+  return !ready;
 }
 
 // 前十分钟是实时配音唯一没有冗余的区域。主流合成即使后来已经做到十分钟之后，
@@ -2642,16 +2868,19 @@ function rememberMissedRealtimeSegment(sess, seg, reason = 'not_ready') {
 function repairEarlyDubbingWindow(sess, t) {
   if (!sess?.started || sess._readMode || sess._phase !== 'dubbing' || t > 600) return;
   const now = Date.now();
-  if (sess._earlyWindowRepairing || now - (sess._lastEarlyWindowAuditAt || 0) < 2000) return;
+  const critical = Number(t || 0) < REALTIME_START_CRITICAL_SECONDS;
+  if (sess._earlyWindowRepairing || now - (sess._lastEarlyWindowAuditAt || 0) < (critical ? 900 : 2000)) return;
   sess._lastEarlyWindowAuditAt = now;
   const valid = new Set((sess.dubSegments || [])
     .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
     .map(_segKey));
-  const end = Math.min(600, Math.max(120, t + 90));
+  const end = Math.min(
+    REALTIME_START_AHEAD_SECONDS,
+    Math.max(critical ? REALTIME_START_AHEAD_SECONDS : 120, t + (critical ? REALTIME_START_AHEAD_SECONDS : 90)));
   const missing = (sess._allSegments || [])
     .filter((s) => s.start <= end && !valid.has(_segKey(s)))
     .filter((s) => !sess._synthInFlight?.has(_segKey(s)))
-    .slice(0, 12);
+    .slice(0, critical ? 24 : 12);
   if (!missing.length) return;
   sess._earlyWindowRepairing = true;
   const keys = missing.map(_segKey);
@@ -2859,7 +3088,7 @@ function _ensureLocalCacheLead(sess, t) {
         currentTime: +(t || 0).toFixed(3),
         maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
       });
-      if (sess._buffering && _segReadyAt(sess, sess.video.currentTime)) {
+      if (!sess._startupGatePending && sess._buffering && _segReadyAt(sess, sess.video.currentTime)) {
         sess._buffering = false;
         sess.weArePausing = false;
         sess._bufferingSince = null;
@@ -2878,6 +3107,9 @@ function _ensureLocalCacheLead(sess, t) {
 // 这样 seek 到任意位置都能就地等该位置合成，不必等顺序合成爬过来。
 function maybeBufferForSynthesis(sess, t) {
   const unbuffer = () => {
+    // 开头归零后的三句闸门只能由 startupAudioGateReady 放行。这里是“中后段
+    // 不停视频”的通用逻辑，若在开头也放行，就会出现字幕一路走、声音随后补的空播。
+    if (sess._startupGatePending) return;
     if (sess._buffering) {
       sess._buffering = false; sess.weArePausing = false;
       sess._bufferingSince = null;
@@ -2917,6 +3149,71 @@ function maybeBufferForSynthesis(sess, t) {
 
   // 该句还没合成 → 先催合成
   requestSynthAround(sess, t);
+
+  const criticalStart = Number(t || 0) < REALTIME_START_CRITICAL_SECONDS;
+  if (criticalStart) {
+    const releaseCriticalStartIfCacheCanCarry = (reason) => {
+      const currentReady = _currentSegReadyAt(sess, t);
+      const hasForwardCache = _hasForwardDubCache(sess, t, 45);
+      if (!currentReady && !hasForwardCache) return false;
+      if (!currentReady) rememberMissedRealtimeSegment(sess, expected, reason);
+      recordDiagnostic(sess, 'critical_start_released_with_cache_available', {
+        reason,
+        currentReady,
+        hasForwardCache,
+        currentTime: +(t || 0).toFixed(3),
+        missingStart: +(expected.start || 0).toFixed(3),
+        maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
+      });
+      sess._buffering = false;
+      sess._startupGatePending = false;
+      sess.weArePausing = false;
+      sess._bufferingSince = null;
+      hideBufferIndicator();
+      try { sess.video.play().catch(() => {}); } catch (_) {}
+      setTimeout(() => kickDubbingAfterSeek(sess, sess.video?.currentTime || t, 8), 80);
+      return true;
+    };
+    if (!sess._criticalStartHydrating) {
+      sess._criticalStartHydrating = true;
+      hydrateLocalCacheWindow(sess, t, 2, 240)
+        .then((count) => {
+          if (!sess.started) return;
+          if (count && sess._buffering) {
+            releaseCriticalStartIfCacheCanCarry('local_cache_hydrated_during_critical_start');
+          }
+        })
+        .catch((e) => console.warn('[配音插件] 开头本地缓存回补失败', e?.message || e))
+        .finally(() => { sess._criticalStartHydrating = false; });
+    }
+    if (!sess._buffering) {
+      sess._buffering = true;
+      sess._bufferingSince = Date.now();
+      sess.weArePausing = true;
+      if (sess.curAudio) {
+        try { sess.curAudio.pause(); } catch (_) {}
+        sess.curAudio = null;
+        sess.curSegment = null;
+      }
+      try { sess.video.pause(); } catch (_) {}
+      showBufferIndicator('🎧 正在补齐开头当前句配音…', sess.video);
+      recordDiagnostic(sess, 'critical_start_hold_for_current_sentence', {
+        currentTime: +(t || 0).toFixed(3),
+        missingStart: +(expected.start || 0).toFixed(3),
+        maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
+      });
+    } else if (Date.now() - (sess._bufferingSince || Date.now()) > 8000
+        && Date.now() - (sess._lastBufferRescueAt || 0) > 3000) {
+      sess._lastBufferRescueAt = Date.now();
+      sess._synthInFlight?.clear();
+      if (releaseCriticalStartIfCacheCanCarry('critical_start_wait_timeout_keep_video_moving')) return false;
+      console.warn('[配音插件] 开头当前句等待超过8秒，释放旧批次锁并立即重试当前位置');
+      requestRealtimeCurrentSentenceRepair(sess, expected, t);
+      requestSynthAround(sess, t);
+    }
+    return true;
+  }
+
   rememberMissedRealtimeSegment(sess, expected, 'playhead_passed_before_audio_ready');
 
   if (sess._buffering) {
@@ -2945,50 +3242,17 @@ function maybeBufferForSynthesis(sess, t) {
     return false;
   }
 
-  // 实时配音最高优先级：视频不停。即使当前一两句还没及时合成，也先记录漏句、
-  // 继续播放，后面由优先合成/收尾补漏补回缓存，供用户重看或导出时使用。
-  // 只有启动阶段首批还没就绪时，外层 beginDubbing/onFirstChunkReady 仍会负责等待。
-  if (!sess._buffering) {
-    sess._synthMiss = 0;
-    if (Date.now() - (sess._lastNoPauseMissingLogAt || 0) > 10000) {
-      sess._lastNoPauseMissingLogAt = Date.now();
-      recordDiagnostic(sess, 'realtime_missing_sentence_continue_without_pause', {
-        currentTime: +(t || 0).toFixed(3),
-        missingStart: +(expected.start || 0).toFixed(3),
-        maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
-      });
-      console.warn('[配音插件] 当前句未及时配音，实时播放继续，稍后补齐缓存');
-    }
-    return false;
-  }
-
-  // 宽限：非常短暂的缺口（约 1 秒内）让视频继续播，能自己缓过来就不暂停。
-  // 只有连续 SYNTH_GRACE_TICKS 次仍没就绪、且当前没在缓冲中，才真正暂停。
-  // 已经在缓冲中（之前停下了）则继续保持暂停，直到就绪（上面 ready 分支会 unbuffer）。
-  if (!sess._buffering) {
-    sess._synthMiss = (sess._synthMiss || 0) + 1;
-    if (sess._synthMiss < SYNTH_GRACE_TICKS) {
-      return false;   // 宽限期内：不暂停，视频照常播，继续催合成
-    }
-  }
-
-  // 超过宽限仍没就绪（或本就在缓冲中）→ 暂停缓冲
-  if (!sess._buffering) {
-    sess._buffering = true;
-    sess._bufferingSince = Date.now();
-    sess.weArePausing = true;
-    if (sess.curAudio) { try { sess.curAudio.pause(); } catch (_) {} sess.curAudio = null; sess.curSegment = null; }
-    try { sess.video.pause(); } catch (_) {}
-    showBufferIndicator('🎧 正在生成配音，请稍候…', sess.video);
-  } else if (Date.now() - (sess._bufferingSince || Date.now()) > 45000
-      && Date.now() - (sess._lastBufferRescueAt || 0) > 15000) {
-    // A long-running sequential batch may leave the current sentence marked
-    // "in flight" forever. Release that stale lock and request only the eight
-    // sentences around the paused playhead so a four-hour video can resume.
-    sess._lastBufferRescueAt = Date.now();
-    sess._synthInFlight?.clear();
-    console.warn('[配音插件] 缓冲超过45秒，释放旧批次锁并优先补当前位置');
-    requestSynthAround(sess, t);
+  // 5分钟以后，实时播放以不断流为最高优先级：当前句如果已经来不及，就静默跳过，
+  // 自绘字幕也跟着隐藏；后续由 requestSynthAround/收尾补漏补回缓存，供重看或导出使用。
+  sess._synthMiss = 0;
+  if (Date.now() - (sess._lastNoPauseMissingLogAt || 0) > 10000) {
+    sess._lastNoPauseMissingLogAt = Date.now();
+    recordDiagnostic(sess, 'realtime_missing_sentence_continue_without_pause', {
+      currentTime: +(t || 0).toFixed(3),
+      missingStart: +(expected.start || 0).toFixed(3),
+      maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
+    });
+    console.warn('[配音插件] 当前句未及时配音，实时播放继续，稍后补齐缓存');
   }
   if (sess._bufferingSince && Date.now() - sess._bufferingSince >= 12000) {
     if (!sess._forceConservativeDubbing) {
@@ -2999,7 +3263,7 @@ function maybeBufferForSynthesis(sess, t) {
       });
     }
   }
-  return true;
+  return false;
 }
 
 function playNextDue(sess, t) {
@@ -3403,6 +3667,124 @@ function localDubKey(videoId, seg) {
     + `${seg.voice || ''}|${localDubHash(seg.text || '')}`;
 }
 
+function isChineseDubVoice(voice) {
+  return /^zh-(CN|TW|HK)-/i.test(String(voice || ''));
+}
+
+function voiceFromLocalDubKey(key) {
+  const parts = String(key || '').split('|');
+  return parts.length >= 4 ? parts[2] : '';
+}
+
+function localDubRowVoice(row, key) {
+  const valueVoice = row?.voice || '';
+  const keyVoice = voiceFromLocalDubKey(key);
+  return isChineseDubVoice(valueVoice) ? valueVoice
+    : (isChineseDubVoice(keyVoice) ? keyVoice : '');
+}
+
+function localDubRowMatchesSegment(row, key, seg) {
+  if (!row?.audio_b64 || !seg) return false;
+  const sourceKey = seg._sourceKey || makeSourceSegKey(seg);
+  if (row._sourceKey && row._sourceKey === sourceKey) return true;
+  if (String(key || '').includes(`|${sourceKey}|`)) return true;
+  const targetStart = Math.round((seg?.start || 0) * 1000);
+  const rowStart = Math.round((row._sourceStart ?? row.start ?? 0) * 1000);
+  const sameStart = Math.abs(rowStart - targetStart) <= 20;
+  if (!sameStart) return false;
+  const targetText = String(seg?.text || '').trim();
+  const rowText = String(row._sourceText || row.text || '').trim();
+  return !targetText || !rowText || targetText === rowText;
+}
+
+function mergeLocalDubRow(seg, row, key) {
+  const voice = localDubRowVoice(row, key) || seg.voice || '';
+  return {
+    ...seg,
+    ...row,
+    voice,
+    _sourceKey: seg._sourceKey || row._sourceKey || makeSourceSegKey(seg),
+    _sourceStart: seg._sourceStart ?? row._sourceStart ?? seg.start,
+    _sourceEnd: seg._sourceEnd ?? row._sourceEnd ?? seg.end,
+    _sourceText: seg._sourceText || row._sourceText || seg.text,
+    _sourceIndex: Number.isFinite(Number(seg._sourceIndex)) ? Number(seg._sourceIndex) : row._sourceIndex,
+    audio_url: row.audio_url || seg.audio_url || `local://${seg.start}`,
+    _localDubCacheHit: true,
+  };
+}
+
+async function collectLocalDubRows(videoId) {
+  if (!videoId) return null;
+  try {
+    const db = await openLocalDubDB();
+    const tx = db.transaction('segments', 'readonly');
+    const store = tx.objectStore('segments');
+    const rows = [];
+    await new Promise((resolve) => {
+      // 缓存库会越来越大；不能每次启动配音都全库扫描，否则“明明有缓存”
+      // 也会卡在准备阶段。key 以 videoId| 开头，直接用前缀范围只扫当前视频。
+      const lower = `${videoId}|`;
+      const upper = `${videoId}|\uffff`;
+      const range = IDBKeyRange.bound(lower, upper);
+      const req = store.openCursor(range);
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(); return; }
+        const key = String(cursor.primaryKey || '');
+        const value = cursor.value || {};
+        const voice = localDubRowVoice(value, key);
+        if (voice && value.audio_b64) rows.push({ key, value, voice });
+        cursor.continue();
+      };
+      req.onerror = resolve;
+    });
+    db.close();
+    return rows;
+  } catch (e) {
+    console.warn('[配音插件] 扫描本地配音缓存失败', e?.message || e);
+    return null;
+  }
+}
+
+async function inferCachedVoiceForVideo(videoId, segments = null, centerTime = 0) {
+  try {
+    const rows = await collectLocalDubRows(videoId);
+    if (!rows?.length) return null;
+    const counts = new Map();
+    for (const row of rows) counts.set(row.voice, (counts.get(row.voice) || 0) + 1);
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    if (Array.isArray(segments) && segments.length) {
+      const from = Math.max(0, Number(centerTime || 0) - 2);
+      const to = from + (from < 2 ? 10 * 60 : 8 * 60);
+      const windowSegs = segments
+        .filter((s) => Math.max(s.end || s.start, s.start + 0.5) >= from && s.start <= to)
+        .slice(0, 260);
+      const scores = new Map();
+      for (const seg of windowSegs) {
+        const hit = rows.find((row) => localDubRowMatchesSegment(row.value, row.key, seg));
+        if (hit) scores.set(hit.voice, (scores.get(hit.voice) || 0) + 1);
+      }
+      if (scores.size) {
+        const [voice, hitCount] = [...scores.entries()].sort((a, b) => b[1] - a[1])[0];
+        console.log(`[配音插件] 按当前字幕窗口命中缓存声音：${voice}（${hitCount}/${windowSegs.length || 0}句，库内${counts.get(voice) || 0}段）`);
+        return voice;
+      }
+    }
+    const [voice, count] = ranked[0];
+    const total = rows.length;
+    if (ranked.length > 1 && count / total < 0.8) {
+      console.log(`[配音插件] 本视频存在多个配音员缓存，暂不提前锁定声音：`
+        + ranked.map(([v, c]) => `${v}:${c}`).join('，'));
+      return null;
+    }
+    console.log(`[配音插件] 本地已有配音缓存，沿用缓存声音：${voice}（${count}/${total}段）`);
+    return voice;
+  } catch (e) {
+    console.warn('[配音插件] 扫描本地配音缓存声音失败', e?.message || e);
+    return null;
+  }
+}
+
 function openLocalDubDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(LOCAL_DUB_DB, 1);
@@ -3421,19 +3803,352 @@ async function loadLocalDubBatch(videoId, requested) {
       const req = store.get(localDubKey(videoId, seg));
       req.onsuccess = () => {
         const cached = req.result || null;
-        resolve(cached ? {
-          ...seg,
-          ...cached,
-          _sourceKey: seg._sourceKey || cached._sourceKey || makeSourceSegKey(seg),
-          _sourceIndex: Number.isFinite(Number(seg._sourceIndex)) ? Number(seg._sourceIndex) : cached._sourceIndex,
-        } : null);
+        resolve(cached ? mergeLocalDubRow(seg, cached, localDubKey(videoId, seg)) : null);
       };
       req.onerror = () => resolve(null);
     })));
+    if (values.some((v) => !v)) {
+      const missingIndexes = values
+        .map((v, i) => (v ? -1 : i))
+        .filter((i) => i >= 0);
+      const looseRows = [];
+      await new Promise((resolve) => {
+        const req = store.openCursor();
+        req.onsuccess = () => {
+          const cursor = req.result;
+          if (!cursor) { resolve(); return; }
+          const key = String(cursor.primaryKey || '');
+          if (key.startsWith(`${videoId}|`)) {
+            const value = cursor.value || {};
+            const voice = localDubRowVoice(value, key);
+            if (voice && value.audio_b64) {
+              looseRows.push({ key, value, voice });
+            }
+          }
+          cursor.continue();
+        };
+        req.onerror = resolve;
+      });
+      for (const idx of missingIndexes) {
+        const seg = requested[idx];
+        const hit = looseRows.find((row) => {
+          if (seg._strictCacheVoice && seg.voice && row.voice && row.voice !== seg.voice) return false;
+          return localDubRowMatchesSegment(row.value, row.key, seg);
+        });
+        if (hit) values[idx] = mergeLocalDubRow(seg, hit.value, hit.key);
+      }
+    }
     db.close();
     return values;
   } catch (_) {
     return requested.map(() => null);
+  }
+}
+
+function setDubButtonRealtimeCacheState(btn, coverage) {
+  if (!btn || !coverage || coverage.hitCount <= 0) return;
+  const hms = formatHMS(Number(coverage.frontier || 0));
+  if (coverage.full) {
+    btn.style.setProperty('background', '#16803a', 'important');
+    btn.style.setProperty('border-radius', '16px', 'important');
+    btn.dataset.realtimeCacheState = 'ready';
+    btn.textContent = '🎧缓存 ✓';
+    btn.title = `完整配音缓存已就绪，当前使用缓存配音员：${coverage.voice || '未知'}`;
+    return;
+  }
+  if (btn.dataset.backgroundDubState === 'processing') return;
+  btn.textContent = `🎧缓存→${hms}`;
+  btn.title = `已命中本地配音缓存到 ${hms}，当前优先使用缓存配音员：${coverage.voice || '未知'}`;
+}
+
+function clearRealtimeCacheButtonStyle(btn) {
+  if (!btn || btn.dataset.backgroundDubState === 'ready' || btn.dataset.backgroundDubState === 'processing') return;
+  if (btn.dataset.realtimeCacheState === 'ready') {
+    btn.style.removeProperty('background');
+    btn.style.removeProperty('border-radius');
+    delete btn.dataset.realtimeCacheState;
+  }
+}
+
+const DUB_VOICE_META = {
+  'zh-CN-XiaoxiaoNeural': { name: '晓晓', gender: '女声' },
+  'zh-CN-XiaoyiNeural': { name: '晓伊', gender: '女声' },
+  'zh-CN-XiaohanNeural': { name: '晓涵', gender: '女声' },
+  'zh-CN-XiaomoNeural': { name: '晓墨', gender: '女声' },
+  'zh-CN-XiaoqiuNeural': { name: '晓秋', gender: '女声' },
+  'zh-CN-XiaorouNeural': { name: '晓柔', gender: '女声' },
+  'zh-CN-XiaoruiNeural': { name: '晓睿', gender: '女声' },
+  'zh-CN-XiaoshuangNeural': { name: '晓双', gender: '女声' },
+  'zh-CN-XiaoxuanNeural': { name: '晓萱', gender: '女声' },
+  'zh-CN-XiaoyanNeural': { name: '晓颜', gender: '女声' },
+  'zh-CN-XiaoyouNeural': { name: '晓悠', gender: '女声' },
+  'zh-CN-XiaozhenNeural': { name: '晓甄', gender: '女声' },
+  'zh-CN-YunxiNeural': { name: '云希', gender: '男声' },
+  'zh-CN-YunxiaNeural': { name: '云夏', gender: '男声' },
+  'zh-CN-YunjianNeural': { name: '云健', gender: '男声' },
+  'zh-CN-YunyangNeural': { name: '云扬', gender: '男声' },
+  'zh-TW-HsiaoChenNeural': { name: '曉臻', gender: '女声' },
+  'zh-TW-HsiaoYuNeural': { name: '曉雨', gender: '女声' },
+  'zh-TW-YunJheNeural': { name: '雲哲', gender: '男声' },
+  'zh-HK-HiuGaaiNeural': { name: '曉佳', gender: '女声' },
+  'zh-HK-HiuMaanNeural': { name: '曉曼', gender: '女声' },
+  'zh-HK-WanLungNeural': { name: '雲龍', gender: '男声' },
+};
+
+function dubVoiceMeta(voice) {
+  const known = DUB_VOICE_META[voice];
+  if (known) return known;
+  const raw = String(voice || '');
+  const name = raw.replace(/^zh-[A-Z]{2}-/i, '').replace(/Neural$/i, '') || '未知配音员';
+  let gender = '未知';
+  if (/xia|hsiao|hiu/i.test(raw)) gender = '女声';
+  if (/yun|jhe|lung|jian|yang/i.test(raw)) gender = '男声';
+  return { name, gender };
+}
+
+function formatDubCacheVoiceChoice(choice, index) {
+  const meta = dubVoiceMeta(choice.voice);
+  const n = ['一', '二', '三', '四', '五', '六'][index] || String(index + 1);
+  const count = Number(choice.count || 0);
+  const total = Number(choice.total || 0);
+  const frontier = formatHMS(Number(choice.frontier || 0));
+  const full = choice.full ? '完整缓存' : `缓存到 ${frontier}`;
+  return `配音员${n}：${meta.name}（${meta.gender}，${count}/${total}句，${full}）`;
+}
+
+function selectDubCoverageVoice(coverage, voice) {
+  const ranked = Array.isArray(coverage?.rankedVoices) ? coverage.rankedVoices : [];
+  const selected = ranked.find((item) => item.voice === voice) || ranked[0];
+  if (!selected) return coverage;
+  return {
+    ...coverage,
+    voice: selected.voice,
+    hitCount: selected.count,
+    frontier: selected.frontier,
+    full: !!selected.full,
+  };
+}
+
+function purgeNonSelectedVoiceSegments(sess, voice) {
+  if (!sess || !voice || !Array.isArray(sess.dubSegments)) return 0;
+  let removed = 0;
+  sess.dubSegments = sess.dubSegments.filter((seg) => {
+    const segVoice = seg?.voice || '';
+    if (!isChineseDubVoice(segVoice) || segVoice === voice) return true;
+    if (seg.audio_url) {
+      try {
+        const audio = sess.audioCache?.[seg.audio_url];
+        if (audio?.src?.startsWith('blob:')) URL.revokeObjectURL(audio.src);
+      } catch (_) {}
+      if (sess.audioCache) delete sess.audioCache[seg.audio_url];
+    }
+    if (sess.curSegment === seg) {
+      try { sess.curAudio?.pause?.(); } catch (_) {}
+      sess.curAudio = null;
+      sess.curSegment = null;
+      sess._audioLoading = false;
+    }
+    removed++;
+    return false;
+  });
+  if (removed) {
+    console.warn(`[配音插件] 已清除非选定配音员缓存片段：${removed} 段，保留 ${voice}`);
+  }
+  return removed;
+}
+
+function showDubCacheVoiceDialog(choices) {
+  return new Promise((resolve) => {
+    const old = document.getElementById('yt-dub-cache-voice-dialog');
+    if (old) old.remove();
+    const panel = document.createElement('div');
+    panel.id = 'yt-dub-cache-voice-dialog';
+    panel.style.cssText = [
+      'position:fixed',
+      'right:18px',
+      'bottom:18px',
+      'z-index:2147483647',
+      'width:min(390px,calc(100vw - 36px))',
+      'background:#111827',
+      'color:#fff',
+      'font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+      'border:1px solid rgba(255,255,255,.18)',
+      'border-radius:14px',
+      'box-shadow:0 12px 36px rgba(0,0,0,.35)',
+      'padding:14px',
+    ].join(';');
+    const top = document.createElement('div');
+    top.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px';
+    const title = document.createElement('div');
+    title.textContent = '本视频有多个配音缓存，请选择声音';
+    title.style.cssText = 'font-weight:700;font-size:15px';
+    const close = document.createElement('button');
+    close.textContent = '×';
+    close.title = '关闭并按随机处理';
+    close.style.cssText = 'border:0;background:transparent;color:#fff;font-size:22px;line-height:1;cursor:pointer;padding:0 4px';
+    top.append(title, close);
+
+    const hint = document.createElement('div');
+    const topChoice = choices[0];
+    const topMeta = dubVoiceMeta(topChoice.voice);
+    hint.textContent = `选择后立即开始；“随机”会使用缓存最多的配音员：${topMeta.name}（${topMeta.gender}）。`;
+    hint.style.cssText = 'opacity:.82;margin-bottom:10px';
+
+    const list = document.createElement('div');
+    list.style.cssText = 'display:flex;flex-direction:column;gap:8px';
+    const rememberWrap = document.createElement('label');
+    rememberWrap.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;user-select:none';
+    const remember = document.createElement('input');
+    remember.type = 'checkbox';
+    const rememberText = document.createElement('span');
+    rememberText.textContent = '今后无需再问（默认随机/缓存最多）';
+    rememberWrap.append(remember, rememberText);
+
+    const finish = (voice) => {
+      if (remember.checked) {
+        dubCacheVoiceAutoPick = true;
+        try { chrome.storage.local.set({ dubCacheVoiceAutoPick: true }); } catch (_) {}
+      }
+      panel.remove();
+      resolve(voice || choices[0].voice);
+    };
+
+    const addButton = (label, voice, accent = false) => {
+      const btn = document.createElement('button');
+      btn.textContent = label;
+      btn.style.cssText = [
+        'text-align:left',
+        'border:1px solid rgba(255,255,255,.18)',
+        `background:${accent ? '#db2777' : 'rgba(255,255,255,.08)'}`,
+        'color:#fff',
+        'border-radius:10px',
+        'padding:9px 10px',
+        'cursor:pointer',
+        'font:inherit',
+      ].join(';');
+      btn.addEventListener('click', () => finish(voice));
+      list.appendChild(btn);
+    };
+
+    addButton(`随机（使用缓存最多：${topMeta.name} / ${topMeta.gender} / ${topChoice.count}句）`, topChoice.voice, true);
+    choices.forEach((choice, index) => addButton(formatDubCacheVoiceChoice(choice, index), choice.voice));
+    close.addEventListener('click', () => finish(choices[0].voice));
+    panel.append(top, hint, list, rememberWrap);
+    const anchor = document.querySelector('#player') || document.querySelector('#movie_player')?.parentElement;
+    if (anchor?.parentElement) {
+      panel.style.position = 'relative';
+      panel.style.right = 'auto';
+      panel.style.bottom = 'auto';
+      panel.style.width = 'min(390px, 100%)';
+      panel.style.margin = '10px 0';
+      anchor.insertAdjacentElement('afterend', panel);
+    } else {
+      document.documentElement.appendChild(panel);
+    }
+  });
+}
+
+async function chooseDubCacheCoverageVoice(coverage) {
+  const ranked = (coverage?.rankedVoices || []).filter((item) => item.voice && item.count > 0);
+  if (ranked.length <= 1) return coverage;
+  if (dubCacheVoiceAutoPick) {
+    return selectDubCoverageVoice(coverage, ranked[0].voice);
+  }
+  const pickedVoice = await showDubCacheVoiceDialog(ranked);
+  return selectDubCoverageVoice(coverage, pickedVoice);
+}
+
+async function assessLocalDubCoverage(videoId, segments, centerTime = 0) {
+  const rows = await collectLocalDubRows(videoId);
+  if (!rows?.length || !segments?.length) {
+    return { full: false, hitCount: 0, total: segments?.length || 0, frontier: 0, voice: '', rankedVoices: [] };
+  }
+  const rowsBySource = new Map();
+  const rowsByStart = new Map();
+  for (const row of rows) {
+    const value = row.value || {};
+    const sourceKey = value._sourceKey || String(row.key || '').split('|')[1] || '';
+    if (sourceKey) {
+      if (!rowsBySource.has(sourceKey)) rowsBySource.set(sourceKey, []);
+      rowsBySource.get(sourceKey).push(row);
+    }
+    const startMs = Math.round(Number(value._sourceStart ?? value.start ?? 0) * 1000);
+    if (!rowsByStart.has(startMs)) rowsByStart.set(startMs, []);
+    rowsByStart.get(startMs).push(row);
+  }
+
+  const sorted = segments.slice().sort(compareDubSegments);
+  const hitsByVoice = new Map();
+  for (const seg of sorted) {
+    const sourceKey = makeSourceSegKey(seg);
+    const startMs = Math.round(Number(seg.start || 0) * 1000);
+    const candidates = [
+      ...(rowsBySource.get(sourceKey) || []),
+      ...(rowsByStart.get(startMs) || []),
+    ];
+    const seen = new Set();
+    for (const hit of candidates) {
+      if (seen.has(hit.key)) continue;
+      seen.add(hit.key);
+      if (!localDubRowMatchesSegment(hit.value, hit.key, seg)) continue;
+      const voice = hit.voice || localDubRowVoice(hit.value, hit.key);
+      if (!voice) continue;
+      if (!hitsByVoice.has(voice)) hitsByVoice.set(voice, new Set());
+      hitsByVoice.get(voice).add(sourceKey);
+    }
+  }
+  const total = sorted.length;
+  const rankedVoices = [...hitsByVoice.entries()].map(([voice, hitKeys]) => {
+    let frontier = Math.max(0, Number(centerTime || 0));
+    for (const seg of sorted.filter((s) => Math.max(s.end || s.start, s.start + 0.5) >= frontier - 0.5)) {
+      if (!hitKeys.has(makeSourceSegKey(seg))) break;
+      frontier = Math.max(frontier, Number(seg.end || seg.start || 0));
+    }
+    return {
+      voice,
+      count: hitKeys.size,
+      total,
+      frontier,
+      full: hitKeys.size === total && sorted.every((seg) => hitKeys.has(makeSourceSegKey(seg))),
+    };
+  }).sort((a, b) => (b.count - a.count) || (b.frontier - a.frontier) || String(a.voice).localeCompare(String(b.voice)));
+  const best = rankedVoices[0];
+  if (!best) return { full: false, hitCount: 0, total, frontier: 0, voice: '', rankedVoices: [] };
+  return {
+    full: !!best.full,
+    hitCount: best.count,
+    total,
+    frontier: best.frontier,
+    voice: best.voice,
+    rankedVoices,
+  };
+}
+
+async function primeLocalDubCoverageForSession(sess, videoId, segments, centerTime) {
+  try {
+    let coverage = await assessLocalDubCoverage(videoId, segments, centerTime);
+    if (coverage?.rankedVoices?.length > 1 && sess.started && sess.videoId === videoId) {
+      // 多个缓存声音时，用户选择必须发生在第一批请求之前；否则开头已经按
+      // “缓存最多/默认声音”排队，后面再切换就会出现“我选了A却先用了B”。
+      coverage = await chooseDubCacheCoverageVoice(coverage);
+      if (coverage?.voice) {
+        console.log(`[配音插件] 已锁定本轮缓存配音员：${coverage.voice}（${coverage.hitCount}/${coverage.total}句）`);
+      }
+    }
+    if (!sess.started || sess.videoId !== videoId) return coverage;
+    sess._localDubCoverage = coverage;
+    if (coverage.voice) {
+      sess._cachedVoice = coverage.voice;
+      sess._autoVoice = coverage.voice;
+      purgeNonSelectedVoiceSegments(sess, coverage.voice);
+      console.log(`[配音插件] 本视频缓存扫描：${coverage.hitCount}/${coverage.total} 段，优先沿用 ${coverage.voice}，连续缓存到 ${formatHMS(coverage.frontier)}`);
+    }
+    if (coverage.full) sess._knownFullLocalCache = true;
+    setDubButtonRealtimeCacheState(sess._dubButton, coverage);
+    return coverage;
+  } catch (e) {
+    console.warn('[配音插件] 本视频缓存覆盖扫描失败，不影响实时配音', e?.message || e);
+    return null;
   }
 }
 
@@ -3454,6 +4169,7 @@ async function saveLocalDubBatch(videoId, requested, returned) {
       store.put(
         {
           ...item,
+          voice: source.voice || item.voice || '',
           _sourceKey: source._sourceKey || makeSourceSegKey(source),
           _sourceStart: source.start,
           _sourceEnd: source.end,
@@ -3488,6 +4204,12 @@ async function hydrateLocalCacheWindow(sess, centerTime, beforeSec = 12, afterSe
   const requested = applySessionVoice(sess, candidates);
   const cached = await loadLocalDubBatch(sess.videoId, requested);
   if (!sess.started || !cached?.length) return 0;
+  const hydratedVoice = cached.find((item) => isChineseDubVoice(item?.voice))?.voice || null;
+  if (hydratedVoice && !sess._cachedVoice) {
+    sess._cachedVoice = hydratedVoice;
+    sess._autoVoice = hydratedVoice;
+    console.log(`[配音插件] 从本地缓存窗口恢复配音员：${hydratedVoice}`);
+  }
   const map = new Map((sess.dubSegments || []).map((s) => [_segKey(s), s]));
   let count = 0;
   let frontier = sess._maxSynthedTime || 0;
@@ -3509,6 +4231,7 @@ async function hydrateLocalCacheWindow(sess, centerTime, beforeSec = 12, afterSe
   if (count) {
     sess.dubSegments.sort(compareDubSegments);
     sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
+    primeStartupAudio(sess, centerTime);
     if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
   }
   return count;
@@ -3823,7 +4546,7 @@ async function resumeAfterNetworkRecovery(sess) {
   }
   const shouldResume = sess._networkShouldResumeVideo;
   sess._networkShouldResumeVideo = false;
-  if (shouldResume && sess.started) {
+  if (shouldResume && sess.started && !sess._startupGatePending) {
     try { await sess.video.play(); } catch (_) {}
   }
   hideBufferIndicator();
@@ -3847,37 +4570,46 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
   // 批量，让服务器一次拿到更完整的上下文。普通模式（已经是中文，不用翻译）维持原来的
   // 小批量节奏不变，那条路径不存在"按批次重复开销"的问题，没必要跟着改。
   // 默认只保留约十分钟前瞻，避免用户刚打开视频就生产大量不会收看的音频。
-  // 但播放位置超过全片一半后，用户继续看完的概率很高；此时改为持续生成到结尾，
-  // 让长视频后段不再因为固定十分钟窗口而断粮。拖动到后半段也同样适用：此时
+  // 但播放位置超过全片三分之一后，用户继续看完的概率已经很高；此时改为持续生成到结尾，
+  // 让长视频后段不再因为固定十分钟窗口而断粮。拖动到三分之一以后也同样适用：此时
   // 立即为用户实际要看的剩余部分铺好库存，而不会回头合成已跳过的前半段。
-  const SYNTH_AHEAD_SECONDS = 10 * 60;
+  const FULL_REMAINDER_CACHE_START_RATIO = 1 / 3;
   const getSynthesisAheadSeconds = () => {
     const duration = Number(video.duration || 0);
     const current = Number(video.currentTime || 0);
-    if (!Number.isFinite(duration) || duration <= 0 || current < duration / 2) {
-      return SYNTH_AHEAD_SECONDS;
+    const watchedFromHeadEnough = !!sess._startedFromBeginning && current >= REALTIME_START_CRITICAL_SECONDS;
+    const watchedThirdEnough = Number.isFinite(duration) && duration > 0
+      && current >= duration * FULL_REMAINDER_CACHE_START_RATIO;
+    if (!Number.isFinite(duration) || duration <= 0 || (!watchedFromHeadEnough && !watchedThirdEnough)) {
+      return current < REALTIME_START_CRITICAL_SECONDS
+        ? REALTIME_START_AHEAD_SECONDS
+        : REALTIME_NORMAL_AHEAD_SECONDS;
     }
     if (!sess._fullRemainderCaching) {
       sess._fullRemainderCaching = true;
+      sess._watchedFiveFullCacheLogged = watchedFromHeadEnough;
       const remaining = Math.max(0, duration - current);
-      recordDiagnostic(sess, 'watched_half_switch_to_full_remainder_cache', {
+      recordDiagnostic(sess, 'watched_third_switch_to_full_remainder_cache', {
         currentTime: +current.toFixed(3),
         duration: +duration.toFixed(3),
         remaining: +remaining.toFixed(3),
+        reason: watchedFromHeadEnough ? 'played_from_start_over_5min' : 'watched_over_one_third',
       });
-      console.log(`[配音插件] 已播放到视频后半段，缓存策略升级：持续生成剩余 ${formatHMS(remaining)} 配音`);
+      console.log(`[配音插件] 缓存策略升级：${watchedFromHeadEnough ? '从头播放已超过5分钟' : '已播放到三分之一以后'}，持续生成剩余 ${formatHMS(remaining)} 配音`);
     }
-    return Math.max(SYNTH_AHEAD_SECONDS, duration - current + 1);
+    return Math.max(REALTIME_NORMAL_AHEAD_SECONDS, duration - current + 1);
   };
-  const STARTUP_PREROLL_SECONDS = 60;
-  const STARTUP_PREROLL_MAX_SEGMENTS = 24;
+  const STARTUP_PREROLL_MAX_SEGMENTS = STARTUP_PLAYABLE_SEGMENTS;
   let firstDone = false;
   console.log('[配音插件] 开始配音流程，字幕总数:', rawSegments.length, 'upcoming:', upcoming.length, 'past:', past.length);
+  const localCoveragePromise = primeLocalDubCoverageForSession(sess, videoId, ordered, t0);
+  // 覆盖扫描现在只扫当前视频前缀，速度足够快；若有多个缓存声音，则必须等用户
+  // 选定后再发第一批，确保开头也使用用户选择的配音员。
+  await localCoveragePromise;
 
   const startupPrerollSegments = () => {
-    const target = t0 + STARTUP_PREROLL_SECONDS;
     const segs = upcoming
-      .filter((s) => s.end >= t0 - 0.5 && s.start <= target)
+      .filter((s) => s.end >= t0 - 0.5)
       .slice(0, STARTUP_PREROLL_MAX_SEGMENTS);
     return segs.length ? segs : upcoming.slice(0, Math.min(1, upcoming.length));
   };
@@ -3894,6 +4626,11 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
   const maybeMarkFirstReady = () => {
     if (firstDone || !isStartupPrerollReady()) return;
     firstDone = true;
+    // “首批片段已返回”与“Audio 已完全解码”是两道不同的门。前者一到就必须
+    // 放开正常调度/即时补救；否则某个损坏的缓存音频会把整个会话永久锁在 preparing。
+    // 真正续播仍由 onFirstChunkReady 的三段可播放验证控制。
+    sess._phase = 'dubbing';
+    primeStartupAudio(sess, video.currentTime || t0);
     recordDiagnostic(sess, 'startup_preroll_ready', {
       currentTime: +(video.currentTime || 0).toFixed(3),
       required: startupPrerollSegments().length,
@@ -3940,13 +4677,39 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
         chunk = queue.slice(idx, end);
         idx = end;
       } else {
-        const size = getAdaptiveChunkSize(sess, chunkNo);
+        // 启动放行条件是“当前三句都可播放”。旧逻辑首批却只发送2句，必然还要
+        // 等第二个网络往返才能放行，开头再快的缓存也被人为拖慢。首批固定三句，
+        // 只覆盖马上要播的内容；从第二批起仍按原有风险感知分批，不扩大库存。
+        const size = isPrimary && chunkNo === 0
+          ? STARTUP_PLAYABLE_SEGMENTS
+          : getAdaptiveChunkSize(sess, chunkNo);
         chunk = queue.slice(idx, idx + size);
         idx += size;
       }
       chunkNo++;
 
       const chunkWithVoice = applySessionVoice(sess, chunk);
+      let requestForServer = chunkWithVoice;
+      let cachedHits = [];
+      const forceLockedVoice = (items) => {
+        const locked = sess._cachedVoice || '';
+        if (!locked || !Array.isArray(items)) return items;
+        return items.map((item) => item ? { ...item, voice: locked, _strictCacheVoice: true } : item);
+      };
+      const normalizeReturnedVoices = (items, sourceSegments) => {
+        if (!Array.isArray(items)) return items;
+        const byKey = new Map((sourceSegments || []).map((s) => [s._sourceKey || makeSourceSegKey(s), s]));
+        const byStart = new Map((sourceSegments || []).map((s) => [Math.round((s.start || 0) * 1000), s]));
+        return items.map((item, i) => {
+          if (!item) return item;
+          const source = byKey.get(item._sourceKey || '')
+            || byStart.get(Math.round((item.start || 0) * 1000))
+            || sourceSegments?.[i]
+            || null;
+          const voice = source?.voice || sess._cachedVoice || item.voice || '';
+          return voice ? { ...item, voice, _strictCacheVoice: !!sess._cachedVoice } : item;
+        });
+      };
       sess._synthInFlight = sess._synthInFlight || new Set();
       chunk.forEach((s) => sess._synthInFlight.add(_segKey(s)));
       console.log(`[配音插件] 发送第${chunkNo}批，${chunk.length}段，起始=${chunk[0]?.start?.toFixed(1)}s`);
@@ -3955,6 +4718,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
       let lastChunkError = null;
       const acceptProgress = (fresh) => {
         if (!sess.started || sess.videoId !== videoId || !fresh?.length) return;
+        fresh = normalizeReturnedVoices(fresh, requestForServer);
         const existing = new Set(sess.dubSegments.map(_segKey));
         const ct = video.currentTime;
         for (const s of fresh) {
@@ -3964,9 +4728,10 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
           }
         }
         sess.dubSegments.sort(compareDubSegments);
+        primeStartupAudio(sess, video.currentTime || t0);
         const frontier = Math.max(...fresh.map(s => s.start + (s.duration || 0)));
         sess._maxSynthedTime = Math.max(sess._maxSynthedTime, frontier);
-        if (!sess._networkRecoveryPaused && sess._buffering
+        if (!sess._startupGatePending && !sess._networkRecoveryPaused && sess._buffering
             && sess._maxSynthedTime > video.currentTime + 0.25) {
           sess._buffering = false; sess.weArePausing = false;
           hideBufferIndicator();
@@ -3977,16 +4742,35 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
       // 真正的本地持久缓存优先于任何网络请求。只有整批未完整命中时才访问服务器；
       // 已完整配过的视频会在这里立即返回，不等待TTS或健康检查。
       const localCached = await loadLocalDubBatch(videoId, chunkWithVoice);
+      const cachedVoice = localCached.find((item) => isChineseDubVoice(item?.voice))?.voice || null;
+      if (cachedVoice && !sess._cachedVoice) {
+        sess._cachedVoice = cachedVoice;
+        sess._autoVoice = cachedVoice;
+        console.log(`[配音插件] 首批命中本地缓存，沿用缓存配音员：${cachedVoice}`);
+      }
       if (localCached.length === chunkWithVoice.length && localCached.every(Boolean)) {
         got = localCached;
         console.log(`[配音插件] 第${chunkNo}批命中浏览器本地音频缓存 ${got.length}/${chunkWithVoice.length}`);
+      } else if (localCached.some(Boolean)) {
+        cachedHits = localCached.filter(Boolean);
+        acceptProgress(cachedHits);
+        requestForServer = chunkWithVoice.filter((_, i) => !localCached[i]);
+        console.log(`[配音插件] 第${chunkNo}批部分命中浏览器本地音频缓存 ${cachedHits.length}/${chunkWithVoice.length}，只补 ${requestForServer.length} 段`);
+      }
+      const lockedVoice = sess._cachedVoice || cachedVoice || '';
+      if (lockedVoice) {
+        requestForServer = requestForServer.map((seg) => ({ ...seg, voice: lockedVoice, _strictCacheVoice: true }));
+        if (requestForServer.length) {
+          console.log(`[配音插件] 补缺请求锁定缓存配音员：${lockedVoice}，${requestForServer.length}段`);
+        }
       }
       const maxChunkAttempts = sess._subtitleMode === 'gemini' ? 3 : 1;
       for (let attempt = 0; got === null && attempt < maxChunkAttempts; attempt++) {
         try {
-          got = await sendChunk(videoId, title, chunkWithVoice, sess._baseRatePct || 0,
+          got = await sendChunk(videoId, title, requestForServer, sess._baseRatePct || 0,
             sess._readMode, sess._readLang, sess._subtitleMode === 'gemini', acceptProgress);
-          await saveLocalDubBatch(videoId, chunkWithVoice, got);
+          got = normalizeReturnedVoices(got, requestForServer);
+          await saveLocalDubBatch(videoId, requestForServer, got);
           break;
         } catch (e) {
           lastChunkError = e;
@@ -4000,6 +4784,13 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
       chunk.forEach((s) => sess._synthInFlight.delete(_segKey(s)));
 
       if (!sess.started || sess.videoId !== videoId) return;   // 同上：防止把旧视频的迟到结果塞进新视频
+      if (got === null && cachedHits.length) {
+        got = forceLockedVoice(cachedHits);
+        lastChunkError = null;
+        console.warn(`[配音插件] 第${chunkNo}批补缺失败，但已有 ${cachedHits.length} 段本地缓存，先继续播放，缺句后续补救`);
+      } else if (Array.isArray(got) && cachedHits.length) {
+        got = [...forceLockedVoice(cachedHits), ...normalizeReturnedVoices(got, requestForServer)];
+      }
       if (got === null && lastChunkError) {
         const recovered = await waitForDubServiceRecovery(
           sess, videoId, lastChunkError?.message || String(lastChunkError));
@@ -4012,7 +4803,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
       if (sess._networkRecoveryPaused) {
         await resumeAfterNetworkRecovery(sess);
       }
-      if (Array.isArray(got) && got.length === 0 && chunkWithVoice.length) {
+      if (Array.isArray(got) && got.length === 0 && requestForServer.length) {
         return fail('中文神经网络配音服务未返回音频；未使用浏览器机械语音');
       }
       if (got?.translateFailedStarts?.length) {
@@ -4035,6 +4826,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
           }
         }
         sess.dubSegments.sort(compareDubSegments);
+        primeStartupAudio(sess, video.currentTime || t0);
 
         // ASR 识别结果处理：
         // - 若立即返回了 asr_segments（前几批），直接用
@@ -4099,7 +4891,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
           const frontier = Math.max(...got.map(s => s.start + (s.duration || 0)));
           sess._maxSynthedTime = Math.max(sess._maxSynthedTime, frontier);
           // 若视频正因合成落后而暂停缓冲，且前沿已追上 → 自动恢复播放
-          if (!sess._networkRecoveryPaused && sess._buffering
+          if (!sess._startupGatePending && !sess._networkRecoveryPaused && sess._buffering
               && sess._maxSynthedTime > video.currentTime + 0.25) {
             sess._buffering = false;
             sess.weArePausing = false;
@@ -4185,7 +4977,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
     return;
   }
   // 全部合成完，若还卡在缓冲暂停则恢复播放
-  if (sess._buffering) {
+  if (!sess._startupGatePending && sess._buffering) {
     sess._buffering = false;
     sess.weArePausing = false;
     hideBufferIndicator();
@@ -4454,7 +5246,11 @@ function stopDubbing(sess, btn, keepRecordingForNextVideo = false) {
   // 复位两个按钮的默认文案（无论传入哪个）
   const _db = document.getElementById('dub-ext-btn');
   const _rb = document.getElementById('read-ext-btn');
-  if (_db) { _db.textContent = '🎧配音'; _db.title = '生成中文配音'; }
+  if (_db) {
+    clearRealtimeCacheButtonStyle(_db);
+    _db.textContent = '🎧配音';
+    _db.title = '生成中文配音';
+  }
   if (_rb) { _rb.textContent = '🔊朗读'; _rb.title = '朗读选中的字幕（忠实时间轴，不影响视频）'; }
 }
 
@@ -4521,15 +5317,15 @@ function medianF0(samples) {
 }
 
 // 口语基频归一化：自相关偶尔会把二次谐波当成F0（例如真实约192Hz却报384Hz）。
-// 正常说话的稳定基频很少超过280Hz；超过时按八度折半，再用截尾中位数抗异常点。
+// 但女声 280~320Hz 并不罕见，不能粗暴折半；只把 330Hz 以上的明显异常按八度折半。
 function normalizedSpeechF0(samples) {
   if (!samples?.length) return null;
   const folded = samples.map((v) => {
     let f = v;
-    while (f > 280) f /= 2;
+    while (f > 330) f /= 2;
     while (f < 75) f *= 2;
     return f;
-  }).filter((f) => f >= 75 && f <= 280).sort((a, b) => a - b);
+  }).filter((f) => f >= 75 && f <= 330).sort((a, b) => a - b);
   if (!folded.length) return null;
   const trim = Math.floor(folded.length * 0.15);
   const stable = folded.slice(trim, Math.max(trim + 1, folded.length - trim));
@@ -4570,23 +5366,48 @@ function isVideoOperational(video) {
 async function detectSpeakerGender(video) {
   const AUTO_MALE_VOICE = 'zh-CN-YunxiNeural';
   const AUTO_FEMALE_VOICE = 'zh-CN-XiaoxiaoNeural';
-  const MIN_SAMPLES = 6;       // 快速中位数判断，不让音色识别阻塞配音启动
-  const MAX_WAIT_MS = 2500;    // 最多2.5秒，取不到立即使用默认配音员
+  const MIN_SAMPLES = 5;       // 每个位置取少量稳定样本，至少取两个位置交叉判断
+  const MAX_WAIT_MS = 1300;    // 单个位置最多1.3秒；两处合计仍不能明显拖慢启动
   const INTERVAL_MS = 100;
   let ctx, src;
+  const decideVoiceFromWindows = (windows, sourceLabel) => {
+    const good = windows.filter((w) => w && Number.isFinite(w.f0));
+    if (!good.length) return null;
+    let female = 0, male = 0, ambiguous = 0;
+    for (const w of good) {
+      if (w.f0 >= 165) female++;
+      else if (w.f0 <= 145) male++;
+      else ambiguous++;
+    }
+    const sorted = good.map((w) => w.f0).sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    // 145~165Hz 是灰区；只要另一处明确女声，就不把灰区误判为男声。
+    const isFemale = female > 0 && female >= male;
+    const isMale = !isFemale && male > 0 && female === 0;
+    const voice = isFemale ? AUTO_FEMALE_VOICE
+      : (isMale ? AUTO_MALE_VOICE : (median >= 155 ? AUTO_FEMALE_VOICE : AUTO_MALE_VOICE));
+    const gender = voice === AUTO_FEMALE_VOICE ? '女声' : '男声';
+    const detail = good.map((w, i) => `${i + 1}:${w.f0.toFixed(0)}Hz/${w.samples || 0}样本`).join('，');
+    console.log(`[配音插件] 自动判断说话人（${sourceLabel}，两处采样）：${detail}`
+      + `；投票 女${female}/男${male}/灰${ambiguous} → ${gender} → ${voice}`);
+    return voice;
+  };
   try {
     // 勾选录音/录像时，tabCapture拿到的是标签页当前真正输出的声音，不受视频从
     // 0秒还是中途播放影响，也不会遇到video.captureStream没有音轨的问题。
     try {
-      const sampled = await chrome.runtime.sendMessage({ type: 'sampleCurrentTabVoice' });
-      if (sampled?.ok && sampled.f0) {
-        const voice = sampled.f0 >= 165 ? AUTO_FEMALE_VOICE : AUTO_MALE_VOICE;
-        console.log(`[配音插件] 直接采集当前标签页声音：${sampled.f0.toFixed(0)}Hz`
-          + ` → ${sampled.f0 >= 165 ? '女声' : '男声'} → ${voice}`);
-        return voice;
+      const tabWindows = [];
+      let lastTabSample = null;
+      for (let i = 0; i < 2; i++) {
+        const sampled = await chrome.runtime.sendMessage({ type: 'sampleCurrentTabVoice' });
+        lastTabSample = sampled || null;
+        if (sampled?.ok && sampled.f0) tabWindows.push(sampled);
+        if (i === 0) await new Promise((r) => setTimeout(r, 650));
       }
-      if (sampled?.error && !/没有可采样/.test(sampled.error)) {
-        console.log(`[配音插件] 当前声音暂未识别人声：${sampled.error}，改用视频音轨补采`);
+      const voice = decideVoiceFromWindows(tabWindows, '当前标签页声音');
+      if (voice) return voice;
+      if (lastTabSample?.error && !/没有可采样/.test(lastTabSample.error)) {
+        console.log(`[配音插件] 当前声音暂未识别人声：${lastTabSample.error}，改用视频音轨补采`);
       }
     } catch (_) {}
 
@@ -4609,29 +5430,33 @@ async function detectSpeakerGender(video) {
     analyser.smoothingTimeConstant = 0;
     src.connect(analyser);
     const buf = new Float32Array(analyser.fftSize);
-    const samples = [];
-    const t0 = Date.now();
-    await new Promise((resolve) => {
-      const timer = setInterval(() => {
-        analyser.getFloatTimeDomainData(buf);
-        const f0 = extractF0(buf, ctx.sampleRate);
-        if (f0) samples.push(f0);
-        if (samples.length >= MIN_SAMPLES || Date.now() - t0 > MAX_WAIT_MS) {
-          clearInterval(timer);
-          resolve();
-        }
-      }, INTERVAL_MS);
-    });
-    const rawF0 = medianF0(samples);
-    const f0 = normalizedSpeechF0(samples);
-    if (!f0) {
-      console.warn(`[配音插件] 自动判断说话人性别：等了${MAX_WAIT_MS / 1000}秒还是采不到有效音高（一直是音乐/静音？），不自动选配音员`);
+    const sampleWindow = async () => {
+      const samples = [];
+      const t0 = Date.now();
+      await new Promise((resolve) => {
+        const timer = setInterval(() => {
+          analyser.getFloatTimeDomainData(buf);
+          const f0 = extractF0(buf, ctx.sampleRate);
+          if (f0) samples.push(f0);
+          if (samples.length >= MIN_SAMPLES || Date.now() - t0 > MAX_WAIT_MS) {
+            clearInterval(timer);
+            resolve();
+          }
+        }, INTERVAL_MS);
+      });
+      const rawF0 = medianF0(samples);
+      const f0 = normalizedSpeechF0(samples);
+      return f0 ? { f0, rawF0, samples: samples.length } : null;
+    };
+    const windows = [];
+    windows.push(await sampleWindow());
+    await new Promise((r) => setTimeout(r, 650));
+    if (isVideoOperational(video)) windows.push(await sampleWindow());
+    const voice = decideVoiceFromWindows(windows, '视频音轨');
+    if (!voice) {
+      console.warn(`[配音插件] 自动判断说话人性别：两处采样仍采不到有效音高（一直是音乐/静音？），不自动选配音员`);
       return null;
     }
-    const voice = f0 >= 165 ? AUTO_FEMALE_VOICE : AUTO_MALE_VOICE;
-    const correction = rawF0 && Math.abs(rawF0 - f0) > 1
-      ? `（原始${rawF0.toFixed(0)}Hz，已做八度纠错）` : '';
-    console.log(`[配音插件] 自动判断说话人音高=${f0.toFixed(0)}Hz${correction} → ${f0 >= 165 ? '女声' : '男声'} → ${voice}`);
     return voice;
   } catch (e) {
     console.warn('[配音插件] 自动判断说话人性别失败（不影响正常配音，用回默认配音员）', e);
@@ -4970,7 +5795,7 @@ function buildSpeakerVoiceMap(sess) {
     ...(speakerCfg.femaleVoices || []).slice(0, speakerCfg.femaleCount || 0),
     ...(speakerCfg.maleVoices   || []).slice(0, speakerCfg.maleCount   || 0),
   ];
-  if (!voices.length) voices.push('zh-CN-XiaoxiaoNeural');
+  if (!voices.length) voices.push(getDefaultChineseDubVoice());
   sess._speakerVoiceMap = {};
   order.forEach((spk, i) => { sess._speakerVoiceMap[spk] = voices[i % voices.length]; });
   console.log('[配音插件] 说话人→音色映射:', JSON.stringify(sess._speakerVoiceMap));
@@ -4978,11 +5803,11 @@ function buildSpeakerVoiceMap(sess) {
 
 // ===== 启动配音（通用入口）=====
 async function startDubbing(sess, btn, getRawSegments, videoId, title) {
-  if (IS_YOUTUBE && isYouTubeAdPlaying()) {
-    blockDubDuringAd(sess?.video, btn);
-    return;
-  }
-  const playbackReady = await waitForActualVideoPlayback(sess.video, 8000);
+  await _settingsLoaded;   // 见上面定义处注释：避免设置还没读完就用默认女声发出第一批请求
+  const fastLocalCacheStart = !!sess._startFromLocalCacheFast;
+  const playbackReady = fastLocalCacheStart
+    ? true
+    : await waitForActualVideoPlayback(sess.video, 8000);
   if (!playbackReady) {
     if (btn) {
       btn.textContent = sess._readMode ? '🔊等待播放' : '🎧等待播放';
@@ -4991,7 +5816,6 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     sess.started = false;
     return;
   }
-  await _settingsLoaded;   // 见上面定义处注释：避免设置还没读完就用默认女声发出第一批请求
   sess.started = true;
   sess._userPaused = false;
   sess.dubSegments = [];
@@ -5027,14 +5851,17 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
   sess._networkRecoveryPaused = false;
   sess._networkShouldResumeVideo = false;
   sess._skipStartupPause = false;
+  // 开头必须先确认前三句“实际可以发声”，而不是只看服务器回了 URL。
+  // 该标记只保护归零启动/归零 seek；中后段继续沿用“不断视频、缺句后补”。
+  sess._startupGatePending = false;
   sess._webSpeechActive = false;
   sess._recordingSegmentStarted = false;
-
   function fail(reason, err) {
     console.error('[配音插件]', reason, err || '');
     if (sess._initTimer) { clearInterval(sess._initTimer); sess._initTimer = null; }
     if (btn) { btn.textContent = sess._readMode ? '🔊失败' : '🎧失败'; btn.title = (sess._readMode ? '朗读失败：' : '配音失败：') + reason; }
     sess.weArePausing = false;
+    sess._startupGatePending = false;
     showBufferIndicator(`⚠️ ${reason}`, sess.video);
     setTimeout(hideBufferIndicator, 8000);
     sess.started = false;
@@ -5051,7 +5878,9 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
   // sess.started 一直是true，停不下来）。
   // 这次是脚本模拟点击触发的（_isPlaylistAutoContinue），根本不存在"用户手动暂停后
   // 才点按钮"这种使用场景，直接当成"原本在播放"，不要去赌那一瞬间的 video.paused。
-  sess._resumeAfterStart = sess._isPlaylistAutoContinue ? true : !sess.video.paused;
+  sess._resumeAfterStart = (sess._forceResumeAfterCacheStart || sess._isPlaylistAutoContinue)
+    ? true
+    : !sess.video.paused;
   // 播放列表连续配音：不同视频说话人可能不同性别，但配音员设置是全局的，一直用
   // 同一个声音配所有视频。这里在视频还没被下面暂停掉之前（必须趁它还在正常出声）
   // 抽样一下原声音高，自动判断男女声、选对应配音员，不用每个视频手动切配音员设置。
@@ -5059,10 +5888,14 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
   // 这一步绝对不能卡住/中断后面的配音流程——分辨不出男女声就用默认配音员继续，
     // 而不是让识别失败变成"整个视频不配音了"。外面再包一层超时兜底。
   sess._autoVoice = null;
-  if (sess._isPlaylistAutoContinue || sess._shouldAutoDetectVoice) {
+  // 不能在启动时遍历 IndexedDB 的整库来猜音色：长视频/多次测试后缓存可能有数千段，
+  // 这会让“字幕已命中”之后仍卡在准备中。首批按段缓存命中时会立即采用其中的声音
+  // （见 processDubbingChunked），不需要为猜音色阻塞当前前三句。
+  sess._cachedVoice = null;
+  if (!fastLocalCacheStart && (sess._isPlaylistAutoContinue || sess._shouldAutoDetectVoice)) {
     sess._shouldAutoDetectVoice = false;
     // 只快速检测一轮；识别失败立即使用默认配音员，绝不能阻塞配音。
-    for (let round = 0; playbackReady && round < 1 && !sess._autoVoice; round++) {
+    for (let round = 0; playbackReady && round < 1 && !sess._autoVoice && !sess._cachedVoice; round++) {
       try {
         sess._autoVoice = await detectSpeakerGender(sess.video);
       } catch (e) {
@@ -5071,7 +5904,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       if (!sess.started || sess.videoId !== videoId) return;
     }
     if (!sess._autoVoice) {
-      sess._autoVoice = getPreferredChineseVoice() || 'zh-CN-XiaoxiaoNeural';
+      sess._autoVoice = getDefaultChineseDubVoice();
       sess._skipStartupPause = false;
       sess._resumeFromCurrentPosition = false;
       showBufferIndicator('⚠ 未识别人声，立即使用中文默认配音员继续', sess.video);
@@ -5102,7 +5935,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       rawSegments = await Promise.race([
         getRawSegments(),
         new Promise((_, reject) => setTimeout(
-          () => reject(new Error('字幕获取超过45秒，已停止等待')), 45000)),
+          () => reject(new Error('字幕获取超过150秒，已停止等待')), 150000)),
       ]);
     } catch (e) {
       return fail(`取字幕失败：${e?.message || '请求异常'}。请刷新视频页面后重试`);
@@ -5298,6 +6131,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       sampleDiarization(sess);
       playNextDue(sess, t);
       prefetchAhead(sess, t);
+      if (IS_YOUTUBE) maybePrefetchNextPlaylistCaptions(video);
       prunePlayedAudioCache(sess, t);
       // 结尾不再主动减慢视频。若尾音略长于画面，就保持最后一帧，等待配音自然说完；
       // 这样观感比明显慢放更自然，也更接近用户期望。
@@ -5335,9 +6169,17 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
         seg.played = (seg.start + (seg.tts_duration || seg.duration || 0)) < t;
         if (!seg.played) delete seg._skippedStale;
       }
+      if (sess._phase === 'preparing') {
+        recordDiagnostic(sess, 'startup_seek_ignored_until_voice_locked', {
+          currentTime: +(t || 0).toFixed(3),
+          cachedVoice: sess._cachedVoice || '',
+        });
+        return;
+      }
       // 快进后先把本地缓存挂回当前窗口，再对新位置优先合成，避免明明已有缓存却还去等服务器。
       const shouldHoldAtStart = t < 2.2;
       if (shouldHoldAtStart) {
+        sess._startupGatePending = true;
         sess._buffering = true;
         sess.weArePausing = true;
         try { sess.video.pause(); } catch (_) {}
@@ -5345,12 +6187,23 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       }
       const releaseStartSeekWhenPlayable = async () => {
         if (!sess.started || sess._seekEpoch !== seekEpoch || video.currentTime >= 2.2) return;
+        const restored = await hydrateLocalCacheWindow(sess, video.currentTime || 0, 1.5, 300).catch(() => 0);
+        if (restored) {
+          recordDiagnostic(sess, 'seek_zero_local_cache_restored_before_gate', {
+            currentTime: +(video.currentTime || 0).toFixed(3),
+            restored,
+            cachedVoice: sess._cachedVoice || '',
+          });
+          primeStartupAudio(sess, video.currentTime || 0);
+        }
         const ready = await startupAudioGateReady(sess, video.currentTime || 0);
         if (ready) {
+          sess._startupGatePending = false;
           sess._buffering = false;
           sess.weArePausing = false;
           hideBufferIndicator();
           try { await video.play(); } catch (_) {}
+          kickDubbingAfterSeek(sess, video.currentTime || 0);
           recordDiagnostic(sess, 'seek_zero_audio_gate_released', { currentTime: +(video.currentTime || 0).toFixed(3) });
           return;
         }
@@ -5363,12 +6216,14 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
         showBufferIndicator('🎧 正在恢复开头前三句配音…', video);
         setTimeout(releaseStartSeekWhenPlayable, 300);
       };
-      hydrateLocalCacheWindow(sess, t, shouldHoldAtStart ? 1.5 : 12, shouldHoldAtStart ? 300 : 240)
-        .catch(() => 0)
-        .finally(() => {
-          requestSynthAround(sess, t);
-          prefetchAhead(sess, t);
-        });
+      if (!shouldHoldAtStart) {
+        hydrateLocalCacheWindow(sess, t, 12, 240)
+          .catch(() => 0)
+          .finally(() => {
+            requestSynthAround(sess, t);
+            prefetchAhead(sess, t);
+          });
+      }
       // 反复快进快退时，每次拖动都会触发上面这些、但中间状态的请求大多会被新的
       // seekEpoch 作废——只在"用户停下来不再拖了"这一刻才真正要紧。这里加个停顿
       // 后的兜底：停止拖动 280ms 后，主动检查一次缓冲状态 + 踢一次播放调度，
@@ -5431,7 +6286,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       }
       markPlaybackStart(sess);   // 用户手动续播这一刻才真正开始录/计时，同样要避开等待期的静音
       const t = video.currentTime;
-      playNextDue(sess, t);
+      kickDubbingAfterSeek(sess, t, 8);
       prefetchAhead(sess, t);
     };
     // ended 通常比播放列表切换 URL 早一点到达。稍等一小段时间：若期间检测到
@@ -5451,6 +6306,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
         } catch (e) {
           console.warn('[配音插件] 视频结束后补漏失败，仍继续结束会话', e?.message || e);
         }
+        showMissedRealtimeSummary(sess);
         sess._endFinalizeTimer = setTimeout(() => stopDubbing(sess, btn, false), 300);
       };
       waitForLastVoice();
@@ -5464,6 +6320,11 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
 
   // 开始真正配音/朗读（取样确认后 或 单人模式直接调用）
   function beginDubbing() {
+    sess._startupGatePending = !sess._skipStartupPause;
+    sess._dubButton = btn || null;
+    sess._startedFromBeginning = !sess._resumeFromCurrentPosition;
+    sess._watchedFiveFullCacheLogged = false;
+    sess._knownFullLocalCache = false;
     // 朗读：静音原视频（朗读音频独立全音量）；配音：压低原音
     video.volume = sess._readMode ? 0 : origVolume;
     // 保留 CC：不自动关闭，由用户手动控制。配音时插件自绘中文覆盖层；朗读时显示原生 CC。
@@ -5471,6 +6332,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     attachDubbingListeners();
     // 朗读模式按钮文案由"初始化倒计时/首段出声"接管，这里不覆盖
     if (btn && !sess._readMode) {
+      clearRealtimeCacheButtonStyle(btn);
       btn.textContent = `🎧${sess._subtitleMode === 'zh' ? '📝字幕' : '🌐翻译'}`;
     }
 
@@ -5492,6 +6354,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     // 时间戳+音色的磁盘缓存，见 dub9.synthesize_segment，之前配过的部分会很快
     // 命中缓存，不是从头慢慢重新合成）才自动续播，避免"视频空播追不上配音"。
     if (!sess._resumeFromCurrentPosition) video.currentTime = 0;
+    sess._startedFromBeginning = !sess._resumeFromCurrentPosition || (video.currentTime || 0) < 5;
 
     // 视频已在 startDubbing 开头暂停；这里沿用「原本是否在播放」决定第一段就绪后是否续播
     const wasPlaying = sess._resumeAfterStart !== false;
@@ -5505,11 +6368,28 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       // “首批生成”不等于“首批可以播放”。先验证前三句已经在本机解码；失败时
       // 保持开场暂停、以极短间隔修复，而不是让视频先走八秒再发现开头漏配音。
       const startupTime = video.currentTime || 0;
-      if (!await startupAudioGateReady(sess, startupTime)) {
+      primeStartupAudio(sess, startupTime);
+      let startupReady = await startupAudioGateReady(sess, startupTime);
+      if (!startupReady) {
+        if (!sess._startupGateFirstWaitAt) sess._startupGateFirstWaitAt = Date.now();
+        const waitedMs = Date.now() - sess._startupGateFirstWaitAt;
+        const cacheCanCarry = _hasForwardDubCache(sess, startupTime, 45);
+        if (cacheCanCarry && waitedMs >= 5000) {
+          startupReady = true;
+          recordDiagnostic(sess, 'startup_audio_gate_timeout_released_with_forward_cache', {
+            currentTime: +startupTime.toFixed(3),
+            waitedMs,
+            cachedSegments: sess.dubSegments?.length || 0,
+            maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
+          });
+          console.warn('[配音插件] 开场解码等待超时，但已有缓存可接力，先启动播放并后台补缺');
+        }
+      }
+      if (!startupReady) {
         const firstMissing = (sess._allSegments || []).find((seg) => {
           if (seg.start < startupTime - 0.5) return false;
           const ready = (sess.dubSegments || []).find((item) => _segKey(item) === _segKey(seg));
-          return !ready?.audio_url || !sess.audioCache?.[ready.audio_url];
+          return !ready?.audio_url || !sess.audioCache?.[ready.audio_url] || ready._invalidAudio;
         });
         if (firstMissing) requestRealtimeCurrentSentenceRepair(sess, firstMissing, startupTime);
         showBufferIndicator('🎧 正在验证开场配音，视频将从第一句开始播放…', video);
@@ -5522,7 +6402,9 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
         }, 300);
         return;
       }
+      sess._startupGateFirstWaitAt = null;
       sess._phase = 'dubbing';
+      sess._startupGatePending = false;
       // 捕获流在用户授权时已经占用，但准备阶段数据全部丢弃；从第一批配音真正就绪
       // 这一刻重新开一个干净分段，最终文件无需裁切前面的等待过程。
       await beginCleanRecordingSegment(sess);
@@ -5536,6 +6418,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
         markPlaybackStart(sess);   // 真正要续播了才开始录/计时——避免录进"等首批就绪"这段空播的静音
         video.play().catch(() => {});
         hideBufferIndicator();
+        setTimeout(() => kickDubbingAfterSeek(sess, video.currentTime || startupTime, 8), 80);
       } else if (sess.weArePausing) {
         // 点配音那一刻视频本来就是暂停的，按设计不会自动续播（不替用户做决定）——
         // 但用户没法从按钮文字一眼看出"已经可以播放了"，加个提示明确告诉一下，
@@ -5565,6 +6448,16 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     // 每批完成后更新按钮进度：显示已生成到的时间点（时:分:秒，方便直接对照原视频时间轴）
     sess._onChunkProgress = (upToSec) => {
       if (!btn || sess._allDone) return;
+      if (sess._knownFullLocalCache) {
+        setDubButtonRealtimeCacheState(btn, {
+          full: true,
+          hitCount: sess._allSegments?.length || 1,
+          total: sess._allSegments?.length || 1,
+          frontier: sess.video?.duration || upToSec,
+          voice: sess._cachedVoice || sess._autoVoice || '',
+        });
+        return;
+      }
       const hms = formatHMS(upToSec);
       btn.textContent = `${icon}${modeTag}生成中 →${hms}`;
       btn.title = `${verb}生成中，已生成到 ${hms}`;
@@ -5575,8 +6468,19 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       sess._phase = 'done';
       if (!btn) return;
       sess._allDone = true;
-      btn.textContent = `${icon}${modeTag}${verb}中`;
-      btn.title = `全部${verb}已生成，正在播放（再点暂停）`;
+      if (!sess._readMode) {
+        sess._knownFullLocalCache = true;
+        setDubButtonRealtimeCacheState(btn, {
+          full: true,
+          hitCount: sess._allSegments?.length || 1,
+          total: sess._allSegments?.length || 1,
+          frontier: sess.video?.duration || 0,
+          voice: sess._cachedVoice || sess._autoVoice || '',
+        });
+      } else {
+        btn.textContent = '正在朗读';
+        btn.title = `全部${verb}已生成，正在播放（再点暂停）`;
+      }
     };
 
     sess._allSegments = rawSegments;   // 合并后的全量句子，供 seek 后按位置优先合成
@@ -5695,32 +6599,6 @@ let _ytCaptionsPromises = {};       // per-video 的 getYTCaptions 并发控制�
 let _nextPrefetchedVid = null;      // 已经发起过"下一个视频"预取请求的videoId，避免重复请求
 
 if (IS_YOUTUBE) {
-  function isYouTubeAdPlaying() {
-    try {
-      const player = document.getElementById('movie_player');
-      if (player?.classList?.contains('ad-showing') || player?.classList?.contains('ad-interrupting')) {
-        return true;
-      }
-      if (document.querySelector(
-        '.ytp-ad-player-overlay, .ytp-ad-preview-container, .video-ads, .ytp-ad-module, ' +
-        '.ytp-ad-text, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-ad-overlay-container')) {
-        return true;
-      }
-      return false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function blockDubDuringAd(video, btn, reason = '当前正在播放广告，暂不对广告配音') {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = '🎧配音';
-      btn.title = '广告播放中，请等正片开始后再启动';
-    }
-    showBufferIndicator(`⚠ ${reason}`, video || document.querySelector('video'));
-  }
-
   function injectPlayerResponseScript() {
     // 每次切视频（yt-navigate-finish）都会重新调用这个函数——如果这个标签页
     // 打开期间插件被重新加载过，chrome.runtime 早就失效了，chrome.runtime.getURL()
@@ -5837,12 +6715,6 @@ if (IS_YOUTUBE) {
         const video = document.querySelector('video');
         if (b && video) {
           if (!isVideoOperational(video)) return;
-          if (isYouTubeAdPlaying()) {
-            if (b.dataset.backgroundDubState !== 'processing') {
-              b.title = '广告播放中，等待正片开始后自动配音';
-            }
-            return;
-          }
           const sess = videoSessionMap.get(video);
           if (!sess || !sess.started) {
             _autoDubFired = true;
@@ -5937,9 +6809,8 @@ if (IS_YOUTUBE) {
         chrome.storage.local.get({ autoDub: false }, (cfg) => {
           if (cfg.autoDub) {
             setTimeout(prefetchChineseCaptions, 800);
-            // 错开当前视频自己的预取（晚5秒发），避免两个请求抢同一时间的配额，
-            // 也给播放列表面板足够时间渲染出"下一个视频"那一项。
-            setTimeout(prefetchNextPlaylistCaptions, 5000);
+            // 下一个视频不能在开头抢占连接、CPU 或字幕配额。等当前视频距结束15分钟
+            // 以内，再由 timeupdate 调度下一视频的预取。
           }
         });
       }
@@ -5987,13 +6858,13 @@ if (IS_YOUTUBE) {
     // 本地已缓存该视频字幕 → 不必预取，避免无谓请求
     const cached = await getCachedSubs(curVideoId());
     if (cached) {
-      console.log('[配音插件] 预取跳过：本地已有缓存');
+      console.log('[配音插件] 字幕预取跳过：本地已有字幕缓存（不代表音频缓存完整）');
       captionsReadyForVideo(curVideoId(), cached);
       return;
     }
     const track = pickCaptionTrack();
     if (!track) { console.log('[配音插件] 预取：无字幕轨道'); return; }
-    console.log('[配音插件] 开始后台预取中文字幕…', track._needTranslate ? '(需翻译)' : '(原生中文轨)');
+    console.log('[配音插件] 开始后台预取中文字幕…', track._needTranslate ? '(YouTube自动翻译中文，非Gemini)' : '(原生中文轨)');
     const vid = curVideoId();
     const ccBtn = document.querySelector('.ytp-subtitles-button');
     const wasOn = ccBtn?.getAttribute('aria-pressed') === 'true';
@@ -6003,7 +6874,7 @@ if (IS_YOUTUBE) {
       const segs = await waitForTimedText(6000);
       if (segs?.length) captionsReadyForVideo(vid, segs);
     } else {
-      // 需翻译：先让播放器自己切"自动翻译→中文"轨（最稳，见 _doGetYTCaptions 3.5 步
+      // 需YouTube自动翻译：先让播放器自己切"自动翻译→中文"轨（最稳，见 _doGetYTCaptions 3.5 步
       // 同款注释），拦不到再退回服务器兜底。
       await ensurePlayerChineseTrack(vid);
       let segs = await waitForTimedText(8000);
@@ -6061,7 +6932,7 @@ if (IS_YOUTUBE) {
   // 直接调服务器 /prefetch_captions，不碰当前页面的CC按钮/播放器状态——那些是
   // 当前正在播放视频的UI，不能因为预取下一个视频而误触。
   async function prefetchNextPlaylistCaptions() {
-    if (dubMode === 'read') return;   // 朗读模式语言因人而异，不代为预判下一个视频要读什么语言
+    if (!autoDub || dubMode === 'read') return;   // 朗读模式语言因人而异，不代为预判下一个视频要读什么语言
     try {
       const nextVid = getNextPlaylistVideoId();
       if (!nextVid || nextVid === _nextPrefetchedVid) return;
@@ -6075,6 +6946,15 @@ if (IS_YOUTUBE) {
     } catch (e) {
       console.warn('[配音插件] 预取下一个视频字幕失败（不影响当前视频，切过去时会走正常兜底流程）', e);
     }
+  }
+
+  const NEXT_VIDEO_PREFETCH_LEAD_SECONDS = 15 * 60;
+  function maybePrefetchNextPlaylistCaptions(video) {
+    const duration = Number(video?.duration || 0);
+    const current = Number(video?.currentTime || 0);
+    if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(current)) return;
+    if (duration - current > NEXT_VIDEO_PREFETCH_LEAD_SECONDS) return;
+    prefetchNextPlaylistCaptions();
   }
 
   window.addEventListener('yt-navigate-finish', () => {
@@ -6291,6 +7171,31 @@ if (IS_YOUTUBE) {
     });
   }
 
+  async function waitForManualChineseCaptions(vid, ms = 90000) {
+    const video = document.querySelector('video');
+    const msg = '⚠ 未获取到中文字幕，请手动打开 YouTube 字幕：字幕 → 自动翻译 → 中文（简体）。插件会自动检测，检测到后继续配音。未调用Gemini。';
+    showBufferIndicator(msg, video);
+    const startedAt = Date.now();
+    let lastLogAt = 0;
+    while (Date.now() - startedAt < ms) {
+      if (ytInterceptedSegments?.length && ytInterceptedVideoId === vid) {
+        hideBufferIndicator();
+        console.log('[配音插件] 已检测到用户手动打开的中文字幕，继续配音', ytInterceptedSegments.length, '条');
+        return captionsReadyForVideo(vid, ytInterceptedSegments);
+      }
+      if (ytTimedtextVideoId === vid && ytTimedtextUrl
+          && /[?&](?:tlang|lang)=zh(?:-|&|$)/i.test(ytTimedtextUrl)) {
+        if (Date.now() - lastLogAt > 5000) {
+          lastLogAt = Date.now();
+          console.log('[配音插件] 已检测到中文字幕URL，等待播放器返回字幕正文');
+        }
+      }
+      await sleep(600);
+    }
+    console.warn('[配音插件] 等待用户手动打开自动翻译中文字幕超时，未调用Gemini');
+    return [];
+  }
+
   // 等待拦截到带 pot 令牌的字幕 URL（播放器一发字幕请求就能拿到）
   function waitForUrl(ms) {
     if (ytTimedtextUrl) return Promise.resolve(ytTimedtextUrl);
@@ -6302,13 +7207,19 @@ if (IS_YOUTUBE) {
   }
 
   // 浏览器直取字幕（兜底路径，优先走服务器 prefetch_captions）。
-  // 自动翻译轨道（tlang）特别容易被 429，这里带退避重试；原生轨道一般不需要等太久。
+  // 注意：自动翻译轨(tlang)由浏览器直接 fetch 最容易被 YouTube 429。自动翻译中文是
+  // 我们的低成本主路径，不是错误；但取它必须尽量走“播放器被动拦截正文/服务器yt-dlp”
+  // 这两条路。这里不再对自动翻译URL做 0/3/8/20 秒硬重试，避免越补越触发限流。
   async function fetchSubtitleSegments(baseUrl, isAutoTranslate) {
-    const delays = isAutoTranslate ? [0, 3000, 8000, 20000] : [0, 2000];
+    if (isAutoTranslate) {
+      console.log('[配音插件] 跳过浏览器直取自动翻译字幕URL，避免触发YouTube 429；改走服务器/缓存路径');
+      return [];
+    }
+    const delays = [0, 2000];
     const jsonUrl = baseUrl.includes('fmt=') ? baseUrl : baseUrl + '&fmt=json3';
     for (let i = 0; i < delays.length; i++) {
       if (delays[i]) {
-        console.log(`[朗读] 浏览器直取被限流(429)，${delays[i] / 1000}s 后重试（第 ${i}/${delays.length - 1} 次）…`);
+        console.log(`[朗读] 浏览器直取字幕未成功，${delays[i] / 1000}s 后重试（第 ${i}/${delays.length - 1} 次）…`);
         await sleep(delays[i]);
       }
       try {
@@ -6455,8 +7366,8 @@ if (IS_YOUTUBE) {
       return captionsReadyForVideo(vid, ytInterceptedSegments);
     }
 
-    // 走到这里说明用户点配音前没选好中文字幕，接下来要靠脚本自己点CC/找服务器
-    // 翻译——这条路没有用户提前选好那条稳，标记一下，配音真正开始后提个友好提示。
+    // 走到这里说明用户点配音前没选好中文字幕，接下来只能靠播放器自己的
+    // YouTube自动翻译中文/服务器字幕兜底；未勾选Gemini时绝不调用API翻译。
     _lastSubFetchWasFallback = true;
 
     // 2) 确保播放器已发过字幕请求（拿到 pot URL）。预取没成时触发一次。
@@ -6469,7 +7380,7 @@ if (IS_YOUTUBE) {
       if (w?.length) return captionsReadyForVideo(vid, w);
     }
 
-    // 3.5) 需翻译：先让播放器自己切"自动翻译→中文"轨（播放器内部API，见
+    // 3.5) 需YouTube自动翻译：先让播放器自己切"自动翻译→中文"轨（播放器内部API，见
     // requestPlayerChineseTrack 注释）——播放器会自己发出带 pot 令牌的 zh-Hans
     // 请求，被动拦截即可，跟"用户提前手动选好"是同一级别的最稳路径。拦到就直接
     // 用；8秒内没拦到（播放器API不可用/字幕轨异常）才退回服务器 yt-dlp 兜底。
@@ -6495,12 +7406,15 @@ if (IS_YOUTUBE) {
       console.log('[配音插件] 播放器自动翻译轨8秒内未返回中文，退回服务器兜底');
     }
 
-    // 4) 需翻译：用 pot URL 拉一次中文（唯一的中文请求，带 429 退避重试）
+    // 4) 需YouTube自动翻译：走服务器字幕兜底，不启用Gemini
     const zh = await fetchChineseFromPotUrl();
     if (zh.length) return captionsReadyForVideo(vid, zh);
 
-    // 5) 拿不到中文就放弃（不退回原语言+API，避免浪费 token）
-    console.warn('[配音插件] 未能获取中文字幕（可能被限流），稍后重试或换视频');
+    // 5) 仍拿不到中文：不退回原语言+API。提示用户手动在 YouTube 菜单里打开
+    // “自动翻译→中文”，脚本继续被动监听播放器自己的中文字幕请求。
+    console.warn('[配音插件] 未能自动获取中文字幕，等待用户手动打开YouTube自动翻译中文；未调用Gemini');
+    const manual = await waitForManualChineseCaptions(vid, 90000);
+    if (manual.length) return manual;
     return [];
   }
 
@@ -6852,6 +7766,39 @@ if (IS_YOUTUBE) {
       // （长视频中途断了、不想从头重新听一遍时用这个）。
       sess._resumeFromCurrentPosition = fromCurrentPosition;
 
+      // 刷新页面后优先看本地缓存：如果已经有本视频字幕缓存 + 配音音频缓存，
+      // 不再等待 YouTube 播放器稳定、playerResponse 同步或字幕轨道重建。直接用
+      // 现有缓存开播；视频稳定后的字幕预取/校验在后台并行，不阻塞用户观看。
+      const fastVideoId = curVideoId();
+      if (!forceRegenerate && !sess._readMode) {
+        try {
+          const cachedSubs = await getCachedSubs(fastVideoId);
+          const localRows = cachedSubs?.length ? await collectLocalDubRows(fastVideoId) : null;
+          if (cachedSubs?.length && localRows?.length) {
+            const title = document.title.replace(/ - YouTube$/, '');
+            sess._startFromLocalCacheFast = true;
+            sess._forceResumeAfterCacheStart = true;
+            sess._shouldAutoDetectVoice = false;
+            btn.textContent = '🎧缓存启动…';
+            console.log(`[配音插件] 刷新后命中本地字幕+配音缓存，跳过视频稳定等待直接启动：字幕${cachedSubs.length}条，音频缓存${localRows.length}条`);
+            waitForActualVideoPlayback(video, 12000).then((ok) => {
+              if (!ok || !sess.started || sess.videoId !== fastVideoId) return;
+              console.log('[配音插件] 视频已稳定，后台并行检查/预取字幕，不影响缓存播放');
+              try { prefetchChineseCaptions().catch(() => {}); } catch (_) {}
+            }).catch(() => {});
+            try {
+              await startDubbing(sess, btn, () => Promise.resolve(cachedSubs), fastVideoId, title);
+            } finally {
+              sess._startFromLocalCacheFast = false;
+              sess._forceResumeAfterCacheStart = false;
+            }
+            return;
+          }
+        } catch (e) {
+          console.warn('[配音插件] 本地缓存快速启动检查失败，回到常规流程', e?.message || e);
+        }
+      }
+
       // 连续播放的第二个及后续视频不再依赖页面 CC/播放器字幕轨同步。YouTube 的
       // playerResponse 在 SPA 切换时存在明显竞态，但服务器只需要准确 videoId 就能
       // 用 yt-dlp 取中文字幕；成功后直接进入同一套配音流程，页面轨道仅作失败兜底。
@@ -6945,11 +7892,16 @@ if (IS_YOUTUBE) {
       const track = useGeminiTranslate ? pickOriginalCaptionTrack() : pickCaptionTrack();
       if (!track) {
         if (!useGeminiTranslate) {
+          btn.textContent = '🎧等字幕';
+          btn.title = '未获取到字幕，请手动打开 YouTube 字幕：自动翻译→中文（简体）。未调用Gemini。';
+          const manualSegs = await waitForManualChineseCaptions(_thisVid, 90000);
+          if (manualSegs.length) {
+            const title = document.title.replace(/ - YouTube$/, '');
+            btn.textContent = '🎧准备中…';
+            await startDubbing(sess, btn, () => Promise.resolve(manualSegs), _thisVid, title);
+            return;
+          }
           btn.textContent = '🎧无字幕';
-          btn.title = '未获取到字幕，请打开“自动翻译→配音指定字幕”后重试';
-          showBufferIndicator(
-            '⚠ 未获取到字幕，请打开“自动翻译→配音指定字幕”后重试。未调用Gemini。',
-            video);
           sess.started = false;
           return;
         }
@@ -7051,17 +8003,12 @@ if (IS_YOUTUBE) {
           async () => {
             const videoId = curVideoId();
             const title = document.title.replace(/ - YouTube$/, '');
-            if (isYouTubeAdPlaying()) {
-              blockDubDuringAd(video, btn, '当前是广告阶段，后台配音不会对广告启动');
-              return;
-            }
             const originalTrack = useGeminiTranslate ? pickOriginalCaptionTrack() : null;
             // Background dubbing deliberately does not auto-detect gender.
             // Lock the user's current Chinese voice; if unset, use the stable
             // Chinese default so later playback cannot silently choose another
             // voice from a noisy/failed speaker sample.
-            sess._autoVoice = getPreferredChineseVoice()
-              || 'zh-CN-XiaoxiaoNeural';
+            sess._autoVoice = getDefaultChineseDubVoice();
             showBufferIndicator(
               `后台配音固定使用：${sess._autoVoice}`,
               video);

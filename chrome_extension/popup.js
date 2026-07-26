@@ -6,6 +6,10 @@ const DEFAULT_SERVER = 'https://dub-server-921963653375.us-central1.run.app';
 const TEST_SERVER = 'https://ingrid919-dub-server.hf.space';
 const TEST_SERVER_CONTROL = 'http://127.0.0.1:8766';
 let SERVER = DEFAULT_SERVER;
+try {
+  const versionEl = document.getElementById('extensionVersion');
+  if (versionEl) versionEl.textContent = `v${chrome.runtime.getManifest().version_name || chrome.runtime.getManifest().version}`;
+} catch (_) {}
 chrome.storage.local.get({ serverUrl: '' }, (cfg) => {
   if (cfg.serverUrl) SERVER = cfg.serverUrl.trim().replace(/\/+$/, '');
 });
@@ -289,23 +293,9 @@ chrome.storage.local.get({ autoDub: false }, (cfg) => { autoDubEl.checked = cfg.
 autoDubEl.addEventListener('change', () => chrome.storage.local.set({ autoDub: autoDubEl.checked }));
 
 const autoExportFilesEl = document.getElementById('autoExportFiles');
-chrome.storage.local.get({ autoExportFiles: false }, async (cfg) => {
-  autoExportFilesEl.checked = cfg.autoExportFiles;
-  if (!cfg.autoExportFiles) return;
-  const statusEl = document.getElementById('recordingStatus');
-  try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    const resp = await chrome.runtime.sendMessage({
-      type: 'reuseTabRecording', tabId: tabs[0]?.id,
-    });
-    if (resp?.ok) {
-      if (statusEl) statusEl.textContent = '🔴 已连接正在运行的录制';
-    } else if (statusEl) {
-      statusEl.textContent = '⚠ 扩展已重新加载，请取消后重新勾选一次以取得录制权限';
-    }
-  } catch (_) {
-    if (statusEl) statusEl.textContent = '⚠ 请取消后重新勾选一次以取得录制权限';
-  }
+chrome.storage.local.get({ autoExportFiles: false }, (cfg) => {
+  autoExportFilesEl.checked = false;
+  if (cfg.autoExportFiles) chrome.storage.local.set({ autoExportFiles: false, autoRecordVideo: false });
 });
 document.getElementById('useTestServer').addEventListener('click', () => {
   serverUrlEl.value = TEST_SERVER;
@@ -427,26 +417,19 @@ async function armCurrentTabRecording(withVideo) {
   }
 }
 autoExportFilesEl.addEventListener('change', () => {
-  chrome.storage.local.set({ autoExportFiles: autoExportFilesEl.checked });
-  if (autoExportFilesEl.checked) {
-    armCurrentTabRecording(!!document.getElementById('autoRecordVideo')?.checked);
-  }
+  autoExportFilesEl.checked = false;
+  chrome.storage.local.set({ autoExportFiles: false, autoRecordVideo: false });
 });
 
 const autoRecordVideoEl = document.getElementById('autoRecordVideo');
-chrome.storage.local.get({ autoRecordVideo: false }, (cfg) => { autoRecordVideoEl.checked = cfg.autoRecordVideo; });
+chrome.storage.local.get({ autoRecordVideo: false }, (cfg) => {
+  autoRecordVideoEl.checked = false;
+  if (cfg.autoRecordVideo) chrome.storage.local.set({ autoRecordVideo: false, autoExportFiles: false });
+});
 autoRecordVideoEl.addEventListener('change', () => {
-  // “三合一”是 autoExportFiles 的子选项：content.js 里整段导出/录制逻辑都包在
-  // `if (autoExportFiles)` 里，只勾子选项、不勾主开关的话什么都不会发生（用户反馈过
-  // “勾了三合一但什么都没下载”）。子选项一旦被勾上，就顺手把主开关也勾上，避免这个坑。
-  if (autoRecordVideoEl.checked && !autoExportFilesEl.checked) {
-    autoExportFilesEl.checked = true;
-    chrome.storage.local.set({ autoExportFiles: true });
-  }
-  chrome.storage.local.set({ autoRecordVideo: autoRecordVideoEl.checked });
-  if (autoRecordVideoEl.checked) {
-    armCurrentTabRecording(true);
-  }
+  autoRecordVideoEl.checked = false;
+  autoExportFilesEl.checked = false;
+  chrome.storage.local.set({ autoRecordVideo: false, autoExportFiles: false });
 });
 
 // ===== 字幕 =====
