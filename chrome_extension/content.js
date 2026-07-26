@@ -3726,6 +3726,26 @@ function localDubRowVoice(row, key) {
     : (isChineseDubVoice(keyVoice) ? keyVoice : '');
 }
 
+function normalizeLocalDubMatchText(text) {
+  return normalizeCaptionCompareText(text)
+    .replace(/[\[\]【】()（）<>《》]/g, '');
+}
+
+function localDubTextLooksCompatible(rowText, targetText) {
+  const a = normalizeLocalDubMatchText(rowText);
+  const b = normalizeLocalDubMatchText(targetText);
+  if (!a || !b) return true;
+  if (a === b || a.includes(b) || b.includes(a)) return true;
+  const minLen = Math.min(a.length, b.length);
+  const maxLen = Math.max(a.length, b.length);
+  if (minLen < 6 || maxLen <= 0 || minLen / maxLen < 0.72) return false;
+  let samePos = 0;
+  for (let i = 0; i < minLen; i++) {
+    if (a[i] === b[i]) samePos++;
+  }
+  return samePos / minLen >= 0.78;
+}
+
 function localDubRowMatchesSegment(row, key, seg) {
   if (!row?.audio_b64 || !seg) return false;
   const sourceKey = seg._sourceKey || makeSourceSegKey(seg);
@@ -3733,11 +3753,18 @@ function localDubRowMatchesSegment(row, key, seg) {
   if (String(key || '').includes(`|${sourceKey}|`)) return true;
   const targetStart = Math.round((seg?.start || 0) * 1000);
   const rowStart = Math.round((row._sourceStart ?? row.start ?? 0) * 1000);
-  const sameStart = Math.abs(rowStart - targetStart) <= 20;
+  const sameStart = Math.abs(rowStart - targetStart) <= 150;
   if (!sameStart) return false;
   const targetText = String(seg?.text || '').trim();
   const rowText = String(row._sourceText || row.text || '').trim();
-  return !targetText || !rowText || targetText === rowText;
+  if (localDubTextLooksCompatible(rowText, targetText)) return true;
+  const targetEnd = Number(seg?._sourceEnd ?? seg?.end);
+  const rowEnd = Number(row._sourceEnd ?? row.end);
+  const sameEnd = Number.isFinite(targetEnd) && Number.isFinite(rowEnd)
+    && Math.abs(rowEnd - targetEnd) <= 0.8;
+  // 旧缓存可能是在字幕清洗/术语/去脏词规则更新前生成的。同一视频同一时间轴、
+  // 起止时间都贴合时，优先保留旧音频缓存，避免“配过两小时却只认出几十秒”。
+  return sameEnd;
 }
 
 function mergeLocalDubRow(seg, row, key) {
@@ -3920,7 +3947,10 @@ async function loadLocalDubBatch(videoId, requested) {
 
 function setDubButtonRealtimeCacheState(btn, coverage) {
   if (!btn || !coverage || coverage.hitCount <= 0) return;
-  const hms = formatHMS(Number(coverage.frontier || 0));
+  const frontierSec = Number(coverage.frontier || 0);
+  const furthestSec = Number(coverage.furthest || coverage.frontier || 0);
+  const hms = formatHMS(furthestSec);
+  const frontierHms = formatHMS(frontierSec);
   if (coverage.full) {
     btn.style.setProperty('background', '#16803a', 'important');
     btn.style.setProperty('border-radius', '16px', 'important');
@@ -3930,8 +3960,10 @@ function setDubButtonRealtimeCacheState(btn, coverage) {
     return;
   }
   if (btn.dataset.backgroundDubState === 'processing') return;
-  btn.textContent = `🎧缓存→${hms}`;
-  btn.title = `已命中本地配音缓存到 ${hms}，当前优先使用缓存配音员：${coverage.voice || '未知'}`;
+  btn.textContent = furthestSec > frontierSec + 10 ? `🎧缓存≈${hms}` : `🎧缓存→${hms}`;
+  btn.title = furthestSec > frontierSec + 10
+    ? `已命中本地配音缓存：连续到 ${frontierHms}，最远到 ${hms}；当前优先使用缓存配音员：${coverage.voice || '未知'}`
+    : `已命中本地配音缓存到 ${hms}，当前优先使用缓存配音员：${coverage.voice || '未知'}`;
 }
 
 function clearRealtimeCacheButtonStyle(btn) {
@@ -3984,8 +4016,12 @@ function formatDubCacheVoiceChoice(choice, index) {
   const n = ['一', '二', '三', '四', '五', '六'][index] || String(index + 1);
   const count = Number(choice.count || 0);
   const total = Number(choice.total || 0);
-  const frontier = formatHMS(Number(choice.frontier || 0));
-  const full = choice.full ? '完整缓存' : `缓存到 ${frontier}`;
+  const frontierSec = Number(choice.frontier || 0);
+  const furthestSec = Number(choice.furthest || choice.frontier || 0);
+  const frontier = formatHMS(frontierSec);
+  const furthest = formatHMS(furthestSec);
+  const full = choice.full ? '完整缓存'
+    : (furthestSec > frontierSec + 10 ? `连续到 ${frontier}，最远到 ${furthest}` : `连续到 ${frontier}`);
   return `配音员${n}：${meta.name}（${meta.gender}，${count}/${total}句，${full}）`;
 }
 
@@ -3998,6 +4034,8 @@ function selectDubCoverageVoice(coverage, voice) {
     voice: selected.voice,
     hitCount: selected.count,
     frontier: selected.frontier,
+    furthest: selected.furthest,
+    firstGapStart: selected.firstGapStart,
     full: !!selected.full,
   };
 }
@@ -4134,7 +4172,7 @@ async function chooseDubCacheCoverageVoice(coverage) {
 async function assessLocalDubCoverage(videoId, segments, centerTime = 0) {
   const rows = await collectLocalDubRows(videoId);
   if (!rows?.length || !segments?.length) {
-    return { full: false, hitCount: 0, total: segments?.length || 0, frontier: 0, voice: '', rankedVoices: [] };
+    return { full: false, hitCount: 0, total: segments?.length || 0, frontier: 0, furthest: 0, voice: '', rankedVoices: [] };
   }
   const rowsBySource = new Map();
   const rowsByStart = new Map();
@@ -4146,8 +4184,9 @@ async function assessLocalDubCoverage(videoId, segments, centerTime = 0) {
       rowsBySource.get(sourceKey).push(row);
     }
     const startMs = Math.round(Number(value._sourceStart ?? value.start ?? 0) * 1000);
-    if (!rowsByStart.has(startMs)) rowsByStart.set(startMs, []);
-    rowsByStart.get(startMs).push(row);
+    const startBucket = Math.round(startMs / 100);
+    if (!rowsByStart.has(startBucket)) rowsByStart.set(startBucket, []);
+    rowsByStart.get(startBucket).push(row);
   }
 
   const sorted = segments.slice().sort(compareDubSegments);
@@ -4155,9 +4194,12 @@ async function assessLocalDubCoverage(videoId, segments, centerTime = 0) {
   for (const seg of sorted) {
     const sourceKey = makeSourceSegKey(seg);
     const startMs = Math.round(Number(seg.start || 0) * 1000);
+    const startBucket = Math.round(startMs / 100);
     const candidates = [
       ...(rowsBySource.get(sourceKey) || []),
-      ...(rowsByStart.get(startMs) || []),
+      ...(rowsByStart.get(startBucket - 1) || []),
+      ...(rowsByStart.get(startBucket) || []),
+      ...(rowsByStart.get(startBucket + 1) || []),
     ];
     const seen = new Set();
     for (const hit of candidates) {
@@ -4173,8 +4215,17 @@ async function assessLocalDubCoverage(videoId, segments, centerTime = 0) {
   const total = sorted.length;
   const rankedVoices = [...hitsByVoice.entries()].map(([voice, hitKeys]) => {
     let frontier = Math.max(0, Number(centerTime || 0));
+    let furthest = 0;
+    let firstGapStart = null;
+    for (const seg of sorted) {
+      if (!hitKeys.has(makeSourceSegKey(seg))) continue;
+      furthest = Math.max(furthest, Number(seg.end || seg.start || 0));
+    }
     for (const seg of sorted.filter((s) => Math.max(s.end || s.start, s.start + 0.5) >= frontier - 0.5)) {
-      if (!hitKeys.has(makeSourceSegKey(seg))) break;
+      if (!hitKeys.has(makeSourceSegKey(seg))) {
+        firstGapStart = Number(seg.start || 0);
+        break;
+      }
       frontier = Math.max(frontier, Number(seg.end || seg.start || 0));
     }
     return {
@@ -4182,16 +4233,20 @@ async function assessLocalDubCoverage(videoId, segments, centerTime = 0) {
       count: hitKeys.size,
       total,
       frontier,
+      furthest,
+      firstGapStart,
       full: hitKeys.size === total && sorted.every((seg) => hitKeys.has(makeSourceSegKey(seg))),
     };
-  }).sort((a, b) => (b.count - a.count) || (b.frontier - a.frontier) || String(a.voice).localeCompare(String(b.voice)));
+  }).sort((a, b) => (b.count - a.count) || (b.furthest - a.furthest) || (b.frontier - a.frontier) || String(a.voice).localeCompare(String(b.voice)));
   const best = rankedVoices[0];
-  if (!best) return { full: false, hitCount: 0, total, frontier: 0, voice: '', rankedVoices: [] };
+  if (!best) return { full: false, hitCount: 0, total, frontier: 0, furthest: 0, voice: '', rankedVoices: [] };
   return {
     full: !!best.full,
     hitCount: best.count,
     total,
     frontier: best.frontier,
+    furthest: best.furthest,
+    firstGapStart: best.firstGapStart,
     voice: best.voice,
     rankedVoices,
   };
@@ -4211,6 +4266,7 @@ async function primeLocalDubCoverageForSession(sess, videoId, segments, centerTi
             hitCount: 0,
             total: segments?.length || coverage?.total || 0,
             frontier: Math.max(0, Number(centerTime || 0)),
+            furthest: 0,
             voice: forcedVoice,
             rankedVoices: coverage?.rankedVoices || [],
           };
@@ -4229,7 +4285,11 @@ async function primeLocalDubCoverageForSession(sess, videoId, segments, centerTi
       sess._cachedVoice = coverage.voice;
       sess._autoVoice = coverage.voice;
       purgeNonSelectedVoiceSegments(sess, coverage.voice);
-      console.log(`[配音插件] 本视频缓存扫描：${coverage.hitCount}/${coverage.total} 段，优先沿用 ${coverage.voice}，连续缓存到 ${formatHMS(coverage.frontier)}`);
+      const far = Number(coverage.furthest || coverage.frontier || 0);
+      console.log(`[配音插件] 本视频缓存扫描：${coverage.hitCount}/${coverage.total} 段，优先沿用 ${coverage.voice}，连续缓存到 ${formatHMS(coverage.frontier)}，最远命中到 ${formatHMS(far)}`);
+      if (far > Number(coverage.frontier || 0) + 60) {
+        console.warn(`[配音插件] 缓存前沿被早期缺口卡住：连续到 ${formatHMS(coverage.frontier)}，但后面仍有缓存到 ${formatHMS(far)}，会继续沿用已命中的后续缓存并补缺口。`);
+      }
     }
     if (coverage.full) sess._knownFullLocalCache = true;
     setDubButtonRealtimeCacheState(sess._dubButton, coverage);
