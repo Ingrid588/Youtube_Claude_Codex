@@ -135,6 +135,20 @@
     <hr>
 
     <div class="row">
+      <label>中文默认男声：</label>
+      <div class="speaker-row">
+        <select id="defaultMaleVoice"></select>
+        <span id="previewDefaultMaleVoice" title="试听默认男声" style="cursor:pointer;font-size:14px;padding:0 4px;user-select:none;">🔊</span>
+      </div>
+      <label style="margin-top:6px;">中文默认女声：</label>
+      <div class="speaker-row">
+        <select id="defaultFemaleVoice"></select>
+        <span id="previewDefaultFemaleVoice" title="试听默认女声" style="cursor:pointer;font-size:14px;padding:0 4px;user-select:none;">🔊</span>
+      </div>
+      <div class="hint">右键“切换男女声”和自动检测男女声都会使用这里的默认男/女声。</div>
+    </div>
+
+    <div class="row">
       <label><input type="checkbox" id="multiSpeaker" /> 多人对话配音（仅 YouTube）</label>
       <div class="hint">自动识别音调区分说话人，分配不同配音员。</div>
 

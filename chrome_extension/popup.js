@@ -86,6 +86,32 @@ async function previewVoice(voice, statusEl) {
   }
 }
 
+function initDefaultGenderVoices() {
+  const maleSel = document.getElementById('defaultMaleVoice');
+  const femaleSel = document.getElementById('defaultFemaleVoice');
+  if (!maleSel || !femaleSel) return;
+  maleSel.innerHTML = buildOptions(MALE_VOICES, MALE_DEFAULTS[0]);
+  femaleSel.innerHTML = buildOptions(FEMALE_VOICES, FEMALE_DEFAULTS[0]);
+  chrome.storage.local.get({
+    defaultMaleVoice: MALE_DEFAULTS[0],
+    defaultFemaleVoice: FEMALE_DEFAULTS[0],
+  }, (cfg) => {
+    maleSel.value = MALE_VOICES.some((v) => v.value === cfg.defaultMaleVoice)
+      ? cfg.defaultMaleVoice : MALE_DEFAULTS[0];
+    femaleSel.value = FEMALE_VOICES.some((v) => v.value === cfg.defaultFemaleVoice)
+      ? cfg.defaultFemaleVoice : FEMALE_DEFAULTS[0];
+  });
+  maleSel.addEventListener('change', () =>
+    chrome.storage.local.set({ defaultMaleVoice: maleSel.value }));
+  femaleSel.addEventListener('change', () =>
+    chrome.storage.local.set({ defaultFemaleVoice: femaleSel.value }));
+  document.getElementById('previewDefaultMaleVoice')?.addEventListener('click', () =>
+    previewVoice(maleSel.value, document.getElementById('previewDefaultMaleVoice')));
+  document.getElementById('previewDefaultFemaleVoice')?.addEventListener('click', () =>
+    previewVoice(femaleSel.value, document.getElementById('previewDefaultFemaleVoice')));
+}
+initDefaultGenderVoices();
+
 function renderVoiceRows(containerId, voiceList, count, savedVoices, defaults) {
   const el = document.getElementById(containerId);
   el.innerHTML = '';
