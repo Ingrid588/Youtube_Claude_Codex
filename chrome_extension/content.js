@@ -2655,7 +2655,25 @@ async function requestSynthAround(sess, t) {
   }
 
   try {
-    const segs = applySessionVoice(sess, pending);
+    let segs = applySessionVoice(sess, pending);
+    const localCached = await loadLocalDubBatch(sess.videoId, segs);
+    if (!sess.started) return;
+    if (localCached?.some(Boolean)) {
+      const hits = localCached.filter(Boolean);
+      pushAndMaybeResume(hits);
+      if (hits.length === segs.length) {
+        sess._priorityRetryCount = 0;
+        clearTimeout(sess._priorityRetryTimer);
+        sess._priorityRetryTimer = null;
+        recordDiagnostic(sess, 'priority_loaded_from_local_cache', {
+          currentTime: +(sess.video?.currentTime || t || 0).toFixed(3),
+          count: hits.length,
+        });
+        playNextDue(sess, sess.video.currentTime);
+        return;
+      }
+      segs = segs.filter((_, i) => !localCached[i]);
+    }
     const got = await sendChunk(sess.videoId, sess.title, segs, sess._baseRatePct || 0, sess._readMode, sess._readLang, sess._subtitleMode === 'gemini');
     pushAndMaybeResume(got);
     if (got?.length) {
@@ -2718,6 +2736,35 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
   (async () => {
     try {
       const requested = applySessionVoice(sess, [seg]);
+      const localCached = await loadLocalDubBatch(sess.videoId, requested);
+      if (sess.started && localCached?.[0]) {
+        const item = localCached[0];
+        const existingByKey = new Map((sess.dubSegments || []).map((x) => [_segKey(x), x]));
+        const existing = existingByKey.get(_segKey(item));
+        if (existing) {
+          Object.assign(existing, item, {
+            played: initialPlayedStateForInsertedSegment(sess, item, sess.video?.currentTime || t || 0),
+            _loadRetryCount: 0,
+            _invalidAudio: false,
+          });
+        } else {
+          sess.dubSegments.push({
+            ...item,
+            played: initialPlayedStateForInsertedSegment(sess, item, sess.video?.currentTime || t || 0),
+          });
+        }
+        sess.dubSegments.sort(compareDubSegments);
+        const frontier = item.start + (item.tts_duration || item.duration || 0);
+        sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
+        if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
+        recordDiagnostic(sess, 'realtime_current_sentence_loaded_from_local_cache', {
+          currentTime: +(sess.video?.currentTime || 0).toFixed(3),
+          missingStart: +(seg.start || 0).toFixed(3),
+          tries: state.tries,
+        });
+        playNextDue(sess, sess.video.currentTime);
+        return;
+      }
       const got = await sendChunk(sess.videoId, sess.title, requested, sess._baseRatePct || 0,
         false, null, sess._subtitleMode === 'gemini');
       if (!sess.started || !got?.length) return;
@@ -3019,17 +3066,32 @@ function rememberCompletedSpoken(sess, seg) {
 
 function _hasForwardDubCache(sess, t, windowSec = 45) {
   const end = t + windowSec;
-  if (sess._maxSynthedTime && sess._maxSynthedTime >= t + 0.5) return true;
   return !!sess.dubSegments?.some((s) => {
     if (!s.audio_url && !s.web_speech) return false;
+    if (s._invalidAudio) return false;
     const segEnd = s.start + (s.tts_duration || s.duration || 0);
     return segEnd >= t - 0.5 && s.start <= end;
   });
 }
 
+function getLoadedDubQueueFrontier(sess, t = null) {
+  const now = t == null ? Number(sess?.video?.currentTime || 0) : Number(t || 0);
+  let frontier = now;
+  const sorted = (sess?.dubSegments || [])
+    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+    .sort(compareDubSegments);
+  for (const seg of sorted) {
+    const end = seg.start + (seg.tts_duration || seg.duration || 0);
+    if (end < frontier - 0.5) continue;
+    if (seg.start > frontier + 1.2) break;
+    frontier = Math.max(frontier, end);
+  }
+  return frontier;
+}
+
 function getDubLeadSeconds(sess, t = null) {
   const now = t == null ? Number(sess?.video?.currentTime || 0) : Number(t || 0);
-  return Math.max(0, Number(sess?._maxSynthedTime || 0) - now);
+  return Math.max(0, getLoadedDubQueueFrontier(sess, now) - now);
 }
 
 function getPriorityRetryDelayMs(sess, t = null) {
@@ -3083,7 +3145,8 @@ const LOCAL_CACHE_TARGET_SECONDS = 20 * 60;
 
 function _ensureLocalCacheLead(sess, t) {
   if (!sess?.started || !sess.videoId || !Array.isArray(sess._allSegments)) return;
-  const lead = (sess._maxSynthedTime || 0) - t;
+  if (!sess._knownFullLocalCache && !sess._cachedVoice && !sess._localDubCoverage?.hitCount) return;
+  const lead = getDubLeadSeconds(sess, t);
   if (lead >= LOCAL_CACHE_LOW_WATER_SECONDS) return;
   if (sess._localCacheLeadLoading) return;
   const minGapMs = lead < 60 ? 800 : (lead < 3 * 60 ? 1500 : 2500);
@@ -3095,10 +3158,12 @@ function _ensureLocalCacheLead(sess, t) {
     try {
       const from = Math.max(0, t - 2);
       const to = t + LOCAL_CACHE_TARGET_SECONDS;
-      const existing = new Set((sess.dubSegments || []).map(_segKey));
+      const existingReady = new Set((sess.dubSegments || [])
+        .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+        .map(_segKey));
       const candidates = sess._allSegments
         .filter((s) => {
-          if (existing.has(_segKey(s))) return false;
+          if (existingReady.has(_segKey(s))) return false;
           const end = Math.max(s.end || s.start, s.start + 0.5);
           return end >= from && s.start <= to;
         })
@@ -3111,14 +3176,24 @@ function _ensureLocalCacheLead(sess, t) {
 
       let loaded = 0;
       let frontier = sess._maxSynthedTime || 0;
-      const have = new Set((sess.dubSegments || []).map(_segKey));
+      const byKey = new Map((sess.dubSegments || []).map((item) => [_segKey(item), item]));
       for (let i = 0; i < cached.length; i++) {
         const item = cached[i];
         if (!item) continue;
         const key = _segKey(item);
-        if (have.has(key)) continue;
-        sess.dubSegments.push({ ...item, played: initialPlayedStateForInsertedSegment(sess, item, t) });
-        have.add(key);
+        const existing = byKey.get(key);
+        if (existing && (existing.audio_url || existing.web_speech) && !existing._invalidAudio) continue;
+        if (existing) {
+          Object.assign(existing, item, {
+            played: initialPlayedStateForInsertedSegment(sess, item, t),
+            _invalidAudio: false,
+            _loadRetryCount: 0,
+          });
+        } else {
+          const inserted = { ...item, played: initialPlayedStateForInsertedSegment(sess, item, t) };
+          sess.dubSegments.push(inserted);
+          byKey.set(key, inserted);
+        }
         loaded++;
         frontier = Math.max(frontier, item.start + (item.tts_duration || item.duration || 0));
       }
@@ -3144,6 +3219,32 @@ function _ensureLocalCacheLead(sess, t) {
       sess._localCacheLeadLoading = false;
     }
   })();
+}
+
+function ensurePlaybackWindowFromLocalCache(sess, t, reason = 'playback_window_missing', beforeSec = 3, afterSec = 180) {
+  if (!sess?.started || sess._readMode || !sess.videoId || !Array.isArray(sess._allSegments)) return;
+  if (!sess._knownFullLocalCache && !sess._cachedVoice && !sess._localDubCoverage?.hitCount) return;
+  if (sess._playbackWindowHydrating) return;
+  const now = Date.now();
+  const current = Number(t || sess.video?.currentTime || 0);
+  const minGap = current < REALTIME_START_CRITICAL_SECONDS ? 350 : 900;
+  if (now - (sess._lastPlaybackWindowHydrateAt || 0) < minGap) return;
+  sess._lastPlaybackWindowHydrateAt = now;
+  sess._playbackWindowHydrating = true;
+  hydrateLocalCacheWindow(sess, current, beforeSec, afterSec)
+    .then((count) => {
+      if (!sess.started) return;
+      if (count) {
+        recordDiagnostic(sess, 'playback_window_hydrated_from_local_cache', {
+          reason,
+          currentTime: +current.toFixed(3),
+          count,
+        });
+        playNextDue(sess, sess.video?.currentTime || current);
+      }
+    })
+    .catch((e) => console.warn('[配音插件] 当前播放窗口本地缓存装载失败', e?.message || e))
+    .finally(() => { sess._playbackWindowHydrating = false; });
 }
 
 // 位置感知缓冲：只看"当前位置该有的句子是否已合成"，而非全局顺序前沿。
@@ -3172,6 +3273,9 @@ function maybeBufferForSynthesis(sess, t) {
   });
   if (!expected) { unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false; }
   if (_currentSegReadyAt(sess, t)) { unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false; }
+  ensurePlaybackWindowFromLocalCache(sess, t, 'maybe_buffer_current_sentence_missing',
+    Number(t || 0) < REALTIME_START_CRITICAL_SECONDS ? 2 : 5,
+    Number(t || 0) < REALTIME_START_CRITICAL_SECONDS ? 240 : 600);
   if (sess._synthDone) {
     sess._synthDone = false;
     sess._allDone = false;
@@ -3375,6 +3479,7 @@ function playNextDue(sess, t) {
   if (!best) {
     // 当前没有可播的段：不在这里弹任何提示。是否需要提示由 maybeBufferForSynthesis
     // 决定——只有它真正暂停视频缓冲时才显示提示（用户要求：不暂停就不提示）。
+    ensurePlaybackWindowFromLocalCache(sess, t, 'play_scheduler_no_due_segment', 5, 600);
     return;
   }
   // 二道防线：即使字幕解析阶段的滚动去重（dedupRollingCaptions）漏掉了某条，
