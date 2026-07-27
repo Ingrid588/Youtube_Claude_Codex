@@ -3950,6 +3950,8 @@ function localDubTextLooksCompatible(rowText, targetText) {
 // 策略迁移：重新请求后会写入版本 2，以后仍正常复用缓存，不影响其它数千句库存。
 const LOCAL_DUB_CENSOR_POLICY_VERSION = 2;
 const NORMAL_CAO_COMPOUND_RE = /操(?:纵|作|控|盘|练|演|课|行|典|刀|琴|办|持|心|劳|守|履|切|权|业|用|觚|场)/;
+const LOCAL_DUB_GLOSSARY_POLICY_VERSION = 2;
+const GLOSSARY_REWRITE_SOURCE_RE = /(?:刽子手|劊子手)/;
 
 function needsCensorPolicyRefresh(row, seg) {
   const source = String(seg?._sourceText || seg?.text || '');
@@ -3957,9 +3959,19 @@ function needsCensorPolicyRefresh(row, seg) {
     && Number(row?._censorPolicyVersion || 0) < LOCAL_DUB_CENSOR_POLICY_VERSION;
 }
 
+function needsGlossaryPolicyRefresh(row, seg) {
+  const source = String(seg?._sourceText || seg?.text || '');
+  return GLOSSARY_REWRITE_SOURCE_RE.test(source)
+    && Number(row?._glossaryPolicyVersion || 0) < LOCAL_DUB_GLOSSARY_POLICY_VERSION;
+}
+
+function needsLocalDubPolicyRefresh(row, seg) {
+  return needsCensorPolicyRefresh(row, seg) || needsGlossaryPolicyRefresh(row, seg);
+}
+
 function localDubRowMatchesSegment(row, key, seg, requireAudio = true) {
   if ((!row?.audio_b64 && requireAudio) || !seg) return false;
-  if (needsCensorPolicyRefresh(row, seg)) return false;
+  if (needsLocalDubPolicyRefresh(row, seg)) return false;
   const sourceKey = seg._sourceKey || makeSourceSegKey(seg);
   if (row._sourceKey && row._sourceKey === sourceKey) return true;
   if (String(key || '').includes(`|${sourceKey}|`)) return true;
@@ -4115,7 +4127,7 @@ async function loadLocalDubBatch(videoId, requested) {
       const req = store.get(localDubKey(videoId, seg));
       req.onsuccess = () => {
         const cached = req.result || null;
-        resolve(cached && !needsCensorPolicyRefresh(cached, seg)
+        resolve(cached && !needsLocalDubPolicyRefresh(cached, seg)
           ? mergeLocalDubRow(seg, cached, localDubKey(videoId, seg)) : null);
       };
       req.onerror = () => resolve(null);
@@ -4552,6 +4564,7 @@ async function saveLocalDubBatch(videoId, requested, returned) {
           ...item,
           voice: source.voice || item.voice || '',
           _censorPolicyVersion: LOCAL_DUB_CENSOR_POLICY_VERSION,
+          _glossaryPolicyVersion: LOCAL_DUB_GLOSSARY_POLICY_VERSION,
           _sourceKey: source._sourceKey || makeSourceSegKey(source),
           _sourceStart: source.start,
           _sourceEnd: source.end,
