@@ -3945,8 +3945,21 @@ function localDubTextLooksCompatible(rowText, targetText) {
   return samePos / minLen >= 0.78;
 }
 
+// 2026-07 的旧服务曾把“我操纵”错误清洗为“哎呀纵”。本地 IndexedDB 的 key 以
+// 原字幕时间轴为准，旧音频会因此继续命中。仅对含正常“操”复合词的旧条目做一次
+// 策略迁移：重新请求后会写入版本 2，以后仍正常复用缓存，不影响其它数千句库存。
+const LOCAL_DUB_CENSOR_POLICY_VERSION = 2;
+const NORMAL_CAO_COMPOUND_RE = /操(?:纵|作|控|盘|练|演|课|行|典|刀|琴|办|持|心|劳|守|履|切|权|业|用|觚|场)/;
+
+function needsCensorPolicyRefresh(row, seg) {
+  const source = String(seg?._sourceText || seg?.text || '');
+  return NORMAL_CAO_COMPOUND_RE.test(source)
+    && Number(row?._censorPolicyVersion || 0) < LOCAL_DUB_CENSOR_POLICY_VERSION;
+}
+
 function localDubRowMatchesSegment(row, key, seg, requireAudio = true) {
   if ((!row?.audio_b64 && requireAudio) || !seg) return false;
+  if (needsCensorPolicyRefresh(row, seg)) return false;
   const sourceKey = seg._sourceKey || makeSourceSegKey(seg);
   if (row._sourceKey && row._sourceKey === sourceKey) return true;
   if (String(key || '').includes(`|${sourceKey}|`)) return true;
@@ -4102,7 +4115,8 @@ async function loadLocalDubBatch(videoId, requested) {
       const req = store.get(localDubKey(videoId, seg));
       req.onsuccess = () => {
         const cached = req.result || null;
-        resolve(cached ? mergeLocalDubRow(seg, cached, localDubKey(videoId, seg)) : null);
+        resolve(cached && !needsCensorPolicyRefresh(cached, seg)
+          ? mergeLocalDubRow(seg, cached, localDubKey(videoId, seg)) : null);
       };
       req.onerror = () => resolve(null);
     })));
@@ -4537,6 +4551,7 @@ async function saveLocalDubBatch(videoId, requested, returned) {
       const saved = {
           ...item,
           voice: source.voice || item.voice || '',
+          _censorPolicyVersion: LOCAL_DUB_CENSOR_POLICY_VERSION,
           _sourceKey: source._sourceKey || makeSourceSegKey(source),
           _sourceStart: source.start,
           _sourceEnd: source.end,
