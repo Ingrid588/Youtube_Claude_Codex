@@ -487,7 +487,10 @@ function getDubRiskState(sess) {
     || loadRetries >= 3
     || !!sess?._forceConservativeDubbing
   );
-  const conservative = tailRisk || troubleSignals;
+  // 结尾二十分钟不是“应该减速”的风险，而是最需要尽快补齐库存的阶段。
+  // 之前把 tailRisk 并入 conservative，会把每批从 10 段降到 3 段；长视频
+  // 因而总是在最后二十分钟掉到播放进度之后。保守策略只用于真实故障信号。
+  const conservative = troubleSignals;
   return {
     conservative,
     tailRisk,
@@ -506,6 +509,20 @@ function getAdaptiveChunkSize(sess, chunkNo) {
   if (current < REALTIME_START_CRITICAL_SECONDS && !risk.troubleSignals) {
     return chunkNo <= 1 ? 12 : 18;
   }
+  if (risk.tailRisk && !risk.troubleSignals) {
+    if (!sess._tailInventoryAccelerationLogged) {
+      sess._tailInventoryAccelerationLogged = true;
+      recordDiagnostic(sess, 'tail_inventory_acceleration', {
+        remaining: Number.isFinite(risk.remaining) ? +risk.remaining.toFixed(1) : null,
+        reason: 'tail_must_finish_before_playhead',
+      });
+      console.log('[配音插件] 进入结尾库存加速：提高批量，不再缩小到3句');
+    }
+    // 服务端每个 /dub 请求内部有 6 路 TTS 并发；12 段既能压低 HTTP 往返开销，
+    // 又不会把单次响应推到客户端 45 秒超时之外。
+    return 12;
+  }
+  sess._tailInventoryAccelerationLogged = false;
   if (risk.conservative) {
     if (!sess._conservativeModeLogged) {
       sess._conservativeModeLogged = true;
@@ -518,7 +535,8 @@ function getAdaptiveChunkSize(sess, chunkNo) {
         reason: risk.tailRisk ? 'tail_window' : 'runtime_trouble',
       });
     }
-    return chunkNo === 0 ? 2 : 3;
+    // 真有错误时才收小批次；仍保留 6 段并发，不能让“自我保护”反过来饿死库存。
+    return chunkNo === 0 ? 3 : 6;
   }
   sess._conservativeModeLogged = false;
   const CHUNK_SIZES = [2, 6, 10];
@@ -3284,15 +3302,10 @@ function maybeBufferForSynthesis(sess, t) {
     console.warn('[配音插件] 已完成状态下发现当前位置缺少配音，重新进入自动补合成');
   }
 
-  // 合成前沿：已合成（带音频）的最远时间点。只要前沿已越过当前播放位置，
-  // 就说明配音领先播放——绝不暂停、也绝不显示提示（用户要求：只有真需暂停才提示）。
+  // 只认“从当前播放点连续不断”的可播队列，绝不能拿某个远处片段的最大时间
+  // 冒充库存前沿。否则中间已经断粮，界面仍会误以为有库存并放行视频。
   requestRealtimeCurrentSentenceRepair(sess, expected, t);
-  let frontier = 0;
-  for (const s of sess.dubSegments) {
-    if (!s.audio_url && !s.web_speech) continue;
-    const e = s.start + (s.tts_duration || s.duration || 0);
-    if (e > frontier) frontier = e;
-  }
+  const frontier = getLoadedDubQueueFrontier(sess, t);
   if (frontier >= t + 0.5) { unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false; }
 
   // 该句还没合成 → 先催合成
@@ -3816,6 +3829,86 @@ function localDubKey(videoId, seg) {
     + `${seg.voice || ''}|${localDubHash(seg.text || '')}`;
 }
 
+// 长视频每十几秒都会查一次本地库存。旧实现只要当前批里有一条未命中，便把该视频
+// 数千条带 base64 的缓存全部 cursor 扫一遍；四小时视频越播数据库越大，扫描又和
+// 合成主链串行，最终“有库存却越播越落后”。这里仅把可匹配的元数据建成会话索引，
+// 真正的 base64 仍按命中的 key 从 IndexedDB 读取，既不反复全库扫描也不把音频常驻内存。
+const _localDubLooseIndexes = new Map();
+
+function makeLocalDubLooseIndex(videoId) {
+  return { videoId, bySource: new Map(), byStart: new Map(), ready: false, promise: null };
+}
+
+function addLocalDubRowsToLooseIndex(videoId, rows) {
+  const index = _localDubLooseIndexes.get(videoId);
+  if (!index || !Array.isArray(rows)) return;
+  for (const row of rows) {
+    const key = String(row?.key || '');
+    const value = row?.value || {};
+    const voice = row?.voice || localDubRowVoice(value, key);
+    if (!key || !voice || !value.audio_b64) continue;
+    // 只留下匹配所需字段；不得把长视频所有 audio_b64 放进 JS 内存。
+    const meta = {
+      key,
+      voice,
+      value: {
+        _sourceKey: value._sourceKey || '',
+        _sourceStart: value._sourceStart ?? value.start,
+        _sourceEnd: value._sourceEnd ?? value.end,
+        _sourceText: value._sourceText || value.text || '',
+        start: value.start,
+        end: value.end,
+      },
+    };
+    const sourceKey = meta.value._sourceKey || String(key).split('|')[1] || '';
+    if (sourceKey) {
+      const arr = index.bySource.get(sourceKey) || [];
+      if (!arr.some((item) => item.key === key)) arr.push(meta);
+      index.bySource.set(sourceKey, arr);
+    }
+    const startMs = Math.round(Number(meta.value._sourceStart ?? meta.value.start ?? 0) * 1000);
+    const bucket = Math.round(startMs / 100);
+    const byStart = index.byStart.get(bucket) || [];
+    if (!byStart.some((item) => item.key === key)) byStart.push(meta);
+    index.byStart.set(bucket, byStart);
+  }
+}
+
+function getLocalDubLooseCandidates(index, seg) {
+  if (!index || !seg) return [];
+  const sourceKey = seg._sourceKey || makeSourceSegKey(seg);
+  const startBucket = Math.round(Math.round(Number(seg.start || 0) * 1000) / 100);
+  const seen = new Set();
+  const candidates = [
+    ...(index.bySource.get(sourceKey) || []),
+    ...(index.byStart.get(startBucket - 1) || []),
+    ...(index.byStart.get(startBucket) || []),
+    ...(index.byStart.get(startBucket + 1) || []),
+  ];
+  return candidates.filter((item) => {
+    if (!item?.key || seen.has(item.key)) return false;
+    seen.add(item.key);
+    return true;
+  });
+}
+
+async function getLocalDubLooseIndex(videoId) {
+  let index = _localDubLooseIndexes.get(videoId);
+  if (index?.ready) return index;
+  if (index?.promise) return index.promise;
+  index = index || makeLocalDubLooseIndex(videoId);
+  _localDubLooseIndexes.set(videoId, index);
+  index.promise = collectLocalDubRows(videoId)
+    .then((rows) => {
+      addLocalDubRowsToLooseIndex(videoId, rows || []);
+      index.ready = true;
+      return index;
+    })
+    .catch(() => index)
+    .finally(() => { index.promise = null; });
+  return index.promise;
+}
+
 function isChineseDubVoice(voice) {
   return /^zh-(CN|TW|HK)-/i.test(String(voice || ''));
 }
@@ -3852,8 +3945,8 @@ function localDubTextLooksCompatible(rowText, targetText) {
   return samePos / minLen >= 0.78;
 }
 
-function localDubRowMatchesSegment(row, key, seg) {
-  if (!row?.audio_b64 || !seg) return false;
+function localDubRowMatchesSegment(row, key, seg, requireAudio = true) {
+  if ((!row?.audio_b64 && requireAudio) || !seg) return false;
   const sourceKey = seg._sourceKey || makeSourceSegKey(seg);
   if (row._sourceKey && row._sourceKey === sourceKey) return true;
   if (String(key || '').includes(`|${sourceKey}|`)) return true;
@@ -4013,38 +4106,49 @@ async function loadLocalDubBatch(videoId, requested) {
       };
       req.onerror = () => resolve(null);
     })));
-    if (values.some((v) => !v)) {
-      const missingIndexes = values
-        .map((v, i) => (v ? -1 : i))
-        .filter((i) => i >= 0);
-      const looseRows = [];
-      await new Promise((resolve) => {
-        const lower = `${videoId}|`;
-        const upper = `${videoId}|\uffff`;
-        const req = store.openCursor(IDBKeyRange.bound(lower, upper));
-        req.onsuccess = () => {
-          const cursor = req.result;
-          if (!cursor) { resolve(); return; }
-          const key = String(cursor.primaryKey || '');
-          const value = cursor.value || {};
-          const voice = localDubRowVoice(value, key);
-          if (voice && value.audio_b64) {
-            looseRows.push({ key, value, voice });
-          }
-          cursor.continue();
-        };
-        req.onerror = resolve;
-      });
-      for (const idx of missingIndexes) {
-        const seg = requested[idx];
-        const hit = looseRows.find((row) => {
-          if (seg._strictCacheVoice && seg.voice && row.voice && row.voice !== seg.voice) return false;
-          return localDubRowMatchesSegment(row.value, row.key, seg);
-        });
-        if (hit) values[idx] = mergeLocalDubRow(seg, hit.value, hit.key);
-      }
-    }
     db.close();
+
+    const missingIndexes = values
+      .map((v, i) => (v ? -1 : i))
+      .filter((i) => i >= 0);
+    if (!missingIndexes.length) return values;
+
+    const looseIndex = await getLocalDubLooseIndex(videoId);
+    const candidatesByIndex = new Map();
+    const keysToRead = new Set();
+    for (const idx of missingIndexes) {
+      const seg = requested[idx];
+      const candidates = getLocalDubLooseCandidates(looseIndex, seg).filter((row) => {
+        if (seg._strictCacheVoice && seg.voice && row.voice && row.voice !== seg.voice) return false;
+        return localDubRowMatchesSegment(row.value, row.key, seg, false);
+      });
+      if (!candidates.length) continue;
+      candidatesByIndex.set(idx, candidates);
+      candidates.forEach((row) => keysToRead.add(row.key));
+    }
+    if (!keysToRead.size) return values;
+
+    const readDb = await openLocalDubDB();
+    const readTx = readDb.transaction('segments', 'readonly');
+    const readStore = readTx.objectStore('segments');
+    const rowByKey = new Map();
+    await Promise.all([...keysToRead].map((key) => new Promise((resolve) => {
+      const req = readStore.get(key);
+      req.onsuccess = () => {
+        if (req.result?.audio_b64) rowByKey.set(key, req.result);
+        resolve();
+      };
+      req.onerror = resolve;
+    })));
+    readDb.close();
+    for (const [idx, candidates] of candidatesByIndex) {
+      const seg = requested[idx];
+      const hit = candidates.find((candidate) => {
+        const row = rowByKey.get(candidate.key);
+        return row && localDubRowMatchesSegment(row, candidate.key, seg);
+      });
+      if (hit) values[idx] = mergeLocalDubRow(seg, rowByKey.get(hit.key), hit.key);
+    }
     return values;
   } catch (_) {
     return requested.map(() => null);
@@ -4280,6 +4384,15 @@ async function assessLocalDubCoverage(videoId, segments, centerTime = 0) {
   if (!rows?.length || !segments?.length) {
     return { full: false, hitCount: 0, total: segments?.length || 0, frontier: 0, furthest: 0, voice: '', rankedVoices: [] };
   }
+  // 覆盖扫描本身已经读过当前视频全部缓存；顺手把“只含匹配元数据”的索引建好，
+  // 后面运行中的每个小批次就不必重新 cursor 扫描整部四小时视频。
+  let looseIndex = _localDubLooseIndexes.get(videoId);
+  if (!looseIndex) {
+    looseIndex = makeLocalDubLooseIndex(videoId);
+    _localDubLooseIndexes.set(videoId, looseIndex);
+  }
+  addLocalDubRowsToLooseIndex(videoId, rows);
+  looseIndex.ready = true;
   const rowsBySource = new Map();
   const rowsByStart = new Map();
   for (const row of rows) {
@@ -4416,12 +4529,12 @@ async function saveLocalDubBatch(videoId, requested, returned) {
       (s) => [s._sourceKey || makeSourceSegKey(s), s]));
     const byStart = new Map(requested.map(
       (s) => [Math.round((s.start || 0) * 1000), s]));
+    const savedRows = [];
     for (const item of returned) {
       if (!item?.audio_b64) continue;
       const source = byKey.get(item._sourceKey || '') || byStart.get(Math.round((item.start || 0) * 1000));
       if (!source) continue;
-      store.put(
-        {
+      const saved = {
           ...item,
           voice: source.voice || item.voice || '',
           _sourceKey: source._sourceKey || makeSourceSegKey(source),
@@ -4430,8 +4543,10 @@ async function saveLocalDubBatch(videoId, requested, returned) {
           _sourceText: source._sourceText || source.text,
           _sourceIndex: Number.isFinite(Number(source._sourceIndex)) ? Number(source._sourceIndex) : null,
           audio_url: item.audio_url || `local://${videoId}/${item.start}`,
-        },
-        localDubKey(videoId, source));
+        };
+      const key = localDubKey(videoId, source);
+      store.put(saved, key);
+      savedRows.push({ key, value: saved, voice: saved.voice });
     }
     await new Promise((resolve) => {
       tx.oncomplete = resolve;
@@ -4439,6 +4554,8 @@ async function saveLocalDubBatch(videoId, requested, returned) {
       tx.onabort = resolve;
     });
     db.close();
+    // 若本会话已建立索引，立即增量写入；后续批次不会重新扫完整视频缓存。
+    addLocalDubRowsToLooseIndex(videoId, savedRows);
   } catch (e) {
     console.warn('[配音插件] 写入本地音频缓存失败', e?.message || e);
   }
@@ -4492,6 +4609,7 @@ async function hydrateLocalCacheWindow(sess, centerTime, beforeSec = 12, afterSe
 }
 
 async function clearLocalDubVideo(videoId) {
+  _localDubLooseIndexes.delete(videoId);
   try {
     const db = await openLocalDubDB();
     const tx = db.transaction('segments', 'readwrite');
@@ -4795,7 +4913,7 @@ async function resumeAfterNetworkRecovery(sess) {
   await setTabRecorderPaused(false);
   sess._networkRecoveryPaused = false;
   sess.weArePausing = false;
-  if (sess._buffering && sess._maxSynthedTime > sess.video.currentTime + 0.25) {
+  if (sess._buffering && getLoadedDubQueueFrontier(sess, sess.video.currentTime) > sess.video.currentTime + 0.25) {
     sess._buffering = false;
   }
   const shouldResume = sess._networkShouldResumeVideo;
@@ -4986,7 +5104,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
         const frontier = Math.max(...fresh.map(s => s.start + (s.duration || 0)));
         sess._maxSynthedTime = Math.max(sess._maxSynthedTime, frontier);
         if (!sess._startupGatePending && !sess._networkRecoveryPaused && sess._buffering
-            && sess._maxSynthedTime > video.currentTime + 0.25) {
+            && getLoadedDubQueueFrontier(sess, video.currentTime) > video.currentTime + 0.25) {
           sess._buffering = false; sess.weArePausing = false;
           hideBufferIndicator();
           video.play().catch(() => {});
@@ -5146,7 +5264,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
           sess._maxSynthedTime = Math.max(sess._maxSynthedTime, frontier);
           // 若视频正因合成落后而暂停缓冲，且前沿已追上 → 自动恢复播放
           if (!sess._startupGatePending && !sess._networkRecoveryPaused && sess._buffering
-              && sess._maxSynthedTime > video.currentTime + 0.25) {
+              && getLoadedDubQueueFrontier(sess, video.currentTime) > video.currentTime + 0.25) {
             sess._buffering = false;
             sess.weArePausing = false;
             hideBufferIndicator();
@@ -6705,7 +6823,8 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     const modeTag = sess._readMode ? '' : (sess._subtitleMode === 'zh' ? '📝' : '🌐');
     const verb = sess._readMode ? '朗读' : '配音';
 
-    // 每批完成后更新按钮进度：显示已生成到的时间点（时:分:秒，方便直接对照原视频时间轴）
+    // 同时显示“最远生成位置”和“从播放点连续可播库存”。后者才是不会断配音的
+    // 真正库存，不能再把某个远处返回的片段当作已安全可播。
     sess._onChunkProgress = (upToSec) => {
       if (!btn || sess._allDone) return;
       if (sess._knownFullLocalCache) {
@@ -6718,9 +6837,13 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
         });
         return;
       }
-      const hms = formatHMS(upToSec);
-      btn.textContent = `${icon}${modeTag}生成中 →${hms}`;
-      btn.title = `${verb}生成中，已生成到 ${hms}`;
+      const now = Number(sess.video?.currentTime || 0);
+      const continuousTo = getLoadedDubQueueFrontier(sess, now);
+      const continuousLead = Math.max(0, continuousTo - now);
+      const generatedHms = formatHMS(upToSec);
+      const continuousHms = formatHMS(continuousTo);
+      btn.textContent = `${icon}${modeTag}库存${Math.floor(continuousLead / 60)}分 · 生成→${generatedHms}`;
+      btn.title = `${verb}生成中：连续可播到 ${continuousHms}（库存 ${Math.round(continuousLead)} 秒）；最远已生成到 ${generatedHms}`;
     };
 
     // 全部生成完成
