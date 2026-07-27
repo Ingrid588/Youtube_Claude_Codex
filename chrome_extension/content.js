@@ -2521,7 +2521,8 @@ function stopTabAudioRecordingAndDownload(sess, keepStream = false) {
 // 非常短暂的缺口（≈1秒内）能自己缓过来，不必停；连续没就绪才真暂停缓冲。
 const SYNTH_GRACE_TICKS = 4;
 const REALTIME_START_CRITICAL_SECONDS = 5 * 60;
-const REALTIME_NORMAL_AHEAD_SECONDS = 10 * 60;
+const REALTIME_MIN_READY_SECONDS = 15 * 60;
+const REALTIME_NORMAL_AHEAD_SECONDS = REALTIME_MIN_READY_SECONDS;
 const REALTIME_START_AHEAD_SECONDS = 15 * 60;
 const AUTO_DOWNLOAD_SIDECARS = false; // 暂停自动下载 ASS/SRT/变速JSON；手动导出按钮仍可用
 
@@ -3140,8 +3141,8 @@ function initialPlayedStateForInsertedSegment(sess, seg, t) {
   return Number(seg?.start || 0) < Number(t || 0) - 5;
 }
 
-const LOCAL_CACHE_LOW_WATER_SECONDS = 10 * 60;
-const LOCAL_CACHE_TARGET_SECONDS = 20 * 60;
+const LOCAL_CACHE_LOW_WATER_SECONDS = REALTIME_MIN_READY_SECONDS;
+const LOCAL_CACHE_TARGET_SECONDS = 25 * 60;
 
 function _ensureLocalCacheLead(sess, t) {
   if (!sess?.started || !sess.videoId || !Array.isArray(sess._allSegments)) return;
@@ -3275,7 +3276,7 @@ function maybeBufferForSynthesis(sess, t) {
   if (_currentSegReadyAt(sess, t)) { unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false; }
   ensurePlaybackWindowFromLocalCache(sess, t, 'maybe_buffer_current_sentence_missing',
     Number(t || 0) < REALTIME_START_CRITICAL_SECONDS ? 2 : 5,
-    Number(t || 0) < REALTIME_START_CRITICAL_SECONDS ? 240 : 600);
+    Number(t || 0) < REALTIME_START_CRITICAL_SECONDS ? REALTIME_START_AHEAD_SECONDS : LOCAL_CACHE_TARGET_SECONDS);
   if (sess._synthDone) {
     sess._synthDone = false;
     sess._allDone = false;
@@ -3479,7 +3480,7 @@ function playNextDue(sess, t) {
   if (!best) {
     // 当前没有可播的段：不在这里弹任何提示。是否需要提示由 maybeBufferForSynthesis
     // 决定——只有它真正暂停视频缓冲时才显示提示（用户要求：不暂停就不提示）。
-    ensurePlaybackWindowFromLocalCache(sess, t, 'play_scheduler_no_due_segment', 5, 600);
+    ensurePlaybackWindowFromLocalCache(sess, t, 'play_scheduler_no_due_segment', 5, LOCAL_CACHE_TARGET_SECONDS);
     return;
   }
   // 二道防线：即使字幕解析阶段的滚动去重（dedupRollingCaptions）漏掉了某条，
