@@ -509,28 +509,23 @@ document.getElementById('clearCache').addEventListener('click', async () => {
     const videoId = shortsMatch ? shortsMatch[1] : (url.searchParams.get('v') ||
       'gen_' + Math.abs([...tab.url].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)).toString(36));
 
-    // 1) 清除 chrome.storage.local 中的字幕缓存。key带版本号前缀（content.js的
-    // SUBS_CACHE_PREFIX，解析逻辑改动时会bump版本），不是单纯"subs_VIDEO_ID"——
-    // 之前这里漏了前缀，点这个按钮其实没真正清掉字幕缓存，现在两个key都清一下
-    // （新前缀+无前缀的旧版本兜底，防止还有旧版本遗留的缓存条目）。
-    await new Promise((resolve) => chrome.storage.local.remove(
-      ['subs_v4_' + videoId, 'subs_' + videoId], resolve));
-
-    // 2) 清除服务器端 TTS 音频缓存（seg_*.mp3）
-    let serverMsg = '';
-    try {
-      const resp = await fetch(`${SERVER}/clear_cache`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ video_id: videoId }),
+    // IndexedDB 音频缓存只能由内容脚本所在页面访问。旧实现只清字幕和服务器，
+    // 因而“清除后仍显示多个缓存”。交给内容脚本一次性删字幕、IndexedDB、内存
+    // 索引和服务器缓存，并以删除后的再次扫描结果作为唯一成功依据。
+    const result = await new Promise((resolve) => {
+      chrome.tabs.sendMessage(tab.id, { action: 'clearCurrentVideoDubCache', videoId }, (resp) => {
+        const err = chrome.runtime.lastError;
+        resolve(err ? { ok: false, error: err.message } : (resp || { ok: false, error: '当前页面未返回清除结果' }));
       });
-      const data = await resp.json();
-      serverMsg = data.message || '';
-    } catch (_) {
-      serverMsg = '配音缓存未清除（服务未启动）';
+    });
+    if (!result.ok) {
+      msg.textContent = result.audioRemaining != null
+        ? `未完全清除：本地仍有 ${result.audioRemaining} 条音频缓存。请刷新视频页后重试。`
+        : `未确认本地音频缓存已清除：${result.error || '请刷新视频页后重试'}`;
+      return;
     }
-
-    msg.textContent = `字幕+配音缓存已清除。${serverMsg}`;
+    const serverNote = result.serverCleared ? '' : '（本地已清除；服务器缓存未能确认删除）';
+    msg.textContent = `已清除：本地音频 ${result.audioDeleted || 0} 条、字幕缓存 ${result.subtitleKeysDeleted || 0} 项；复核剩余 0 条。${serverNote}`;
   } catch (e) {
     msg.textContent = '清除失败：' + e.message;
   }

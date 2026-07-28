@@ -4827,43 +4827,126 @@ async function hydrateLocalCacheWindow(sess, centerTime, beforeSec = 12, afterSe
 }
 
 async function clearLocalDubVideo(videoId) {
+  const result = {
+    videoId,
+    audioDeleted: 0,
+    audioRemaining: null,
+    subtitleKeysDeleted: 0,
+    serverCleared: false,
+    errors: [],
+  };
   _localDubLooseIndexes.delete(videoId);
   try {
     const db = await openLocalDubDB();
     const tx = db.transaction('segments', 'readwrite');
     const store = tx.objectStore('segments');
     await new Promise((resolve) => {
-      const req = store.openCursor();
+      // Key uses a videoId| prefix.  Use the same bounded range as the cache
+      // scanner so clearing a single video cannot become an all-library scan.
+      const range = IDBKeyRange.bound(`${videoId}|`, `${videoId}|\uffff`);
+      const req = store.openCursor(range);
       req.onsuccess = () => {
         const cursor = req.result;
         if (!cursor) { resolve(); return; }
-        if (String(cursor.key || '').startsWith(`${videoId}|`)) cursor.delete();
+        cursor.delete();
+        result.audioDeleted++;
         cursor.continue();
       };
-      req.onerror = resolve;
+      req.onerror = () => {
+        result.errors.push('读取本地音频缓存时出错');
+        resolve();
+      };
     });
     await new Promise((resolve) => {
       tx.oncomplete = resolve;
-      tx.onerror = resolve;
-      tx.onabort = resolve;
+      tx.onerror = () => {
+        result.errors.push('删除本地音频缓存时出错');
+        resolve();
+      };
+      tx.onabort = () => {
+        result.errors.push('本地音频缓存删除事务被中止');
+        resolve();
+      };
     });
     db.close();
   } catch (e) {
     console.warn('[配音插件] 清除本地音频缓存失败', e?.message || e);
+    result.errors.push(`清除本地音频缓存失败：${e?.message || e}`);
+  }
+
+  // Clearing must invalidate every in-memory representation too.  Otherwise a
+  // page that was already open can still show a previously selected voice even
+  // after IndexedDB has really been emptied.
+  const liveSessions = new Set([...activeSessions(), _lastActiveSess].filter(Boolean));
+  for (const sess of liveSessions) {
+    if (sess?.videoId !== videoId) continue;
+    if (sess._initTimer) { clearInterval(sess._initTimer); sess._initTimer = null; }
+    if (sess._asrPolling) { clearInterval(sess._asrPolling); sess._asrPolling = null; }
+    for (const audio of Object.values(sess.audioCache || {})) {
+      try { audio?.pause?.(); } catch (_) {}
+      try { if (audio?.src?.startsWith('blob:')) URL.revokeObjectURL(audio.src); } catch (_) {}
+    }
+    sess.audioCache = {};
+    sess.dubSegments = [];
+    sess._localDubCoverage = null;
+    sess._cachedVoice = null;
+    sess._knownFullLocalCache = false;
+    sess._sourceTimelineTruncated = false;
+    sess._maxSynthedTime = 0;
+    sess._allSegments = [];
+    sess._sourceRawSubtitles = [];
+    sess._audioLoading = false;
+    sess.curAudio = null;
+    sess.curSegment = null;
+    sess.started = false;
+    sess._userPaused = false;
+    sess.weArePausing = false;
+    sess._startupGatePending = false;
+    sess._phase = 'idle';
+    if (sess._dubButton?.dataset.backgroundDubState !== 'ready'
+        && sess._dubButton?.dataset.backgroundDubState !== 'processing') {
+      sess._dubButton.textContent = '🎧配音';
+      sess._dubButton.title = '生成中文配音';
+    }
+    clearRealtimeCacheButtonStyle(sess._dubButton);
+  }
+
+  try {
+    // Subtitle cache schema has changed more than once.  Remove every
+    // subtitle-cache generation belonging to this video rather than assuming
+    // one remembered prefix is the only cache that exists.
+    const all = await new Promise((resolve) => chrome.storage.local.get(null, resolve));
+    const keys = Object.keys(all || {}).filter((key) =>
+      /^subs(?:_|$)/.test(key) && (key === `subs_${videoId}` || key.endsWith(`_${videoId}`)));
+    if (keys.length) {
+      await new Promise((resolve) => chrome.storage.local.remove(keys, resolve));
+      result.subtitleKeysDeleted = keys.length;
+    }
+  } catch (e) {
+    result.errors.push(`清除字幕缓存失败：${e?.message || e}`);
   }
   try {
-    await new Promise((resolve) => chrome.storage.local.remove(
-      [`subs_v4_${videoId}`, `subs_${videoId}`], resolve));
-  } catch (_) {}
-  try {
-    await fetch(`${SERVER}/clear_cache`, {
+    const response = await fetch(`${SERVER}/clear_cache`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ video_id: videoId }),
     });
+    result.serverCleared = response.ok;
+    if (!response.ok) result.errors.push(`服务器缓存清除失败（HTTP ${response.status}）`);
   } catch (e) {
     console.warn('[配音插件] 清除服务器配音缓存失败', e?.message || e);
+    result.errors.push('服务器缓存未清除（服务暂不可用）');
   }
+  // Do not trust a deletion counter alone: the cache-choice dialog is allowed
+  // to be shown only from a fresh IndexedDB scan after clearing has completed.
+  const remainingRows = await collectLocalDubRows(videoId);
+  result.audioRemaining = Array.isArray(remainingRows) ? remainingRows.length : null;
+  result.ok = result.audioRemaining === 0;
+  if (!result.ok && result.audioRemaining != null) {
+    result.errors.push(`本地仍有 ${result.audioRemaining} 条音频缓存，未显示缓存选择弹窗`);
+  }
+  console.log('[配音插件] 缓存清除复核：', result);
+  return result;
 }
 
 async function sendChunkToServer(server, videoId, title, segments, baseRatePct, readMode, lang, allowGemini, onProgress) {
@@ -8910,14 +8993,23 @@ if (IS_YOUTUBE) {
       // （长视频中途断了、不想从头重新听一遍时用这个）。
       sess._resumeFromCurrentPosition = fromCurrentPosition;
 
+      // 刷新页面后必须先扫描真实 IndexedDB 音频缓存，而不是先信任字幕缓存或
+      // 上一轮会话的内存标记。只有扫描仍命中音频，才允许出现“多个配音缓存”选择。
+      // 如果音频缓存命中，再读字幕缓存；没有字幕缓存时从音频行的 source 元数据
+      // 重建最小时间轴，从而不等待播放器稳定或重新取字幕。
       // 刷新页面后优先看本地缓存：如果已经有本视频字幕缓存 + 配音音频缓存，
       // 不再等待 YouTube 播放器稳定、playerResponse 同步或字幕轨道重建。直接用
       // 现有缓存开播；视频稳定后的字幕预取/校验在后台并行，不阻塞用户观看。
       const fastVideoId = curVideoId();
       if (!forceRegenerate && !sess._readMode) {
         try {
-          let cachedSubs = await getCachedSubs(fastVideoId);
           const localRows = await collectLocalDubRows(fastVideoId);
+          let cachedSubs = null;
+          if (localRows?.length) {
+            cachedSubs = await getCachedSubs(fastVideoId);
+          } else {
+            console.log('[配音插件] 本地音频缓存实扫为 0，跳过缓存配音员选择；按常规字幕流程启动');
+          }
           if (!cachedSubs?.length && localRows?.length) {
             cachedSubs = buildSegmentsFromLocalDubRows(localRows);
             if (cachedSubs.length) {
@@ -9706,6 +9798,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     sendResponse({ ok: true });
     return;
+  }
+  if (message.action === 'clearCurrentVideoDubCache') {
+    const videoId = String(message.videoId || curVideoId() || '');
+    if (!videoId) {
+      sendResponse({ ok: false, error: '未识别当前视频 ID，未执行清除' });
+      return;
+    }
+    clearLocalDubVideo(videoId)
+      .then((result) => sendResponse(result))
+      .catch((e) => sendResponse({ ok: false, error: e?.message || String(e) }));
+    return true;
   }
   if (message.action === 'getPrefetchCaptions') {
     // 后台任务请求获取特定视频的字幕
