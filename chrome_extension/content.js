@@ -7869,7 +7869,9 @@ if (IS_YOUTUBE) {
   //     textBoundaryOverlapLen 合并，bump 版本失效旧缓存。
   // v5：开头二十秒不再按文字相似度删事件，旧缓存可能已误删第一、二句，必须重取。
   // v6：恢复滚动 cue 的时间轴去重；第一、二句依靠会话重置和可播放门槛保障，不靠取消去重。
-  const SUBS_CACHE_PREFIX = 'subs_v6_';
+  // v7：服务端字幕缓存改为返回原始 VTT cue，浏览器是唯一分句位置；旧缓存内已经
+  //      有“服务器合句后又被浏览器合句”的压缩结果，必须整体失效后重新取原始字幕。
+  const SUBS_CACHE_PREFIX = 'subs_v7_';
   function getCachedSubs(vid) {
     return new Promise((resolve) => {
       try {

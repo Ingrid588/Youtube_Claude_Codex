@@ -417,12 +417,15 @@ async def check_and_reserve_gemini_quota(client_id, estimated_chars):
 _asr_results_cache = {}  # {video_id: [(seg_idx, asr_segments), ...]}
 
 # ===== 共享字幕缓存：同一个视频，谁抓到过都存一份，后面所有人直接用，不用每次都跟
-# YouTube较劲。键是 "video_id:lang前缀"（lang只取前2位，比如 zh-CN/zh-Hans 都归到 zh，
+# YouTube较劲。键带字幕事件架构版本；服务器只能缓存原始 VTT cue，绝不能缓存
+# 已按句合并的结果，否则浏览器再次分句会把数小时视频压成几百条。
+# lang只取前2位，比如 zh-CN/zh-Hans 都归到 zh，
 # 提高命中率，代价是不同地区变体字幕会用同一份缓存——朗读/配音这种场景可以接受）。
 # 存盘路径用 tempfile.gettempdir()，容器重启会清空（HF Space 默认没有持久存储），
 # 但同一次部署运行期间能一直生效，已经能省掉大量重复请求；要跨重启保留就要加付费的
 # 持久存储，目前先不依赖那个。
 _CAPTION_CACHE_PATH = os.path.join(tempfile.gettempdir(), 'shared_caption_cache.json')
+_CAPTION_CACHE_SCHEMA = 'raw-cue-v2'
 _caption_cache = {}
 def _load_caption_cache():
     global _caption_cache
@@ -436,7 +439,7 @@ _load_caption_cache()
 
 def _caption_cache_key(video_id, lang):
     prefix = (lang or 'zh').split('-')[0].lower()
-    return f'{video_id}:{prefix}'
+    return f'{_CAPTION_CACHE_SCHEMA}:{video_id}:{prefix}'
 
 def _caption_cache_get(video_id, lang):
     return _caption_cache.get(_caption_cache_key(video_id, lang))
@@ -1728,14 +1731,10 @@ async def _do_fetch_captions_ytdlp(video_id, lang):
 
             if sub_path and os.path.exists(sub_path):
                 segments = dub9.parse_vtt(sub_path) if hasattr(dub9, 'parse_vtt') else _parse_vtt_fallback(sub_path)
-                # 按句合并：把上千条逐行字幕重组成完整句子（约 1/10 段数），
-                # 避免每行一次 TTS 导致配音极慢、霸占本地代理（曾出现 1997 段的情况）。
-                # group_cn_sentences 是按中文标点/连词设计的，非中文字幕不调用，原样按 cue 分段。
-                _before = len(segments)
-                is_chinese_sub = detected_lang and detected_lang.lower().startswith('zh')
-                if is_chinese_sub and hasattr(dub9, 'group_cn_sentences'):
-                    segments = dub9.group_cn_sentences(segments)
-                log.info(f'[后台预取] ✓ {video_id}: {_before} 行 → {len(segments)} 句'
+                # 只返回原始 VTT cue。浏览器端是唯一的分句位置，那里会保留原始账本、
+                # 做滚动字幕去重并按中文标点分句。这里先合并一次会让客户端再次合并，
+                # 数小时视频可能从数千 cue 被错误压缩成几百句。
+                log.info(f'[后台预取] ✓ {video_id}: 返回 {len(segments)} 个原始字幕事件'
                          f'（来源 {os.path.basename(sub_path)}，语言={detected_lang}）')
                 # 清理临时 vtt，避免堆积
                 for p in candidates:
