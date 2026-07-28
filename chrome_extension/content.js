@@ -7217,6 +7217,9 @@ let _lastSubFetchWasFallback = false;
 let _forceRequestPromise = null;    // 正在飞行的 CC 触发 Promise（去重）
 let _ytCaptionsPromises = {};       // per-video 的 getYTCaptions 并发控制，防止同一视频的多个请求
 let _nextPrefetchedVid = null;      // 已经发起过"下一个视频"预取请求的videoId，避免重复请求
+// 自动翻译字幕仅允许对播放器刚生成的 URL 直读一次。它不是 Gemini，也绝不做
+// 浏览器端的重试风暴；目的是修复服务器/旧缓存返回截断时间轴时的唯一安全兜底。
+const _autoTranslatePlayerFetchAttempted = new Set();
 
 if (IS_YOUTUBE) {
   function injectPlayerResponseScript() {
@@ -7309,6 +7312,7 @@ if (IS_YOUTUBE) {
         _chineseFetchPromise = null;
         _forceRequestPromise = null;
         _lastSubFetchWasFallback = false;
+        _autoTranslatePlayerFetchAttempted.clear();
         injectPlayerResponseScript();
       }
 
@@ -7506,7 +7510,7 @@ if (IS_YOUTUBE) {
       if (!segs?.length && ytTimedtextVideoId === vid
           && ytTimedtextUrl
           && /[?&](?:tlang|lang)=zh(?:-|&|$)/i.test(ytTimedtextUrl)) {
-        segs = await fetchSubtitleSegments(ytTimedtextUrl, true);
+        segs = await fetchSubtitleSegments(ytTimedtextUrl, true, { allowPlayerUrlOnce: true });
         if (segs?.length) {
           console.log('[配音插件] 后台预取通过播放器中文URL拿到字幕', segs.length, '条');
         }
@@ -7589,6 +7593,7 @@ if (IS_YOUTUBE) {
     ytPrefetchScheduled = false;
     _chineseFetchPromise = null;
     _forceRequestPromise = null;
+    _autoTranslatePlayerFetchAttempted.clear();
     // 播放列表连续播放时，YouTube 常常在这个事件触发前就已经把 <video> 换成全新
     // 元素——这时 document.querySelector('video') 拿到的是新视频的元素，
     // videoSessionMap 里查不到它的记录（记录挂在已经被丢弃的旧元素上），下面这段
@@ -7636,9 +7641,9 @@ if (IS_YOUTUBE) {
     }
   }
 
-  function captionsReadyForVideo(vid, segs) {
+  function captionsReadyForVideo(vid, segs, options = {}) {
     if (!segs?.length) return segs || [];
-    setCachedSubs(vid, segs);
+    if (!options.skipCache) setCachedSubs(vid, segs);
     // 只关闭当前视频自己的原生字幕；后台预取“下一个视频”时不能误关当前视频。
     if (curVideoId() === vid) {
       setTimeout(() => {
@@ -7832,12 +7837,22 @@ if (IS_YOUTUBE) {
   // 注意：自动翻译轨(tlang)由浏览器直接 fetch 最容易被 YouTube 429。自动翻译中文是
   // 我们的低成本主路径，不是错误；但取它必须尽量走“播放器被动拦截正文/服务器yt-dlp”
   // 这两条路。这里不再对自动翻译URL做 0/3/8/20 秒硬重试，避免越补越触发限流。
-  async function fetchSubtitleSegments(baseUrl, isAutoTranslate) {
-    if (isAutoTranslate) {
+  async function fetchSubtitleSegments(baseUrl, isAutoTranslate, options = {}) {
+    const allowPlayerUrlOnce = !!options.allowPlayerUrlOnce;
+    if (isAutoTranslate && !allowPlayerUrlOnce) {
       console.log('[配音插件] 跳过浏览器直取自动翻译字幕URL，避免触发YouTube 429；改走服务器/缓存路径');
       return [];
     }
-    const delays = [0, 2000];
+    const videoId = curVideoId();
+    if (isAutoTranslate) {
+      if (_autoTranslatePlayerFetchAttempted.has(videoId)) {
+        console.log('[配音插件] 播放器中文URL本轮已单次读取过，不重复请求');
+        return [];
+      }
+      _autoTranslatePlayerFetchAttempted.add(videoId);
+      console.log('[配音插件] 读取播放器刚生成的中文URL（仅此一次，不重试）');
+    }
+    const delays = isAutoTranslate ? [0] : [0, 2000];
     const jsonUrl = baseUrl.includes('fmt=') ? baseUrl : baseUrl + '&fmt=json3';
     for (let i = 0; i < delays.length; i++) {
       if (delays[i]) {
@@ -7851,6 +7866,7 @@ if (IS_YOUTUBE) {
         if (segs.length) return segs;
       } catch (_) {}
     }
+    if (isAutoTranslate) return [];
     try {
       const xmlUrl = baseUrl.replace(/&fmt=\w+/, '');
       const resp = await fetch(xmlUrl, { credentials: 'include' });
@@ -7886,7 +7902,18 @@ if (IS_YOUTUBE) {
       try {
         chrome.storage.local.get([SUBS_CACHE_PREFIX + vid], (r) => {
           const segs = r && r[SUBS_CACHE_PREFIX + vid];
-          resolve(Array.isArray(segs) && segs.length ? segs : null);
+          if (!Array.isArray(segs) || !segs.length) { resolve(null); return; }
+          const info = captionTimelineInfo(segs);
+          if (hasUnexpectedCaptionTailGap(info)) {
+            console.warn('[配音插件] 本地字幕缓存尾部异常截断，自动废弃：', {
+              count: info.count, lastEnd: +info.lastEnd.toFixed(1),
+              duration: +info.duration.toFixed(1), tailGap: +info.tailGap.toFixed(1),
+            });
+            try { chrome.storage.local.remove(SUBS_CACHE_PREFIX + vid); } catch (_) {}
+            resolve(null);
+            return;
+          }
+          resolve(segs);
         });
       } catch (_) { resolve(null); }
     });
@@ -7896,6 +7923,60 @@ if (IS_YOUTUBE) {
       if (Array.isArray(segs) && segs.length)
         chrome.storage.local.set({ [SUBS_CACHE_PREFIX + vid]: segs });
     } catch (_) {}
+  }
+  function removeCachedSubs(vid) {
+    try { chrome.storage.local.remove(SUBS_CACHE_PREFIX + vid); } catch (_) {}
+  }
+
+  function captionTimelineInfo(segs, video = document.querySelector('video')) {
+    const rows = Array.isArray(segs) ? segs : [];
+    const lastEnd = rows.reduce((max, seg) => Math.max(max, Number(seg?.end || seg?.start || 0)), 0);
+    const duration = Number(video?.duration || 0);
+    const tailGap = duration > 0 ? Math.max(0, duration - lastEnd) : 0;
+    return { count: rows.length, lastEnd, duration, tailGap };
+  }
+
+  function hasUnexpectedCaptionTailGap(info) {
+    // 只针对长视频且缺失至少 15 分钟/全片 12% 的情况。正常片尾无话、片尾
+    // 几分钟没有字幕不会误判；例如 2:48:52 的视频字幕若在 19:56 截断则必定命中。
+    return Number(info?.duration || 0) >= 20 * 60
+      && Number(info?.tailGap || 0) >= Math.max(15 * 60, Number(info.duration) * 0.12);
+  }
+
+  async function resolveChineseCaptionTimeline(vid, segs, source = '') {
+    if (!segs?.length) return segs || [];
+    let selected = segs;
+    let info = captionTimelineInfo(selected);
+    if (!hasUnexpectedCaptionTailGap(info)) return captionsReadyForVideo(vid, selected);
+
+    // A partial cache must never show as a complete cache. Prefer exactly one
+    // direct read of the URL that YouTube itself just issued for Chinese.
+    console.warn('[配音插件] 检测到字幕时间轴异常截断，废弃该缓存并校验播放器中文URL：', {
+      source, count: info.count, lastEnd: +info.lastEnd.toFixed(1),
+      duration: +info.duration.toFixed(1), tailGap: +info.tailGap.toFixed(1),
+    });
+    removeCachedSubs(vid);
+    const playerChineseUrl = ytTimedtextVideoId === vid ? ytTimedtextUrl : null;
+    if (playerChineseUrl && /[?&](?:tlang|lang)=zh(?:-|&|$)/i.test(playerChineseUrl)) {
+      const direct = await fetchSubtitleSegments(playerChineseUrl, true, { allowPlayerUrlOnce: true });
+      const directInfo = captionTimelineInfo(direct);
+      if (direct?.length && directInfo.lastEnd > info.lastEnd + 60) {
+        selected = direct;
+        info = directInfo;
+        console.log('[配音插件] 播放器中文URL已补回更完整的字幕时间轴：',
+          `${info.count}条，至 ${info.lastEnd.toFixed(1)}s`);
+      }
+    }
+    if (hasUnexpectedCaptionTailGap(info)) {
+      // 不把坏账本重新落盘或标成“完整缓存”。当前轮仍把已有前段交给调用方，
+      // 但控制台会给出明确原因，刷新后可重新取得新的播放器令牌。
+      console.warn('[配音插件] 中文字幕时间轴仍不完整，未写入缓存：', {
+        source, count: info.count, lastEnd: +info.lastEnd.toFixed(1),
+        duration: +info.duration.toFixed(1), tailGap: +info.tailGap.toFixed(1),
+      });
+      return captionsReadyForVideo(vid, selected, { skipCache: true });
+    }
+    return captionsReadyForVideo(vid, selected);
   }
   // 字幕缓存改成正常持久化（不再每次刷新页面就清空）——之前是开发阶段怕解析逻辑
   // 改动后吃到旧版本留下的脏缓存，故意每次刷新都清掉；现在解析逻辑已经稳定，持久
@@ -7980,13 +8061,13 @@ if (IS_YOUTUBE) {
     const cached = await getCachedSubs(vid);
     if (cached) {
       console.log('[配音插件] 命中本地缓存字幕', cached.length, '条');
-      return captionsReadyForVideo(vid, cached);
+      return resolveChineseCaptionTimeline(vid, cached, 'local_cache');
     }
 
     // 1) 预取已就绪 → 直接用。这是用户自己提前选好字幕、纯被动监听到的理想路径。
     if (ytInterceptedSegments?.length && ytInterceptedVideoId === vid) {
       console.log('[配音插件] 命中预取中文字幕', ytInterceptedSegments.length, '条');
-      return captionsReadyForVideo(vid, ytInterceptedSegments);
+      return resolveChineseCaptionTimeline(vid, ytInterceptedSegments, 'player_intercept');
     }
 
     // 走到这里说明用户点配音前没选好中文字幕，接下来只能靠播放器自己的
@@ -8000,7 +8081,7 @@ if (IS_YOUTUBE) {
     // 3) 原生中文轨：等播放器返回的中文 body
     if (!track._needTranslate) {
       const w = await waitForTimedText(6000);
-      if (w?.length) return captionsReadyForVideo(vid, w);
+      if (w?.length) return resolveChineseCaptionTimeline(vid, w, 'native_chinese_track');
     }
 
     // 3.5) 需YouTube自动翻译：先让播放器自己切"自动翻译→中文"轨（播放器内部API，见
@@ -8012,7 +8093,7 @@ if (IS_YOUTUBE) {
       const viaPlayer = await waitForTimedText(8000);
       if (viaPlayer?.length && ytInterceptedVideoId === vid) {
         console.log('[配音插件] 播放器自动翻译轨拿到中文字幕', viaPlayer.length, '条');
-        return captionsReadyForVideo(vid, viaPlayer);
+        return resolveChineseCaptionTimeline(vid, viaPlayer, 'player_auto_translate');
       }
       // 有些YouTube播放器版本的字幕请求不再经过页面fetch/XHR，因此inject.js只能
       // 拦到请求URL，拿不到响应正文。此时URL本身已经包含播放器生成的pot令牌和
@@ -8020,10 +8101,10 @@ if (IS_YOUTUBE) {
       const liveChineseUrl = ytTimedtextUrl;
       if (liveChineseUrl && ytTimedtextVideoId === vid
           && /[?&](?:tlang|lang)=zh(?:-|&|$)/i.test(liveChineseUrl)) {
-        const directChinese = await fetchSubtitleSegments(liveChineseUrl, true);
+        const directChinese = await fetchSubtitleSegments(liveChineseUrl, true, { allowPlayerUrlOnce: true });
         if (directChinese?.length) {
           console.log('[配音插件] 通过播放器中文字幕URL拿到字幕', directChinese.length, '条');
-          return captionsReadyForVideo(vid, directChinese);
+          return resolveChineseCaptionTimeline(vid, directChinese, 'player_chinese_url');
         }
       }
       console.log('[配音插件] 播放器自动翻译轨8秒内未返回中文，退回服务器兜底');
@@ -8031,7 +8112,7 @@ if (IS_YOUTUBE) {
 
     // 4) 需YouTube自动翻译：走服务器字幕兜底，不启用Gemini
     const zh = await fetchChineseFromPotUrl();
-    if (zh.length) return captionsReadyForVideo(vid, zh);
+    if (zh.length) return resolveChineseCaptionTimeline(vid, zh, 'server_ytdlp');
 
     // 5) 仍拿不到中文：不退回原语言+API。提示用户手动在 YouTube 菜单里打开
     // “自动翻译→中文”，脚本继续被动监听播放器自己的中文字幕请求。
