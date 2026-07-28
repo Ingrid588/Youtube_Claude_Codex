@@ -413,7 +413,9 @@ _asr_results_cache = {}  # {video_id: [(seg_idx, asr_segments), ...]}
 # 但同一次部署运行期间能一直生效，已经能省掉大量重复请求；要跨重启保留就要加付费的
 # 持久存储，目前先不依赖那个。
 _CAPTION_CACHE_PATH = os.path.join(tempfile.gettempdir(), 'shared_caption_cache.json')
-_CAPTION_CACHE_SCHEMA = 'raw-cue-v2'
+# v3 stores YouTube json3 events, which retain the native fine-grained timing.
+# VTT may merge rolling captions into long windows and leave apparent playback gaps.
+_CAPTION_CACHE_SCHEMA = 'raw-json3-cue-v3'
 _caption_cache = {}
 def _load_caption_cache():
     global _caption_cache
@@ -1583,6 +1585,33 @@ def _sub_lang_variants(lang):
     return ','.join(variants)
 
 
+def _parse_json3_cues(sub_path):
+    """Read native YouTube json3 events without VTT's rolling-caption merge."""
+    try:
+        with open(sub_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        cues = []
+        for event in data.get('events') or []:
+            start_ms = event.get('tStartMs')
+            duration_ms = event.get('dDurationMs')
+            parts = event.get('segs') or []
+            if start_ms is None or duration_ms is None or not parts:
+                continue
+            text = ''.join(str(part.get('utf8') or '') for part in parts).strip()
+            if not text:
+                continue
+            start = float(start_ms) / 1000
+            cues.append({
+                'start': start,
+                'end': start + max(0.05, float(duration_ms) / 1000),
+                'text': text,
+            })
+        return cues
+    except Exception as e:
+        log.warning(f'[后台预取] json3 字幕解析失败 {os.path.basename(sub_path)}: {e}')
+        return []
+
+
 async def _do_fetch_captions_ytdlp(video_id, lang):
     """实际跑 yt-dlp 抓字幕的核心逻辑，抽出来给同步接口和异步任务共用。
     返回形状跟 /prefetch_captions 一致：{'ok', 'segments', 'matched_lang', ...}。"""
@@ -1602,7 +1631,9 @@ async def _do_fetch_captions_ytdlp(video_id, lang):
                 '--write-sub',
                 '--write-auto-subs',   # 自动字幕（含 YouTube 自动翻译/转录），必须带
                 '--sub-langs', sub_langs,
-                '--sub-format', 'vtt',
+                # json3 retains each native timed event.  VTT is kept only as
+                # a fallback for videos where json3 is unavailable.
+                '--sub-format', 'json3/vtt/best',
                 '--skip-download',
                 *_impersonate_args(),
                 # 缓解 YouTube 429 限流：重试 + 退避 + 请求间隔
@@ -1645,7 +1676,10 @@ async def _do_fetch_captions_ytdlp(video_id, lang):
                 log.warning(f'[后台预取] {video_id}: 遇到 429 限流（第 {attempt + 1}/3 次，换新会话IP重试）')
 
             # 扫描实际生成的字幕文件，按请求的语言变体顺序挑选（前面的变体更精确）
-            candidates = _glob.glob(os.path.join(tmp_dir, f'{video_id}.*.vtt'))
+            candidates = (
+                _glob.glob(os.path.join(tmp_dir, f'{video_id}.*.json3'))
+                + _glob.glob(os.path.join(tmp_dir, f'{video_id}.*.vtt'))
+            )
             sub_path = None
             detected_lang = None
             if candidates:
@@ -1661,15 +1695,16 @@ async def _do_fetch_captions_ytdlp(video_id, lang):
                         if lang_of_p == want.lower():
                             return i
                     return len(priority)
-                candidates.sort(key=_rank)
+                # Prefer the requested language first, then json3 over VTT.
+                candidates.sort(key=lambda p: (_rank(p), 0 if p.endswith('.json3') else 1))
                 sub_path = candidates[0]
                 detected_lang = _lang_of(sub_path)
 
             if sub_path and os.path.exists(sub_path):
-                segments = dub9.parse_vtt(sub_path) if hasattr(dub9, 'parse_vtt') else _parse_vtt_fallback(sub_path)
-                # 只返回原始 VTT cue。浏览器端是唯一的分句位置，那里会保留原始账本、
-                # 做滚动字幕去重并按中文标点分句。这里先合并一次会让客户端再次合并，
-                # 数小时视频可能从数千 cue 被错误压缩成几百句。
+                segments = (_parse_json3_cues(sub_path) if sub_path.endswith('.json3')
+                            else (dub9.parse_vtt(sub_path) if hasattr(dub9, 'parse_vtt') else _parse_vtt_fallback(sub_path)))
+                # Only raw source events leave the server. The browser owns
+                # deduplication and Chinese sentence grouping exactly once.
                 log.info(f'[后台预取] ✓ {video_id}: 返回 {len(segments)} 个原始字幕事件'
                          f'（来源 {os.path.basename(sub_path)}，语言={detected_lang}）')
                 # 清理临时 vtt，避免堆积

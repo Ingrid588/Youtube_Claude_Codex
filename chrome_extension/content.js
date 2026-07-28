@@ -1198,7 +1198,7 @@ function groupChineseSentences(segments) {
   const SOFT = '，、,；;';      // 次级标点：句子已偏长时在此断，避免逗号长串
   const STUCK_GAP = 2.5;       // 行间 ≥2.5s 视为说话人真实卡壳 → 断句
   const SOFT_DUR = 10;         // 累积超过这个秒数后，遇到逗号等就断
-  const MAX_DUR = 18;          // 单句绝对上限（无标点超长句兜底）
+  const MAX_DUR = 10;          // 单句绝对上限（VTT 降级时无标点超长句兜底）
   const MED_DUR = 6;           // 中断词：累积≥6s 才在此断
   // 连词分三级断句（原则：连词引入"新语义块/长分句"才断，短连接如"我和你"不断）：
   //   strong 强断—结构转向词，处于子句边界就断；
@@ -1284,7 +1284,12 @@ function groupChineseSentences(segments) {
       }
       const isEnd = END.includes(text[i]);
       const isSoft = SOFT.includes(text[i]);
-      if (isEnd || isSoft || i === n - 1) {
+      const projectedStart = cur
+        ? cur.start
+        : seg.start + (n > 1 ? dur * pieceStart / n : 0);
+      const projectedEnd = seg.start + (n > 1 ? dur * (i + 1) / n : dur);
+      const hardBreak = (projectedEnd - projectedStart) >= MAX_DUR;
+      if (isEnd || isSoft || hardBreak || i === n - 1) {
         const piece = text.slice(pieceStart, i + 1);
         // 本子句的起止时间：行内按字符位置线性插值
         const ps = seg.start + (n > 1 ? dur * pieceStart / n : 0);
@@ -1293,11 +1298,11 @@ function groupChineseSentences(segments) {
         cur.text += piece;
         cur.end = pe;
         pieceStart = i + 1;
-        if (isEnd) flush();                                   // 句末标点：一定断（含行中间）
+        if (isEnd || hardBreak) flush();                      // 句末或过长：立即断（含行中间）
         else if (isSoft && (cur.end - cur.start) >= SOFT_DUR) flush();  // 已偏长：在逗号处断
       }
     }
-    // 无标点超长兜底
+    // hardBreak 在字符循环内已执行；这里保留对空/异常 cue 的兜底。
     if (cur && (cur.end - cur.start) >= MAX_DUR) flush();
   }
   flush();
@@ -4061,8 +4066,13 @@ function localDubRowMatchesSegment(row, key, seg, requireAudio = true) {
   if ((!row?.audio_b64 && requireAudio) || !seg) return false;
   if (needsLocalDubPolicyRefresh(row, seg)) return false;
   const sourceKey = seg._sourceKey || makeSourceSegKey(seg);
-  if (row._sourceKey && row._sourceKey === sourceKey) return true;
-  if (String(key || '').includes(`|${sourceKey}|`)) return true;
+  const rowSourceKey = String(row._sourceKey || '');
+  const keySourceKey = String(key || '').split('|')[1] || '';
+  if (rowSourceKey || keySourceKey) {
+    // A source key is the cue identity, not merely a timestamp. Never allow a
+    // former VTT mega-cue to impersonate one of the new json3 source events.
+    return (rowSourceKey || keySourceKey) === sourceKey;
+  }
   const targetStart = Math.round((seg?.start || 0) * 1000);
   const rowStart = Math.round((row._sourceStart ?? row.start ?? 0) * 1000);
   const sameStart = Math.abs(rowStart - targetStart) <= 150;
@@ -4074,8 +4084,8 @@ function localDubRowMatchesSegment(row, key, seg, requireAudio = true) {
   const rowEnd = Number(row._sourceEnd ?? row.end);
   const sameEnd = Number.isFinite(targetEnd) && Number.isFinite(rowEnd)
     && Math.abs(rowEnd - targetEnd) <= 0.8;
-  // 旧缓存可能是在字幕清洗/术语/去脏词规则更新前生成的。同一视频同一时间轴、
-  // 起止时间都贴合时，优先保留旧音频缓存，避免“配过两小时却只认出几十秒”。
+  // Only truly legacy rows without source identities may use this timestamp
+  // fallback. New rows must match the exact source event above.
   return sameEnd;
 }
 
@@ -7869,9 +7879,8 @@ if (IS_YOUTUBE) {
   //     textBoundaryOverlapLen 合并，bump 版本失效旧缓存。
   // v5：开头二十秒不再按文字相似度删事件，旧缓存可能已误删第一、二句，必须重取。
   // v6：恢复滚动 cue 的时间轴去重；第一、二句依靠会话重置和可播放门槛保障，不靠取消去重。
-  // v7：服务端字幕缓存改为返回原始 VTT cue，浏览器是唯一分句位置；旧缓存内已经
-  //      有“服务器合句后又被浏览器合句”的压缩结果，必须整体失效后重新取原始字幕。
-  const SUBS_CACHE_PREFIX = 'subs_v7_';
+  // v8：服务端改用 json3 原始时间事件；v7 的 VTT 时间窗可能稀疏，不能再复用。
+  const SUBS_CACHE_PREFIX = 'subs_v8_';
   function getCachedSubs(vid) {
     return new Promise((resolve) => {
       try {
