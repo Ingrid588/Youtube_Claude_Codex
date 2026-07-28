@@ -1812,8 +1812,8 @@ async function startupAudioGateReady(sess, t) {
   const requiredCount = startupRequiredSegmentCount(sess, t);
   const candidates = (sess?.dubSegments || [])
     .filter((seg) => {
-      const end = Math.max(seg.end || seg.start, seg.start + 0.5);
-      return seg.audio_url && end >= (t || 0) - 0.5;
+      const end = segmentTimelineEnd(seg);
+      return seg.audio_url && !seg._invalidAudio && !seg._skippedStale && end >= (t || 0) - 0.5;
     })
     .sort(compareDubSegments)
     .slice(0, requiredCount);
@@ -1864,8 +1864,8 @@ function primeStartupAudio(sess, t) {
   const requiredCount = startupRequiredSegmentCount(sess, t);
   const candidates = (sess?.dubSegments || [])
     .filter((seg) => {
-      const end = Math.max(seg.end || seg.start, seg.start + 0.5);
-      return seg.audio_url && end >= (t || 0) - 0.5 && !seg._invalidAudio;
+      const end = segmentTimelineEnd(seg);
+      return seg.audio_url && end >= (t || 0) - 0.5 && !seg._invalidAudio && !seg._skippedStale;
     })
     .sort(compareDubSegments)
     .slice(0, requiredCount);
@@ -1881,7 +1881,7 @@ function kickDubbingAfterSeek(sess, t, attempts = 6) {
   sess._pendingSeg = null;
   const current = Number(t || sess.video?.currentTime || 0);
   for (const seg of sess.dubSegments || []) {
-    const end = Math.max(seg.end || seg.start, seg.start + (seg.tts_duration || seg.duration || 0.5));
+    const end = segmentTimelineEnd(seg);
     // 回到开头或任意 seek 点后，当前窗口附近的句子必须重新变成可播，
     // 否则之前的“已播/跳过”状态会导致只显示字幕、不播放配音。
     if (end >= current - 0.5 && seg.start <= current + 8) {
@@ -1996,7 +1996,7 @@ function prunePlayedAudioCache(sess, t) {
   const cutoff = Math.max(0, Number(t || 0) - PLAYED_AUDIO_MEMORY_KEEP_SECONDS);
   let freed = 0;
   for (const seg of sess.dubSegments) {
-    const end = seg.start + (seg.tts_duration || seg.duration || 0);
+    const end = segmentTimelineEnd(seg);
     if (end >= cutoff || seg === sess.curSegment || !seg.audio_url) continue;
     const audio = sess.audioCache[seg.audio_url];
     if (!audio) continue;
@@ -2622,7 +2622,7 @@ async function requestSynthAround(sess, t) {
   // 已有对象不等于已有可播放音频：404 后会保留同一时间轴对象以便替换，
   // 不能再把它当作“已合成”而永远不重试。
   const have = new Set(sess.dubSegments
-    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
     .map(_segKey));
   const pending = sess._allSegments
     .filter((s) => (s.end || s.start) >= t - 0.5)            // 当前位置及之后
@@ -2635,11 +2635,27 @@ async function requestSynthAround(sess, t) {
 
   const pushAndMaybeResume = (got) => {
     if (!(got && got.length && sess.started)) return;
-    const exist = new Set(sess.dubSegments.map(_segKey));
+    const existing = new Map(sess.dubSegments.map((item) => [_segKey(item), item]));
     const ct = sess.video?.currentTime || t || 0;
     for (const s of got) {
-      if (!exist.has(_segKey(s))) {
-        sess.dubSegments.push({ ...s, played: initialPlayedStateForInsertedSegment(sess, s, ct) });
+      const key = _segKey(s);
+      const prior = existing.get(key);
+      if (!prior) {
+        const inserted = { ...s, played: initialPlayedStateForInsertedSegment(sess, s, ct) };
+        sess.dubSegments.push(inserted);
+        existing.set(key, inserted);
+      } else if (prior._invalidAudio || prior._skipLocalCache || prior._skippedStale || !prior.audio_url
+          || (!prior._persistedLocalAudio && s._persistedLocalAudio)) {
+        const previousUrl = prior.audio_url;
+        if (previousUrl && previousUrl !== s.audio_url) delete sess.audioCache?.[previousUrl];
+        Object.assign(prior, s, {
+          played: initialPlayedStateForInsertedSegment(sess, s, ct),
+          _invalidAudio: false,
+          _loadRetryCount: 0,
+        });
+        delete prior._skippedStale;
+        delete prior._skipLocalCache;
+        delete prior._audioFailureRecovering;
       }
     }
     sess.dubSegments.sort(compareDubSegments);
@@ -2767,6 +2783,7 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
             _loadRetryCount: 0,
             _invalidAudio: false,
           });
+          delete existing._skippedStale;
         } else {
           sess.dubSegments.push({
             ...item,
@@ -2774,7 +2791,7 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
           });
         }
         sess.dubSegments.sort(compareDubSegments);
-        const frontier = item.start + (item.tts_duration || item.duration || 0);
+        const frontier = segmentTimelineEnd(item);
         sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
         if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
         recordDiagnostic(sess, 'realtime_current_sentence_loaded_from_local_cache', {
@@ -2816,7 +2833,7 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
       if (repaired) {
         sess.dubSegments.sort(compareDubSegments);
         markReturnedAudioPersisted(sess, got, sess.video?.currentTime || t || 0);
-        const frontier = Math.max(...got.map((s) => s.start + (s.tts_duration || s.duration || 0)));
+        const frontier = Math.max(...got.map(segmentTimelineEnd));
         sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
         if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
         recordDiagnostic(sess, 'realtime_current_sentence_repair_done', {
@@ -2971,7 +2988,7 @@ function isRealtimeSubtitleSuppressed(sess, seg) {
   const key = _segKey(seg);
   if (!sess._missedRealtimeSegments.has(key)) return false;
   const ready = (sess.dubSegments || []).find(
-    (s) => _segKey(s) === key && (s.audio_url || s.web_speech) && !s._invalidAudio);
+    (s) => _segKey(s) === key && (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale);
   return !ready;
 }
 
@@ -2985,7 +3002,7 @@ function repairEarlyDubbingWindow(sess, t) {
   if (sess._earlyWindowRepairing || now - (sess._lastEarlyWindowAuditAt || 0) < (critical ? 900 : 2000)) return;
   sess._lastEarlyWindowAuditAt = now;
   const valid = new Set((sess.dubSegments || [])
-    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
     .map(_segKey));
   const end = Math.min(
     REALTIME_START_AHEAD_SECONDS,
@@ -3014,11 +3031,14 @@ function repairEarlyDubbingWindow(sess, t) {
         const old = existing.get(_segKey(item));
         const ct = sess.video.currentTime || 0;
         if (old) Object.assign(old, item, {
-          played: old.played || initialPlayedStateForInsertedSegment(sess, item, ct),
+          // 旧对象可能正是之前被“过期跳过”的那一条。音频回补后必须按当前
+          // 原字幕窗口重新判断，不能沿用 played=true，否则缓存虽已恢复仍永远不播。
+          played: initialPlayedStateForInsertedSegment(sess, item, ct),
           _invalidAudio: false,
           _loadRetryCount: 0,
         });
         if (old) {
+          delete old._skippedStale;
           delete old._skipLocalCache;
           delete old._audioFailureRecovering;
         }
@@ -3041,16 +3061,19 @@ function repairEarlyDubbingWindow(sess, t) {
 // 当前时间 t 处是否已有"就绪(已合成带音频)"的配音段
 function _segReadyAt(sess, t) {
   return sess.dubSegments.some((s) => {
-    const segEnd = s.start + (s.tts_duration || s.duration || 0);
-    return (s.audio_url || s.web_speech) && s.start <= t + 0.5 && segEnd >= t - 0.5;
+    const segEnd = segmentTimelineEnd(s);
+    return (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale
+      && s.start <= t + 0.5 && segEnd >= t - 0.5;
   }) || sess.dubSegments.some(
-    (s) => (s.audio_url || s.web_speech) && s.start > t && s.start <= t + 4);
+    (s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale
+      && s.start > t && s.start <= t + 4);
 }
 
 function _currentSegReadyAt(sess, t) {
   return sess.dubSegments.some((s) => {
-    const segEnd = s.start + (s.tts_duration || s.duration || 0);
-    return (s.audio_url || s.web_speech) && s.start <= t + 0.5 && segEnd >= t - 0.5;
+    const segEnd = segmentTimelineEnd(s);
+    return (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale
+      && s.start <= t + 0.5 && segEnd >= t - 0.5;
   });
 }
 
@@ -3066,7 +3089,7 @@ function rememberPlayedSourceEvent(sess, seg, mode = 'audio') {
     seekEpoch: epoch,
     mode,
     start: +(+seg.start || 0).toFixed(3),
-    end: +(+(seg.end ?? (seg.start + (seg.tts_duration || seg.duration || 0))) || 0).toFixed(3),
+    end: +(segmentTimelineEnd(seg) || 0).toFixed(3),
     text: String(seg.translation || seg.text || ''),
     playedAt: new Date().toISOString(),
     duplicateWithinSeek: countSameEpoch > 0,
@@ -3085,7 +3108,7 @@ function rememberCompletedSpoken(sess, seg) {
     key: _segKey(seg),
     text: seg.text,
     start: seg.start,
-    end: seg.start + (seg.tts_duration || seg.duration || 0),
+    end: segmentTimelineEnd(seg),
     videoId: sess.videoId,
     seekEpoch: sess._seekEpoch || 0,
   });
@@ -3096,8 +3119,8 @@ function _hasForwardDubCache(sess, t, windowSec = 45) {
   const end = t + windowSec;
   return !!sess.dubSegments?.some((s) => {
     if (!s.audio_url && !s.web_speech) return false;
-    if (s._invalidAudio) return false;
-    const segEnd = s.start + (s.tts_duration || s.duration || 0);
+    if (s._invalidAudio || s._skippedStale) return false;
+    const segEnd = segmentTimelineEnd(s);
     return segEnd >= t - 0.5 && s.start <= end;
   });
 }
@@ -3169,10 +3192,10 @@ function getLoadedDubQueueFrontier(sess, t = null) {
   const now = t == null ? Number(sess?.video?.currentTime || 0) : Number(t || 0);
   let frontier = now;
   const sorted = (sess?.dubSegments || [])
-    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
     .sort(compareDubSegments);
   for (const seg of sorted) {
-    const end = seg.start + (seg.tts_duration || seg.duration || 0);
+    const end = segmentTimelineEnd(seg);
     if (end < frontier - 0.5) continue;
     if (seg.start > frontier + 1.2) break;
     frontier = Math.max(frontier, end);
@@ -3198,8 +3221,17 @@ function getPriorityRetryDelayMs(sess, t = null) {
 
 const REALTIME_STALE_SEGMENT_GRACE = 0.9;
 
+// 时间轴调度（是否轮到、是否过期、库存连续性）以原字幕 end 为准，不能以
+// TTS 实际时长为准。后者经常更短，会让还在原字幕时间窗内的段被提前跳过。
+function segmentTimelineEnd(seg) {
+  const start = Number(seg?.start || 0);
+  const sourceEnd = Number(seg?._sourceEnd ?? seg?.end);
+  if (Number.isFinite(sourceEnd) && sourceEnd > start) return sourceEnd;
+  return start + Math.max(0.05, Number(seg?.duration || seg?.tts_duration || 0));
+}
+
 function segmentEndForPlayback(seg) {
-  return Number(seg?.start || 0) + Math.max(0, Number(seg?.tts_duration || seg?.duration || 0));
+  return segmentTimelineEnd(seg);
 }
 
 function isRealtimeSegmentStale(seg, t, grace = REALTIME_STALE_SEGMENT_GRACE) {
@@ -3228,7 +3260,10 @@ function initialPlayedStateForInsertedSegment(sess, seg, t) {
     skipRealtimeStaleSegment(sess, seg, t, 'inserted_after_window');
     return true;
   }
-  return Number(seg?.start || 0) < Number(t || 0) - 5;
+  // 不能只因为开始时间在当前点前 5 秒就把它标成已播：一条原字幕可能持续
+  // 十几秒，而 TTS/IndexedDB 刚好在其时间窗内到达。旧条件会让“缓存已满”
+  // 的视频在这类边界句开始连续静音。是否已错过只由完整的原字幕时间窗决定。
+  return false;
 }
 
 const LOCAL_CACHE_LOW_WATER_SECONDS = REALTIME_MIN_READY_SECONDS;
@@ -3250,12 +3285,12 @@ function _ensureLocalCacheLead(sess, t) {
       const from = Math.max(0, t - 2);
       const to = t + LOCAL_CACHE_TARGET_SECONDS;
       const existingReady = new Set((sess.dubSegments || [])
-        .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+        .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
         .map(_segKey));
       const candidates = sess._allSegments
         .filter((s) => {
           if (existingReady.has(_segKey(s))) return false;
-          const end = Math.max(s.end || s.start, s.start + 0.5);
+          const end = segmentTimelineEnd(s);
           return end >= from && s.start <= to;
         })
         .slice(0, lead < 60 ? 420 : 260);
@@ -3273,20 +3308,22 @@ function _ensureLocalCacheLead(sess, t) {
         if (!item) continue;
         const key = _segKey(item);
         const existing = byKey.get(key);
-        if (existing && (existing.audio_url || existing.web_speech) && !existing._invalidAudio) continue;
+        if (existing && (existing.audio_url || existing.web_speech)
+            && !existing._invalidAudio && !existing._skippedStale) continue;
         if (existing) {
           Object.assign(existing, item, {
             played: initialPlayedStateForInsertedSegment(sess, item, t),
             _invalidAudio: false,
             _loadRetryCount: 0,
           });
+          delete existing._skippedStale;
         } else {
           const inserted = { ...item, played: initialPlayedStateForInsertedSegment(sess, item, t) };
           sess.dubSegments.push(inserted);
           byKey.set(key, inserted);
         }
         loaded++;
-        frontier = Math.max(frontier, item.start + (item.tts_duration || item.duration || 0));
+        frontier = Math.max(frontier, segmentTimelineEnd(item));
       }
       if (!loaded) return;
       sess.dubSegments.sort(compareDubSegments);
@@ -3552,8 +3589,8 @@ function playNextDue(sess, t) {
   // 3. 最后找 start > t 的最近段（用户快进）
   for (const seg of sess.dubSegments) {
     if (seg.played) continue;
-    // dubSegments 没有 end 字段，用 start + 实际时长估算
-    const segEnd = seg.start + (seg.tts_duration || seg.duration || 0);
+    // 用原字幕时间窗调度；TTS 实际时长只用于音频自身结束与变速。
+    const segEnd = segmentTimelineEnd(seg);
     if (seg.start <= t && t < segEnd) {
       // 当前时间在这个段的时间窗内，优先级最高
       best = seg;
@@ -4719,12 +4756,15 @@ async function hydrateLocalCacheWindow(sess, centerTime, beforeSec = 12, afterSe
     seg.played = initialPlayedStateForInsertedSegment(sess, seg, centerTime);
     const key = _segKey(seg);
     const existing = map.get(key);
-    if (existing) Object.assign(existing, seg);
+    if (existing) {
+      Object.assign(existing, seg);
+      delete existing._skippedStale;
+    }
     else {
       sess.dubSegments.push(seg);
       map.set(key, seg);
     }
-    frontier = Math.max(frontier, seg.start + (seg.tts_duration || seg.duration || 0));
+    frontier = Math.max(frontier, segmentTimelineEnd(seg));
     count++;
   }
   if (count) {
@@ -5118,7 +5158,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
     const required = startupPrerollSegments();
     if (!required.length) return !!sess.dubSegments?.length;
     const have = new Set((sess.dubSegments || [])
-      .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+      .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
       .map(_segKey));
     return required.every((s) => have.has(_segKey(s)));
   };
@@ -5227,7 +5267,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
           if (!prior) {
             sess.dubSegments.push({ ...s, played: initialPlayedStateForInsertedSegment(sess, s, ct) });
             existing.set(key, sess.dubSegments[sess.dubSegments.length - 1]);
-          } else if (prior._invalidAudio || prior._skipLocalCache || !prior.audio_url
+          } else if (prior._invalidAudio || prior._skipLocalCache || prior._skippedStale || !prior.audio_url
               || (!prior._persistedLocalAudio && s._persistedLocalAudio)) {
             Object.assign(prior, s, {
               played: initialPlayedStateForInsertedSegment(sess, s, ct),
@@ -5235,13 +5275,14 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
               _loadRetryCount: 0,
             });
             delete prior._skipLocalCache;
+            delete prior._skippedStale;
             delete prior._audioFailureRecovering;
           }
         }
         sess.dubSegments.sort(compareDubSegments);
         markReturnedAudioPersisted(sess, fresh, video.currentTime || t0);
         primeStartupAudio(sess, video.currentTime || t0);
-        const frontier = Math.max(...fresh.map(s => s.start + (s.duration || 0)));
+        const frontier = Math.max(...fresh.map(segmentTimelineEnd));
         sess._maxSynthedTime = Math.max(sess._maxSynthedTime, frontier);
         if (!sess._startupGatePending && !sess._networkRecoveryPaused && sess._buffering
             && getLoadedDubQueueFrontier(sess, video.currentTime) > video.currentTime + 0.25) {
@@ -5337,7 +5378,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
           if (!prior) {
             sess.dubSegments.push({ ...s, played: initialPlayedStateForInsertedSegment(sess, s, ct) });
             existing.set(key, sess.dubSegments[sess.dubSegments.length - 1]);
-          } else if (prior._invalidAudio || prior._skipLocalCache || !prior.audio_url
+          } else if (prior._invalidAudio || prior._skipLocalCache || prior._skippedStale || !prior.audio_url
               || (!prior._persistedLocalAudio && s._persistedLocalAudio)) {
             const previousUrl = prior.audio_url;
             if (previousUrl && previousUrl !== s.audio_url) delete sess.audioCache[previousUrl];
@@ -5347,6 +5388,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
               _loadRetryCount: 0,
             });
             delete prior._skipLocalCache;
+            delete prior._skippedStale;
             delete prior._audioFailureRecovering;
           }
         }
@@ -5414,7 +5456,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
 
         // 推进"合成前沿"：上行流按时间顺序返回，故可视为连续已合成到此
         if (isPrimary) {
-          const frontier = Math.max(...got.map(s => s.start + (s.duration || 0)));
+          const frontier = Math.max(...got.map(segmentTimelineEnd));
           sess._maxSynthedTime = Math.max(sess._maxSynthedTime, frontier);
           // 若视频正因合成落后而暂停缓冲，且前沿已追上 → 自动恢复播放
           if (!sess._startupGatePending && !sess._networkRecoveryPaused && sess._buffering
@@ -5448,7 +5490,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
   // 把缺的那些再尝试几轮，仍然失败也不再无限重试（避免真没法生成时卡死收尾）。
   for (let round = 0; round < 3 && sess.started && sess.videoId === videoId; round++) {
     const have = new Set(sess.dubSegments
-      .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+      .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
       .map(_segKey));
     const missing = (sess._allSegments || []).filter((s) => !have.has(_segKey(s)));
     if (!missing.length) break;
@@ -5481,6 +5523,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
                 _loadRetryCount: 0,
               });
               delete old._skipLocalCache;
+              delete old._skippedStale;
               delete old._audioFailureRecovering;
             } else {
               sess.dubSegments.push({
@@ -5502,7 +5545,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
   }
 
   const finalHave = new Set(sess.dubSegments
-    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
     .map(_segKey));
   const finalMissing = (sess._allSegments || []).filter(
     (s) => !finalHave.has(_segKey(s)));
@@ -5567,7 +5610,7 @@ async function repairDubbing(sess, btn, { resumeAfter = false, silent = false } 
   sess._repairing = true;
   sess._repairingSince = Date.now();
   const have = new Set((sess.dubSegments || [])
-    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
     .map(_segKey));
   const missing = sess._allSegments.filter((s) => !have.has(_segKey(s)));
 
@@ -5643,6 +5686,7 @@ async function repairDubbing(sess, btn, { resumeAfter = false, silent = false } 
             _loadRetryCount: 0,
           });
           delete old._skipLocalCache;
+          delete old._skippedStale;
           delete old._audioFailureRecovering;
         }
         else sess.dubSegments.push({
@@ -6725,9 +6769,9 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       sess._recentSpoken = [];  // 跳转后旧的"最近念过"记录不再适用
       hideBufferIndicator();
       // 只标记已**完全播过**的段落（end < t）为已播，新位置的段落保持未播。
-      // dubSegments 无 end 字段，用 start + 实际 TTS 时长估算其结束点。
+      // 以原字幕时间轴判断是否已经完全播过；不能因 TTS 比字幕短而提前跳过。
       for (const seg of sess.dubSegments) {
-        seg.played = (seg.start + (seg.tts_duration || seg.duration || 0)) < t;
+        seg.played = segmentTimelineEnd(seg) < t;
         if (!seg.played) delete seg._skippedStale;
       }
       if (sess._phase === 'preparing') {
@@ -7318,7 +7362,9 @@ if (IS_YOUTUBE) {
       // 本来就没人说话）不会误触发——那种情况窗口内没有缺失句。动态冷却防止
       // 服务器持续故障时连环触发。
       const ws = _lastActiveSess;
-      if (ws && ws.started && !ws._readMode && ws._phase === 'dubbing'
+      // 完整缓存（绿色按钮）仍然只是“生成完成”，不是播放调度可以停止。
+      // 旧条件排除了 phase=done，导致缓存播放在中途卡住时看门狗永远不再介入。
+      if (ws && ws.started && !ws._readMode && (ws._phase === 'dubbing' || ws._phase === 'done')
           && !ws._userPaused && !ws.weArePausing && !ws._repairing
           && ws.video && !ws.video.paused && ws._allSegments?.length) {
         const now = Date.now();
@@ -7328,7 +7374,7 @@ if (IS_YOUTUBE) {
         const watchdogMs = t < 180 ? 1500 : 12000;
         if (now - lastAlive > watchdogMs) {
           const have = new Set((ws.dubSegments || [])
-            .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio)
+            .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
             .map(_segKey));
           const missedRecently = ws._allSegments.some(
             (s) => s.start >= t - (watchdogMs / 1000) && s.start <= t && !have.has(_segKey(s)));
