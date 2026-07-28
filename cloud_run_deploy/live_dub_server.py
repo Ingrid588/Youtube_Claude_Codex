@@ -425,9 +425,10 @@ _asr_results_cache = {}  # {video_id: [(seg_idx, asr_segments), ...]}
 # 但同一次部署运行期间能一直生效，已经能省掉大量重复请求；要跨重启保留就要加付费的
 # 持久存储，目前先不依赖那个。
 _CAPTION_CACHE_PATH = os.path.join(tempfile.gettempdir(), 'shared_caption_cache.json')
-# v3 stores YouTube json3 events, which retain the native fine-grained timing.
-# VTT may merge rolling captions into long windows and leave apparent playback gaps.
-_CAPTION_CACHE_SCHEMA = 'raw-json3-cue-v3'
+# v4 additionally rejects a cached timeline that ends far before the supplied video
+# duration.  v3 could preserve a 20-minute partial transcript and return it forever
+# as if it were a valid shared caption cache for a three-hour video.
+_CAPTION_CACHE_SCHEMA = 'raw-json3-cue-v4'
 _caption_cache = {}
 def _load_caption_cache():
     global _caption_cache
@@ -445,6 +446,27 @@ def _caption_cache_key(video_id, lang):
 
 def _caption_cache_get(video_id, lang):
     return _caption_cache.get(_caption_cache_key(video_id, lang))
+
+def _caption_segments_cover_duration(segments, duration):
+    """Reject an obviously truncated source transcript, but allow short videos
+    and normal silent endings.  The extension sends duration for this check."""
+    try:
+        duration = float(duration or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    if duration < 20 * 60:
+        return True
+    last_end = max((float(item.get('end') or item.get('start') or 0)
+                    for item in (segments or []) if isinstance(item, dict)), default=0.0)
+    return duration - last_end < max(15 * 60, duration * 0.12)
+
+def _caption_cache_drop(video_id, lang):
+    _caption_cache.pop(_caption_cache_key(video_id, lang), None)
+    try:
+        with open(_CAPTION_CACHE_PATH, 'w', encoding='utf-8') as f:
+            json.dump(_caption_cache, f, ensure_ascii=False)
+    except Exception as e:
+        log.warning(f'[共享字幕缓存] 删除截断缓存写盘失败: {e}')
 
 def _caption_cache_put(video_id, lang, segments):
     if not segments:
@@ -1811,17 +1833,29 @@ async def prefetch_captions(req: Request):
         data = await req.json()
         video_id = data.get('video_id')
         lang = data.get('lang') or 'zh-CN'
+        duration = data.get('duration') or 0
         if not video_id:
             return JSONResponse(status_code=400, content={'error': '缺少 video_id'})
 
         cached = _caption_cache_get(video_id, lang)
+        if cached and not _caption_segments_cover_duration(cached, duration):
+            last_end = max((float(item.get('end') or item.get('start') or 0)
+                            for item in cached if isinstance(item, dict)), default=0.0)
+            log.warning(f'[共享字幕缓存] 丢弃截断缓存 {video_id} ({lang})：'
+                        f'{len(cached)} 段，仅到 {last_end:.1f}s，总长={duration}')
+            _caption_cache_drop(video_id, lang)
+            cached = None
         if cached:
             log.info(f'[共享字幕缓存] 命中 {video_id} ({lang})，{len(cached)} 段，跳过抓取')
             return {'ok': True, 'segments': cached, 'matched_lang': lang, 'from_cache': True}
 
         result = await _do_fetch_captions_ytdlp(video_id, lang)
-        if result.get('segments'):
+        if result.get('segments') and _caption_segments_cover_duration(result['segments'], duration):
             _caption_cache_put(video_id, result.get('matched_lang') or lang, result['segments'])
+        elif result.get('segments'):
+            last_end = max((float(item.get('end') or item.get('start') or 0)
+                            for item in result['segments'] if isinstance(item, dict)), default=0.0)
+            log.warning(f'[后台预取] {video_id}: 字幕仅到 {last_end:.1f}s，未写入共享缓存（总长={duration}）')
         return result
     except Exception as e:
         log.error(f'[后台预取] 异常: {e}\n{traceback.format_exc()}')

@@ -4315,6 +4315,10 @@ function setDubButtonRealtimeCacheState(btn, coverage) {
   }
   if (btn.dataset.backgroundDubState === 'processing') return;
   btn.textContent = furthestSec > frontierSec + 10 ? `🎧缓存≈${hms}` : `🎧缓存→${hms}`;
+  if (coverage.sourceComplete === false) {
+    btn.title = `本地音频仅覆盖至 ${hms}；后段字幕时间轴不完整，不能视作完整缓存`;
+    return;
+  }
   btn.title = furthestSec > frontierSec + 10
     ? `已命中本地配音缓存：连续到 ${frontierHms}，最远到 ${hms}；当前优先使用缓存配音员：${coverage.voice || '未知'}`
     : `已命中本地配音缓存到 ${hms}，当前优先使用缓存配音员：${coverage.voice || '未知'}`;
@@ -4365,6 +4369,18 @@ function dubVoiceMeta(voice) {
   return { name, gender };
 }
 
+// “该声音的每一条已知字幕都有音频”不等于“整部视频都有音频”。长视频若字幕
+// 本身只抓到前二十分钟，旧逻辑会把 406/406 误标为完整缓存，随后在二十分钟处
+// 无声卡住。这里不依赖 YouTube 专用函数，供本地音频覆盖扫描直接使用。
+function sourceTimelineCoversCurrentVideo(segments, video = document.querySelector('video')) {
+  const duration = Number(video?.duration || 0);
+  if (!Number.isFinite(duration) || duration < 20 * 60) return true;
+  const lastEnd = (Array.isArray(segments) ? segments : []).reduce(
+    (max, seg) => Math.max(max, Number(seg?.end || seg?.start || 0)), 0);
+  const tailGap = Math.max(0, duration - lastEnd);
+  return tailGap < Math.max(15 * 60, duration * 0.12);
+}
+
 function formatDubCacheVoiceChoice(choice, index) {
   const meta = dubVoiceMeta(choice.voice);
   const n = ['一', '二', '三', '四', '五', '六'][index] || String(index + 1);
@@ -4374,7 +4390,9 @@ function formatDubCacheVoiceChoice(choice, index) {
   const furthestSec = Number(choice.furthest || choice.frontier || 0);
   const frontier = formatHMS(frontierSec);
   const furthest = formatHMS(furthestSec);
-  const full = choice.full ? '完整缓存'
+  const full = choice.sourceComplete === false
+    ? `仅前段缓存至 ${furthest}（字幕时间轴不完整）`
+    : choice.full ? '完整缓存'
     : (furthestSec > frontierSec + 10 ? `连续到 ${frontier}，最远到 ${furthest}` : `连续到 ${frontier}`);
   return `配音员${n}：${meta.name}（${meta.gender}，${count}/${total}句，${full}）`;
 }
@@ -4391,6 +4409,7 @@ function selectDubCoverageVoice(coverage, voice) {
     furthest: selected.furthest,
     firstGapStart: selected.firstGapStart,
     full: !!selected.full,
+    sourceComplete: selected.sourceComplete !== false,
   };
 }
 
@@ -4576,6 +4595,9 @@ async function assessLocalDubCoverage(videoId, segments, centerTime = 0) {
     }
   }
   const total = sorted.length;
+  // 完整状态必须同时满足：①该声音命中全部已知句子；②已知字幕覆盖视频尾部。
+  // 第二项缺失时最多只能称作“前段缓存”，绝不能让绿色完整缓存按钮误导调度器。
+  const sourceComplete = sourceTimelineCoversCurrentVideo(sorted);
   const rankedVoices = [...hitsByVoice.entries()].map(([voice, hitKeys]) => {
     let frontier = Math.max(0, Number(centerTime || 0));
     let furthest = 0;
@@ -4598,13 +4620,15 @@ async function assessLocalDubCoverage(videoId, segments, centerTime = 0) {
       frontier,
       furthest,
       firstGapStart,
-      full: hitKeys.size === total && sorted.every((seg) => hitKeys.has(makeSourceSegKey(seg))),
+      full: sourceComplete && hitKeys.size === total && sorted.every((seg) => hitKeys.has(makeSourceSegKey(seg))),
+      sourceComplete,
     };
   }).sort((a, b) => (b.count - a.count) || (b.furthest - a.furthest) || (b.frontier - a.frontier) || String(a.voice).localeCompare(String(b.voice)));
   const best = rankedVoices[0];
   if (!best) return { full: false, hitCount: 0, total, frontier: 0, furthest: 0, voice: '', rankedVoices: [] };
   return {
     full: !!best.full,
+    sourceComplete,
     hitCount: best.count,
     total,
     frontier: best.frontier,
@@ -4644,12 +4668,13 @@ async function primeLocalDubCoverageForSession(sess, videoId, segments, centerTi
     }
     if (!sess.started || sess.videoId !== videoId) return coverage;
     sess._localDubCoverage = coverage;
+    sess._sourceTimelineTruncated = coverage?.sourceComplete === false;
     if (coverage.voice) {
       sess._cachedVoice = coverage.voice;
       sess._autoVoice = coverage.voice;
       purgeNonSelectedVoiceSegments(sess, coverage.voice);
       const far = Number(coverage.furthest || coverage.frontier || 0);
-      console.log(`[配音插件] 本视频缓存扫描：${coverage.hitCount}/${coverage.total} 段，优先沿用 ${coverage.voice}，连续缓存到 ${formatHMS(coverage.frontier)}，最远命中到 ${formatHMS(far)}`);
+      console.log(`[配音插件] 本视频缓存扫描：${coverage.hitCount}/${coverage.total} 段，优先沿用 ${coverage.voice}，连续缓存到 ${formatHMS(coverage.frontier)}，最远命中到 ${formatHMS(far)}${coverage.sourceComplete === false ? '（字幕时间轴仅覆盖前段，不能标为完整缓存）' : ''}`);
       if (far > Number(coverage.frontier || 0) + 60) {
         console.warn(`[配音插件] 缓存前沿被早期缺口卡住：连续到 ${formatHMS(coverage.frontier)}，但后面仍有缓存到 ${formatHMS(far)}，会继续沿用已命中的后续缓存并补缺口。`);
       }
@@ -5825,11 +5850,31 @@ async function repairDubbing(sess, btn, { resumeAfter = false, silent = false } 
   // “补救并恢复”此前只会在现有 _allSegments 里找缺音频；若字幕本身在 19:59
   // 已经截断，结果必然是只补到最后一两句。先恢复完整时间轴，再按新时间轴补救。
   if (captionTimelineIsExhaustedAtPlayhead(sess, sess.video?.currentTime || 0)) {
+    let timelineRecovered = false;
     try {
-      await refreshCurrentYTCaptionTimeline?.(
+      timelineRecovered = await refreshCurrentYTCaptionTimeline?.(
         sess, 'manual_repair_after_caption_tail', sess.video?.currentTime || 0);
     } catch (e) {
       console.warn('[配音插件] 补救前刷新字幕时间轴失败', e?.message || e);
+    }
+    // 当前字幕只到前段且刷新未拿到后续正文时，所有旧片段都会被 stale 标记；
+    // 把它们再次当成“406 条缺失音频”重做既无意义又可能暂停视频。保留正常播放，
+    // 等真正取得后段平台字幕后再从当前位置生成。
+    if (!timelineRecovered && captionTimelineIsExhaustedAtPlayhead(sess, sess.video?.currentTime || 0)) {
+      recordDiagnostic(sess, 'repair_skipped_until_caption_timeline_recovers', {
+        currentTime: +(Number(sess.video?.currentTime || 0)).toFixed(3),
+        sourceEnd: +getCaptionTimelineEnd(sess._allSegments).toFixed(3),
+      });
+      if (!silent) {
+        showBufferIndicator('⚠️ 后段中文字幕尚未取得；不会重复补救前段缓存，视频继续播放', sess.video);
+        setTimeout(hideBufferIndicator, 5000);
+      }
+      if (resumeAfter) {
+        sess._userPaused = false;
+        try { sess.video?.play().catch(() => {}); } catch (_) {}
+      }
+      sess._repairing = false;
+      return;
     }
   }
   const have = new Set((sess.dubSegments || [])
@@ -7307,12 +7352,19 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       if (!btn) return;
       sess._allDone = true;
       if (!sess._readMode) {
-        sess._knownFullLocalCache = true;
+        // “当前 rawSegments 全部做完”只能说明当前字幕时间轴完成；若它已在
+        // 长视频前段截断，绝不能把按钮刷绿、也不能停止后段恢复调度。
+        const sourceComplete = sourceTimelineCoversCurrentVideo(sess._allSegments, sess.video);
+        sess._knownFullLocalCache = sourceComplete;
+        if (!sourceComplete) clearRealtimeCacheButtonStyle(btn);
+        const timelineEnd = getCaptionTimelineEnd(sess._allSegments);
         setDubButtonRealtimeCacheState(btn, {
-          full: true,
+          full: sourceComplete,
+          sourceComplete,
           hitCount: sess._allSegments?.length || 1,
           total: sess._allSegments?.length || 1,
-          frontier: sess.video?.duration || 0,
+          frontier: sourceComplete ? (sess.video?.duration || 0) : timelineEnd,
+          furthest: sourceComplete ? (sess.video?.duration || 0) : timelineEnd,
           voice: sess._cachedVoice || sess._autoVoice || '',
         });
       } else {
@@ -7775,13 +7827,19 @@ if (IS_YOUTUBE) {
         segs = await fetchChineseFromPotUrl();
       }
       if (segs.length) {
+        // 预取路径也必须校验尾部覆盖；过去它直接把“前二十分钟”的字幕写入
+        // Chrome 缓存，随后即使主启动流程做了校验，仍会先吃到这份坏缓存。
+        segs = await resolveChineseCaptionTimeline(vid, segs, 'background_prefetch');
         ytInterceptedSegments = segs;
         ytInterceptedVideoId = vid;
-        captionsReadyForVideo(vid, segs);
+        // resolveChineseCaptionTimeline 已负责正常缓存/关闭 CC；截断结果会明确跳过缓存。
       }
     }
     // 字幕已经进入缓存后立刻关闭YouTube原生CC；每个视频切换后会重新开启、获取、再关闭。
-    if (ytInterceptedVideoId === vid && ytInterceptedSegments?.length) disableCaptions();
+    if (ytInterceptedVideoId === vid && ytInterceptedSegments?.length
+        && !hasUnexpectedCaptionTailGap(captionTimelineInfo(ytInterceptedSegments, video))) {
+      disableCaptions();
+    }
   }
 
   // 从播放列表侧边栏面板找"下一个视频"的videoId：当前视频在面板里的固定序号+1，
@@ -7900,7 +7958,7 @@ if (IS_YOUTUBE) {
     if (!segs?.length) return segs || [];
     if (!options.skipCache) setCachedSubs(vid, segs);
     // 只关闭当前视频自己的原生字幕；后台预取“下一个视频”时不能误关当前视频。
-    if (curVideoId() === vid) {
+    if (curVideoId() === vid && !options.keepNativeCaptions) {
       setTimeout(() => {
         if (curVideoId() === vid) disableCaptions();
       }, 0);
@@ -8237,6 +8295,18 @@ if (IS_YOUTUBE) {
           `${info.count}条，至 ${info.lastEnd.toFixed(1)}s`);
       }
     }
+    // 播放器 URL 也可能给出同一份被截断的正文。不要因为它“有内容”就放弃
+    // 服务器 yt-dlp 的独立来源；这里不涉及 Gemini，也不会调用任何翻译 API。
+    if (hasUnexpectedCaptionTailGap(info)) {
+      const serverSegments = await fetchChineseFromPotUrl();
+      const serverInfo = captionTimelineInfo(serverSegments);
+      if (serverSegments?.length && serverInfo.lastEnd > info.lastEnd + 60) {
+        selected = serverSegments;
+        info = serverInfo;
+        console.log('[配音插件] 服务器字幕源已补回更完整的字幕时间轴：',
+          `${info.count}条，至 ${info.lastEnd.toFixed(1)}s`);
+      }
+    }
     if (hasUnexpectedCaptionTailGap(info)) {
       // 不把坏账本重新落盘或标成“完整缓存”。当前轮仍把已有前段交给调用方，
       // 但控制台会给出明确原因，刷新后可重新取得新的播放器令牌。
@@ -8244,7 +8314,9 @@ if (IS_YOUTUBE) {
         source, count: info.count, lastEnd: +info.lastEnd.toFixed(1),
         duration: +info.duration.toFixed(1), tailGap: +info.tailGap.toFixed(1),
       });
-      return captionsReadyForVideo(vid, selected, { skipCache: true });
+      // 正文仍被截断时保留播放器 CC：用户至少能看到平台正在给出的中文字幕，
+      // 也给播放器继续刷新字幕轨留下入口；不能伪装成“字幕已完全取得”再把它关掉。
+      return captionsReadyForVideo(vid, selected, { skipCache: true, keepNativeCaptions: true });
     }
     return captionsReadyForVideo(vid, selected);
   }
@@ -8283,7 +8355,9 @@ if (IS_YOUTUBE) {
         const resp = await fetch(`${SERVER}/prefetch_captions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ video_id: vid }),
+          // 把总时长一并交给服务器：服务器共享缓存若只覆盖前段，必须废弃后重抓，
+          // 不能把“406 条前段字幕”当作可复用的完整结果。
+          body: JSON.stringify({ video_id: vid, duration: Number(document.querySelector('video')?.duration || 0) }),
           signal: ctrl.signal,
         });
         clearTimeout(timer);
@@ -8435,9 +8509,15 @@ if (IS_YOUTUBE) {
           source: freshUrl !== oldUrl ? 'fresh_player_url' : 'current_player_url', segments: direct,
         });
       }
-      // 若播放器正文未暴露或第二个 URL 仍不足，才用服务器 yt-dlp 读取平台字幕。
-      // 这是字幕获取兜底，不是 Gemini 翻译。
-      if (!candidates.length) {
+      // 播放器给出的候选即使“非空”，也可能仍是同一份二十分钟截断正文。
+      // 旧逻辑只因 candidates 非空便跳过服务器，等于把第二条来源永久短路。
+      // 只有至少一个候选真正覆盖当前位置后五分钟，才允许不走服务器 yt-dlp。
+      // 这是平台字幕读取兜底，不是 Gemini 翻译。
+      const hasUsablePlayerCandidate = candidates.some(({ segments }) => {
+        const end = getCaptionTimelineEnd(segments);
+        return end > oldEnd + 60 && end >= current + 5 * 60;
+      });
+      if (!hasUsablePlayerCandidate) {
         const serverSegments = await fetchChineseFromPotUrl();
         if (serverSegments?.length) candidates.push({ source: 'server_ytdlp_refresh', segments: serverSegments });
       }
