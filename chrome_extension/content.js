@@ -3383,7 +3383,12 @@ function maybeBufferForSynthesis(sess, t) {
   // 该句还没合成 → 先催合成
   requestSynthAround(sess, t);
 
-  const criticalStart = Number(t || 0) < REALTIME_START_CRITICAL_SECONDS;
+  // “前五分钟重要”指优先补齐、提高重试频率，绝不等于前五分钟任意一条缺口
+  // 都可以把视频暂停。旧条件只看 t < 5min：首批已经开始播放后，23 秒处遇到
+  // 一条暂未装载的段也会重新进入启动闸门；视频一旦被自身暂停，t 不再变化，
+  // 形成“正在补齐当前配音”的无限暂停。真正允许阻塞画面的仅是启动/归零闸门。
+  const criticalStart = Number(t || 0) < REALTIME_START_CRITICAL_SECONDS
+    && (sess._startupGatePending || sess._phase === 'preparing');
   if (criticalStart) {
     const releaseCriticalStartIfCacheCanCarry = (reason) => {
       const currentReady = _currentSegReadyAt(sess, t);
@@ -3475,7 +3480,7 @@ function maybeBufferForSynthesis(sess, t) {
     return false;
   }
 
-  // 5分钟以后，实时播放以不断流为最高优先级：当前句如果已经来不及，就静默跳过，
+  // 启动闸门放行以后，实时播放以不断流为最高优先级：当前句如果已经来不及，就静默跳过，
   // 自绘字幕也跟着隐藏；后续由 requestSynthAround/收尾补漏补回缓存，供重看或导出使用。
   sess._synthMiss = 0;
   if (Date.now() - (sess._lastNoPauseMissingLogAt || 0) > 10000) {
