@@ -2623,6 +2623,13 @@ async function requestSynthAround(sess, t) {
   // 与主流重复占用服务器并发，最坏会两边都卡到150秒后反复重发。首批就绪后
   // onFirstChunkReady 会把 phase 改成 dubbing，届时快进和缺口补齐才允许走这里。
   if (sess._phase === 'preparing') return;
+  // 如果播放点已经越过当前字幕时间轴的最后一句，后面没有任何 source segment，
+  // 继续从本地缓存反复装载最后两句只会被判为 stale。此时先刷新字幕时间轴；
+  // 恢复函数会在成功后立即从当前位置启动新的前瞻合成流。
+  if (captionTimelineIsExhaustedAtPlayhead(sess, t)) {
+    refreshCurrentYTCaptionTimeline?.(sess, 'request_synth_after_caption_tail', t);
+    return;
+  }
   sess._synthInFlight = sess._synthInFlight || new Set();
   // 已有对象不等于已有可播放音频：404 后会保留同一时间轴对象以便替换，
   // 不能再把它当作“已合成”而永远不重试。
@@ -3404,7 +3411,15 @@ function maybeBufferForSynthesis(sess, t) {
     const segEnd = Math.max(s.end || s.start, s.start + 0.5);
     return s.start <= t + 0.5 && segEnd >= t - 0.5;
   });
-  if (!expected) { unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false; }
+  if (!expected) {
+    // 不能把“当前时点没有 source subtitle”当成“没有配音需要”。长视频的
+    // 截断时间轴会正好落进这里；异步刷新后会建起当前位置的字幕和合成队列。
+    // 本分支绝不暂停视频，避免用户所见的无限“正在补齐”。
+    if (captionTimelineIsExhaustedAtPlayhead(sess, t)) {
+      refreshCurrentYTCaptionTimeline?.(sess, 'buffer_no_current_caption', t);
+    }
+    unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false;
+  }
   if (_currentSegReadyAt(sess, t)) { unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false; }
   ensurePlaybackWindowFromLocalCache(sess, t, 'maybe_buffer_current_sentence_missing',
     Number(t || 0) < REALTIME_START_CRITICAL_SECONDS ? 2 : 5,
@@ -5104,9 +5119,78 @@ async function resumeAfterNetworkRecovery(sess) {
 }
 
 // ===== 双向分块流式配音（通用，任何平台）=====
+// 刷新 YouTube 字幕时间轴时使用与启动配音相同的最小处理管线。它只做原有的
+// 音效标记过滤、滚动 cue 去重和按句合并；不做“相似句删除”，因此不会为了修复
+// 长视频尾部而再次破坏开头真实的第一、二句。
+function buildRuntimeCaptionTimeline(rawSegments, sess) {
+  let rows = (rawSegments || [])
+    .map((s) => ({
+      ...s,
+      start: Number(s?.start || 0),
+      end: Math.max(Number(s?.end || s?.start || 0), Number(s?.start || 0) + 0.05),
+      text: sanitizeDubbingText(stripNonSpeechMarker(String(s?.text || ''))),
+    }))
+    .filter((s) => s.text)
+    .sort(compareDubSegments);
+  rows = dedupRollingCaptions(rows);
+  const annotationOnly = /^[\s\[\]【】()（）]*[\[【(][^\]】)]*[\]】)][\s\[\]【】()（）]*$/;
+  rows = rows
+    .map((s) => ({ ...s, text: s.text.replace(/[\[【(][^\]】)]{0,12}[\]】)]/g, '').trim() }))
+    .filter((s) => s.text && !annotationOnly.test(s.text));
+  if (!sess?._readMode) {
+    const fillerRe = /[嗯啊呃唉][，、。！？,.!?\s]*/g;
+    rows = rows.map((s) => ({ ...s, text: s.text.replace(fillerRe, '').trim() })).filter((s) => s.text);
+    rows = groupChineseSentences(rows);
+    rows = pruneExcessYesFillers(rows, '刷新字幕时间轴');
+  }
+  return rows.map((s, i) => ({ ...s, _sourceIndex: i }));
+}
+
+function mergeRefreshedCaptionTimeline(sess, rawSegments, reason, atTime) {
+  const next = buildRuntimeCaptionTimeline(rawSegments, sess);
+  if (!next.length) return null;
+  const oldEnd = getCaptionTimelineEnd(sess._allSegments);
+  const nextEnd = getCaptionTimelineEnd(next);
+  if (nextEnd <= oldEnd + 30) return null;
+  const oldCount = Array.isArray(sess._allSegments) ? sess._allSegments.length : 0;
+
+  // 仅保留严格相同 source key 的已合成音频。新时间轴若调整过切句，不把旧的音频
+  // 强行贴到新句子上，避免错位/重复；当前位置及后面由本地缓存优先再补齐。
+  const nextKeys = new Set(next.map(_segKey));
+  sess.dubSegments = (sess.dubSegments || []).filter((seg) => nextKeys.has(_segKey(seg)));
+  sess._allSegments = next;
+  sess._rawSubtitles = next.map((s) => ({ start: s.start, end: s.end, text: s.text }));
+  sess._displaySegments = next.map((s) => ({ start: s.start, end: s.end, text: s.text }));
+  sess._sourceRawSubtitles = buildSourceSubtitleLedger(rawSegments, 'platform_raw_refreshed');
+  sess._processedSourceSubtitles = buildSourceSubtitleLedger(next, 'dub_sentence_timeline_refreshed');
+  sess._captionTimelineVersion = (sess._captionTimelineVersion || 0) + 1;
+  sess._synthDone = false;
+  sess._allDone = false;
+  sess._phase = 'dubbing';
+  sess._maxSynthedTime = (sess.dubSegments || [])
+    .filter((seg) => (seg.audio_url || seg.web_speech) && !seg._invalidAudio)
+    .reduce((max, seg) => Math.max(max, segmentTimelineEnd(seg)), 0);
+  recordDiagnostic(sess, 'caption_timeline_replaced_after_tail_gap', {
+    reason,
+    currentTime: +(Number(atTime || 0)).toFixed(3),
+    oldEnd: +oldEnd.toFixed(3),
+    nextEnd: +nextEnd.toFixed(3),
+    oldCount,
+    nextCount: next.length,
+    version: sess._captionTimelineVersion,
+  });
+  console.warn('[配音插件] 已用更长字幕时间轴替换截断时间轴', {
+    reason, oldEnd: +oldEnd.toFixed(1), nextEnd: +nextEnd.toFixed(1), nextCount: next.length,
+  });
+  return next;
+}
+
 async function processDubbingChunked(rawSegments, videoId, title, sess, fail, onFirstChunkReady) {
   const video = sess.video;
   const t0 = video.currentTime;
+  // 字幕时间轴被完整版本替换后，旧顺序流不能再对“新全片”做收尾补漏，
+  // 否则会和恢复后的生产器抢同一批请求。
+  const timelineVersionAtStart = sess._captionTimelineVersion || 0;
   const ordered = rawSegments.slice().sort(compareDubSegments);
   const upcoming = ordered.filter((s) => s.end >= t0 - 1);
   const pastAll = ordered.filter((s) => s.end < t0 - 1);
@@ -5490,6 +5574,14 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
 
   await runStream(upcoming, true);
   if (sess.started && sess.videoId === videoId && past.length) await runStream(past, false);
+  if ((sess._captionTimelineVersion || 0) !== timelineVersionAtStart) {
+    recordDiagnostic(sess, 'stale_timeline_producer_finished_without_global_repair', {
+      startedVersion: timelineVersionAtStart,
+      currentVersion: sess._captionTimelineVersion || 0,
+      currentTime: +(Number(video.currentTime || 0)).toFixed(3),
+    });
+    return;
+  }
   if (!sess.started || sess.videoId !== videoId) return;   // 用户已停止，或这次调用已经是旧视频的了，不触发 fail
   if (!sess.dubSegments?.length) return fail('后端未返回任何配音片段');
 
@@ -5611,6 +5703,117 @@ function pauseForTranslateFailure(sess, failedStarts) {
 // 菜单更适合所有输入设备），只重新尝试"应该有但目前还没拿到音频"的那些句子，
 // 补回 sess.dubSegments，不影响已经在播的部分。复用收尾补漏同一套逐句比对逻辑，
 // 单独抽出来供手动触发。
+// 字幕时间轴在播放中被恢复后，原先的顺序合成流可能已经因旧时间轴到头而退出。
+// 这个生产器从当前播放点向前重建库存：先保证至少 15 分钟，用户从头观看满 5
+// 分钟或已经看过三分之一后再持续做到片尾。它和 seek 的即时补句共享 _synthInFlight，
+// 因而不会出现两个逻辑抢同一句、用不同音色各做一次的情况。
+function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refresh') {
+  if (!sess?.started || sess._readMode || !Array.isArray(sess._allSegments)) return;
+  if (sess._timelineProducerPromise) return;
+  const videoId = sess.videoId;
+  const title = sess.title;
+  const run = async () => {
+    const attempts = new Map();
+    const deferredUntil = new Map();
+    while (sess.started && sess.videoId === videoId) {
+      const now = Number(sess.video?.currentTime || fromTime || 0);
+      const duration = Number(sess.video?.duration || 0);
+      const watchedFromHeadEnough = !!sess._startedFromBeginning && now >= REALTIME_START_CRITICAL_SECONDS;
+      const watchedThirdEnough = duration > 0 && now >= duration / 3;
+      const fullRemainder = watchedFromHeadEnough || watchedThirdEnough;
+      const horizon = fullRemainder && duration > 0 ? duration + 1 : now + 15 * 60;
+      const have = new Set((sess.dubSegments || [])
+        .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
+        .map(_segKey));
+      const candidates = (sess._allSegments || [])
+        .filter((s) => segmentTimelineEnd(s) >= now - 0.5 && s.start <= horizon)
+        .filter((s) => !have.has(_segKey(s)) && !sess._synthInFlight?.has(_segKey(s)))
+        .filter((s) => (deferredUntil.get(_segKey(s)) || 0) <= Date.now())
+        .sort((a, b) => a.start - b.start);
+      if (!candidates.length) {
+        const sourceEnd = getCaptionTimelineEnd(sess._allSegments);
+        if (duration > sourceEnd + Math.max(5 * 60, duration * 0.12)
+            && now >= sourceEnd - 10) {
+          refreshCurrentYTCaptionTimeline?.(sess, 'producer_reached_caption_tail', now);
+        }
+        const allCovered = (sess._allSegments || []).every((s) => have.has(_segKey(s)) || s.end < now - 1);
+        if (fullRemainder && allCovered) break;
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        continue;
+      }
+
+      // 先处理离播放点最近的一小批；后续批次再按时间顺序排入，避免单次请求过大。
+      const batch = candidates.slice(0, 16);
+      const keys = batch.map(_segKey);
+      sess._synthInFlight = sess._synthInFlight || new Set();
+      keys.forEach((key) => sess._synthInFlight.add(key));
+      try {
+        let requested = applySessionVoice(sess, batch);
+        const cached = await loadLocalDubBatch(videoId, requested);
+        const ready = cached.filter(Boolean);
+        const missing = requested.filter((_, index) => !cached[index]);
+        let fresh = [];
+        if (missing.length) {
+          fresh = await sendChunk(videoId, title, missing, sess._baseRatePct || 0,
+            false, null, sess._subtitleMode === 'gemini');
+          if (fresh?.length) await saveLocalDubBatch(videoId, missing, fresh);
+        }
+        const got = [...ready, ...(fresh || [])];
+        if (!sess.started || sess.videoId !== videoId) return;
+        if (!got.length) throw new Error('配音服务未返回当前批次音频');
+        const existing = new Map((sess.dubSegments || []).map((item) => [_segKey(item), item]));
+        const current = Number(sess.video?.currentTime || now);
+        for (const item of got) {
+          const key = _segKey(item);
+          const old = existing.get(key);
+          if (old) {
+            Object.assign(old, item, {
+              played: initialPlayedStateForInsertedSegment(sess, item, current),
+              _invalidAudio: false,
+              _loadRetryCount: 0,
+            });
+            delete old._skippedStale;
+            delete old._skipLocalCache;
+          } else {
+            sess.dubSegments.push({ ...item, played: initialPlayedStateForInsertedSegment(sess, item, current) });
+          }
+        }
+        sess.dubSegments.sort(compareDubSegments);
+        markReturnedAudioPersisted(sess, got, current);
+        const frontier = Math.max(...got.map(segmentTimelineEnd));
+        sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
+        if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
+        recordDiagnostic(sess, 'timeline_refresh_producer_batch_done', {
+          reason, currentTime: +current.toFixed(3), count: got.length,
+          frontier: +frontier.toFixed(3), fullRemainder,
+        });
+        playNextDue(sess, current);
+      } catch (e) {
+        for (const key of keys) {
+          const count = (attempts.get(key) || 0) + 1;
+          attempts.set(key, count);
+          // 不让一批临时网络错误把后续十五分钟库存全部堵住；失败句子在短间隔后
+          // 重新进入候选队列，当前位置还会由 requestSynthAround 单独优先补救。
+          deferredUntil.set(key, Date.now() + Math.min(8000, 800 + count * 800));
+        }
+        recordDiagnostic(sess, 'timeline_refresh_producer_batch_failed', {
+          reason, currentTime: +(Number(sess.video?.currentTime || now)).toFixed(3),
+          attempts: Math.max(...keys.map((key) => attempts.get(key) || 0)), error: e?.message || String(e || ''),
+        });
+        console.warn('[配音插件] 刷新时间轴后的前瞻合成批次失败，将继续短间隔重试', e?.message || e);
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+      } finally {
+        keys.forEach((key) => sess._synthInFlight?.delete(key));
+      }
+    }
+  };
+  sess._timelineProducerPromise = run().catch((e) => {
+    console.warn('[配音插件] 刷新字幕时间轴后的生产器异常', e?.message || e);
+  }).finally(() => {
+    sess._timelineProducerPromise = null;
+  });
+}
+
 async function repairDubbing(sess, btn, { resumeAfter = false, silent = false } = {}) {
   if (!sess.started || sess._readMode || !sess._allSegments?.length) return;
   // 防重入：看门狗自动补救和用户手动点"补救并恢复"可能撞在同一时间，两份补救
@@ -5619,6 +5822,16 @@ async function repairDubbing(sess, btn, { resumeAfter = false, silent = false } 
   if (sess._repairing && Date.now() - (sess._repairingSince || 0) < 120000) return;
   sess._repairing = true;
   sess._repairingSince = Date.now();
+  // “补救并恢复”此前只会在现有 _allSegments 里找缺音频；若字幕本身在 19:59
+  // 已经截断，结果必然是只补到最后一两句。先恢复完整时间轴，再按新时间轴补救。
+  if (captionTimelineIsExhaustedAtPlayhead(sess, sess.video?.currentTime || 0)) {
+    try {
+      await refreshCurrentYTCaptionTimeline?.(
+        sess, 'manual_repair_after_caption_tail', sess.video?.currentTime || 0);
+    } catch (e) {
+      console.warn('[配音插件] 补救前刷新字幕时间轴失败', e?.message || e);
+    }
+  }
   const have = new Set((sess.dubSegments || [])
     .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
     .map(_segKey));
@@ -6791,6 +7004,11 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
         });
         return;
       }
+      // 用户把进度条拖到现有字幕尾部以外时，立即刷新 source timeline。不能等到
+      // timeupdate 再发现没有 expected 句子，否则会先反复装载尾部旧缓存。
+      if (captionTimelineIsExhaustedAtPlayhead(sess, t)) {
+        refreshCurrentYTCaptionTimeline?.(sess, 'seek_past_caption_tail', t);
+      }
       // 快进后先把本地缓存挂回当前窗口，再对新位置优先合成，避免明明已有缓存却还去等服务器。
       const shouldHoldAtStart = t < 2.2;
       if (shouldHoldAtStart) {
@@ -7104,6 +7322,20 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     };
 
     sess._allSegments = rawSegments;   // 合并后的全量句子，供 seek 后按位置优先合成
+    // 首批仍按现有前几句立即启动；若时间轴明显在长视频前段截断，则同时后台刷新。
+    // 这样不会拖慢开头，也不会等播放到旧尾部才发现生产器没有后续 source segment。
+    const initialTimelineInfo = IS_YOUTUBE && typeof captionTimelineInfo === 'function'
+      ? captionTimelineInfo(rawSegments, sess.video) : null;
+    if (initialTimelineInfo && hasUnexpectedCaptionTailGap(initialTimelineInfo)) {
+      recordDiagnostic(sess, 'startup_caption_timeline_tail_gap_detected', {
+        count: initialTimelineInfo.count,
+        lastEnd: +initialTimelineInfo.lastEnd.toFixed(3),
+        duration: +initialTimelineInfo.duration.toFixed(3),
+        tailGap: +initialTimelineInfo.tailGap.toFixed(3),
+      });
+      setTimeout(() => refreshCurrentYTCaptionTimeline?.(
+        sess, 'startup_caption_tail_gap', sess.video?.currentTime || 0), 0);
+    }
     processDubbingChunked(rawSegments, videoId, title, sess, fail, onFirstChunkReady);
   }
 
@@ -7219,7 +7451,30 @@ let _ytCaptionsPromises = {};       // per-video 的 getYTCaptions 并发控制�
 let _nextPrefetchedVid = null;      // 已经发起过"下一个视频"预取请求的videoId，避免重复请求
 // 自动翻译字幕仅允许对播放器刚生成的 URL 直读一次。它不是 Gemini，也绝不做
 // 浏览器端的重试风暴；目的是修复服务器/旧缓存返回截断时间轴时的唯一安全兜底。
-const _autoTranslatePlayerFetchAttempted = new Set();
+// 自动翻译字幕只允许读取播放器刚签发的 URL，且每个视频最多尝试两个不同的
+// 播放器 URL。后者用于“时间轴确实已经截断”时让播放器换发一次 token；同一个
+// URL 永远不重试，避免把正常播放中的用户带进 429 循环。
+const _autoTranslatePlayerFetchAttempted = new Map();
+
+// 由 YouTube 专属逻辑在下面赋值。通用播放调度只通过这个入口请求“字幕时间轴
+// 已经到头”的恢复，不直接碰 Gemini，也不让视频暂停。
+let refreshCurrentYTCaptionTimeline = null;
+
+function getCaptionTimelineEnd(segs) {
+  return (Array.isArray(segs) ? segs : []).reduce(
+    (max, seg) => Math.max(max, Number(seg?.end || seg?.start || 0)), 0);
+}
+
+function captionTimelineIsExhaustedAtPlayhead(sess, t) {
+  if (!sess?.started || !Array.isArray(sess._allSegments) || !sess._allSegments.length) return false;
+  const end = getCaptionTimelineEnd(sess._allSegments);
+  const duration = Number(sess.video?.duration || 0);
+  const now = Number(t || sess.video?.currentTime || 0);
+  // 只有“播放点已越过字幕最后一句、后面仍有足够长的视频”才判定为异常截断。
+  // 正常片尾的无对白不会命中，也不会触发任何额外字幕请求。
+  return now > end + 1
+    && duration > end + Math.max(5 * 60, duration * 0.12);
+}
 
 if (IS_YOUTUBE) {
   function injectPlayerResponseScript() {
@@ -7845,12 +8100,15 @@ if (IS_YOUTUBE) {
     }
     const videoId = curVideoId();
     if (isAutoTranslate) {
-      if (_autoTranslatePlayerFetchAttempted.has(videoId)) {
-        console.log('[配音插件] 播放器中文URL本轮已单次读取过，不重复请求');
+      const key = String(baseUrl || '');
+      const attempted = _autoTranslatePlayerFetchAttempted.get(videoId) || new Set();
+      if (attempted.has(key) || attempted.size >= 2) {
+        console.log('[配音插件] 播放器中文URL本轮已读取过，或已达到两条不同URL的安全上限；不重复请求');
         return [];
       }
-      _autoTranslatePlayerFetchAttempted.add(videoId);
-      console.log('[配音插件] 读取播放器刚生成的中文URL（仅此一次，不重试）');
+      attempted.add(key);
+      _autoTranslatePlayerFetchAttempted.set(videoId, attempted);
+      console.log(`[配音插件] 读取播放器刚生成的中文URL（第 ${attempted.size}/2 条不同URL；不重试同一URL）`);
     }
     const delays = isAutoTranslate ? [0] : [0, 2000];
     const jsonUrl = baseUrl.includes('fmt=') ? baseUrl : baseUrl + '&fmt=json3';
@@ -7861,10 +8119,22 @@ if (IS_YOUTUBE) {
       }
       try {
         const resp = await fetch(jsonUrl, { credentials: 'include' });
-        if (resp.status === 429) continue;
+        if (!resp.ok) {
+          console.warn('[配音插件] 播放器中文URL读取失败', { status: resp.status, statusText: resp.statusText });
+          continue;
+        }
         const segs = parseTimedText(await resp.text());
-        if (segs.length) return segs;
-      } catch (_) {}
+        if (segs.length) {
+          console.log('[配音插件] 播放器中文URL读取完成', {
+            count: segs.length,
+            lastEnd: +getCaptionTimelineEnd(segs).toFixed(1),
+          });
+          return segs;
+        }
+        console.warn('[配音插件] 播放器中文URL返回空字幕');
+      } catch (e) {
+        console.warn('[配音插件] 播放器中文URL读取异常', e?.message || e);
+      }
     }
     if (isAutoTranslate) return [];
     try {
@@ -8121,6 +8391,94 @@ if (IS_YOUTUBE) {
     if (manual.length) return manual;
     return [];
   }
+
+  // 当前播放点已越过字幕时间轴时，不能只从旧的本地音频缓存补最后一两句。
+  // 这里让播放器重新签发一次中文轨；若拿到比旧时间轴更长、且覆盖当前点之后至少
+  // 五分钟的正文，就原地替换 session 时间轴并重开前瞻生产器。整个过程不暂停视频，
+  // 更不会调用 Gemini。
+  refreshCurrentYTCaptionTimeline = async (sess, reason = 'caption_tail', atTime = 0) => {
+    if (!sess?.started || sess._readMode || sess.videoId !== curVideoId()) return false;
+    if (sess._captionTimelineRefreshPromise) return sess._captionTimelineRefreshPromise;
+    const now = Date.now();
+    if (now - (sess._lastCaptionTimelineRefreshAt || 0) < 30000) return false;
+    sess._lastCaptionTimelineRefreshAt = now;
+    const vid = sess.videoId;
+    const oldEnd = getCaptionTimelineEnd(sess._allSegments);
+    const duration = Number(sess.video?.duration || 0);
+    const current = Number(atTime || sess.video?.currentTime || 0);
+    sess._captionTimelineRefreshPromise = (async () => {
+      recordDiagnostic(sess, 'caption_timeline_refresh_start', {
+        reason, currentTime: +current.toFixed(3), oldEnd: +oldEnd.toFixed(3), duration: +duration.toFixed(3),
+      });
+      console.warn('[配音插件] 字幕时间轴已在当前播放点前结束，开始刷新当前后的字幕', {
+        reason, current: +current.toFixed(1), oldEnd: +oldEnd.toFixed(1), duration: +duration.toFixed(1),
+      });
+      removeCachedSubs(vid);
+      const oldUrl = ytTimedtextVideoId === vid ? ytTimedtextUrl : '';
+      const oldInterceptEnd = ytInterceptedVideoId === vid ? getCaptionTimelineEnd(ytInterceptedSegments) : 0;
+      // 先让 YouTube 播放器自己换发轨道。forceRequestCaptions 只在 CC 关闭时打开一次；
+      // ensurePlayerChineseTrack 走播放器内部设置，不创建 Gemini/API 翻译请求。
+      await forceRequestCaptions();
+      await ensurePlayerChineseTrack(vid);
+      await sleep(900);
+
+      const candidates = [];
+      const intercepted = ytInterceptedVideoId === vid ? ytInterceptedSegments : null;
+      if (intercepted?.length && getCaptionTimelineEnd(intercepted) > oldInterceptEnd + 30) {
+        candidates.push({ source: 'fresh_player_intercept', segments: intercepted });
+      }
+      const freshUrl = ytTimedtextVideoId === vid ? ytTimedtextUrl : '';
+      if (freshUrl && /[?&](?:tlang|lang)=zh(?:-|&|$)/i.test(freshUrl)) {
+        // 同一 URL 不会再次读取；只有播放器确实更新 token/URL 时才有第二次安全尝试。
+        const direct = await fetchSubtitleSegments(freshUrl, true, { allowPlayerUrlOnce: true });
+        if (direct?.length) candidates.push({
+          source: freshUrl !== oldUrl ? 'fresh_player_url' : 'current_player_url', segments: direct,
+        });
+      }
+      // 若播放器正文未暴露或第二个 URL 仍不足，才用服务器 yt-dlp 读取平台字幕。
+      // 这是字幕获取兜底，不是 Gemini 翻译。
+      if (!candidates.length) {
+        const serverSegments = await fetchChineseFromPotUrl();
+        if (serverSegments?.length) candidates.push({ source: 'server_ytdlp_refresh', segments: serverSegments });
+      }
+      candidates.sort((a, b) => getCaptionTimelineEnd(b.segments) - getCaptionTimelineEnd(a.segments));
+      const best = candidates[0];
+      const bestEnd = getCaptionTimelineEnd(best?.segments);
+      // 只接受真正能覆盖当前点以后一段的结果。否则会出现“补救后播一两句又停”的假恢复。
+      if (!best || bestEnd <= oldEnd + 60 || bestEnd < current + 5 * 60) {
+        recordDiagnostic(sess, 'caption_timeline_refresh_insufficient', {
+          reason, currentTime: +current.toFixed(3), oldEnd: +oldEnd.toFixed(3),
+          receivedEnd: +bestEnd.toFixed(3), source: best?.source || 'none',
+        });
+        console.warn('[配音插件] 刷新的字幕仍未覆盖当前点后五分钟，拒绝用它覆盖现有时间轴', {
+          reason, oldEnd: +oldEnd.toFixed(1), receivedEnd: +bestEnd.toFixed(1), source: best?.source,
+        });
+        return false;
+      }
+      const replaced = mergeRefreshedCaptionTimeline(sess, best.segments, reason, current);
+      if (!replaced) return false;
+      const info = captionTimelineInfo(best.segments, sess.video);
+      if (!hasUnexpectedCaptionTailGap(info)) captionsReadyForVideo(vid, best.segments);
+      await hydrateLocalCacheWindow(sess, current, 12, 15 * 60).catch(() => 0);
+      requestSynthAround(sess, sess.video?.currentTime || current);
+      launchTimelineProducer(sess, sess.video?.currentTime || current, reason);
+      playNextDue(sess, sess.video?.currentTime || current);
+      recordDiagnostic(sess, 'caption_timeline_refresh_ready', {
+        reason, currentTime: +(Number(sess.video?.currentTime || current)).toFixed(3),
+        source: best.source, lastEnd: +bestEnd.toFixed(3), count: replaced.length,
+      });
+      return true;
+    })().catch((e) => {
+      recordDiagnostic(sess, 'caption_timeline_refresh_failed', {
+        reason, currentTime: +current.toFixed(3), error: e?.message || String(e || ''),
+      });
+      console.warn('[配音插件] 刷新字幕时间轴失败', e?.message || e);
+      return false;
+    }).finally(() => {
+      sess._captionTimelineRefreshPromise = null;
+    });
+    return sess._captionTimelineRefreshPromise;
+  };
 
   // 创建配音按钮（普通视频和 Shorts 共用同一点击逻辑）
   // 朗读：用户当前在 YouTube 选中的字幕轨（实时跟踪，用户切字幕马上更新）
