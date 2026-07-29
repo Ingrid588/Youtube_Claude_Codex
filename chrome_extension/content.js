@@ -2813,7 +2813,10 @@ async function requestSynthAround(sess, t) {
       }
     }
     sess.dubSegments.sort(compareDubSegments);
-    if (!sess._startupGatePending && sess._buffering && _segReadyAt(sess, sess.video.currentTime)) {
+    if (releaseBriefCurrentCueHoldIfReady(sess, sess.video?.currentTime || t,
+      'priority_synthesis_result_ready')) {
+      // The short hold already resumed playback and scheduled the current cue.
+    } else if (!sess._startupGatePending && sess._buffering && _segReadyAt(sess, sess.video.currentTime)) {
       sess._buffering = false; sess.weArePausing = false;
       hideBufferIndicator();
       try { sess.video.play().catch(() => {}); } catch (_) {}
@@ -2953,6 +2956,8 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
           missingStart: +(seg.start || 0).toFixed(3),
           tries: state.tries,
         });
+        releaseBriefCurrentCueHoldIfReady(sess, sess.video?.currentTime || t,
+          'current_sentence_loaded_from_local_cache');
         playNextDue(sess, sess.video.currentTime);
         return;
       }
@@ -2996,6 +3001,8 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
           repaired,
           tries: state.tries,
         });
+        releaseBriefCurrentCueHoldIfReady(sess, sess.video?.currentTime || t,
+          'current_sentence_repair_done');
         playNextDue(sess, sess.video.currentTime);
       }
     } catch (e) {
@@ -3287,6 +3294,81 @@ function segmentCountsTowardPlayableFrontier(sess, seg, now) {
   return sourceEventCompletedInActiveEpoch(sess, seg);
 }
 
+// Mid-video used to have only two extremes: keep racing even with no current
+// audio, or pause indefinitely.  A short, one-shot gate gives the local cache
+// an opportunity to hydrate the current cue without turning a temporary server
+// hiccup into an endless video freeze.
+const BRIEF_CURRENT_CUE_HOLD_MS = 1800;
+const BRIEF_CURRENT_CUE_HOLD_COOLDOWN_MS = 15000;
+
+function releaseBriefCurrentCueHoldIfReady(sess, t, reason = 'current_audio_ready') {
+  const hold = sess?._briefCurrentCueHold;
+  if (!hold || !_currentSegReadyAt(sess, t == null ? sess.video?.currentTime || 0 : t)) return false;
+  clearTimeout(hold.timer);
+  sess._briefCurrentCueHold = null;
+  sess._briefCurrentCueLastAt = Date.now();
+  sess._buffering = false;
+  sess.weArePausing = false;
+  sess._bufferingSince = null;
+  hideBufferIndicator();
+  recordDiagnostic(sess, 'brief_current_cue_hold_released', {
+    reason,
+    currentTime: +(Number(sess.video?.currentTime || t || 0)).toFixed(3),
+    start: hold.start,
+  });
+  try { sess.video?.play?.().catch(() => {}); } catch (_) {}
+  setTimeout(() => {
+    if (sess?.started && !sess?._userPaused) playNextDue(sess, sess.video?.currentTime || t || 0);
+  }, 0);
+  return true;
+}
+
+function brieflyHoldForCurrentCue(sess, expected, t) {
+  if (!sess || !expected || sess._startupGatePending || sess._phase === 'preparing' || sess._readMode) return false;
+  const now = Date.now();
+  const sourceKey = _segKey(expected);
+  const active = sess._briefCurrentCueHold;
+  if (active?.sourceKey === sourceKey) return true;
+  if (active) {
+    clearTimeout(active.timer);
+    sess._briefCurrentCueHold = null;
+  }
+  if (now - (sess._briefCurrentCueLastAt || 0) < BRIEF_CURRENT_CUE_HOLD_COOLDOWN_MS) return false;
+
+  const hold = {
+    sourceKey,
+    start: +(Number(expected.start || 0)).toFixed(3),
+    at: now,
+    timer: null,
+  };
+  sess._briefCurrentCueHold = hold;
+  sess._buffering = true;
+  sess._bufferingSince = now;
+  sess.weArePausing = true;
+  try { sess.video?.pause?.(); } catch (_) {}
+  showBufferIndicator('🎧 当前句无连续库存，优先恢复本地配音…', sess.video);
+  recordDiagnostic(sess, 'brief_current_cue_hold_started', {
+    currentTime: +(Number(t || 0)).toFixed(3),
+    start: hold.start,
+  });
+  hold.timer = setTimeout(() => {
+    if (sess?._briefCurrentCueHold !== hold) return;
+    sess._briefCurrentCueHold = null;
+    sess._briefCurrentCueLastAt = Date.now();
+    sess._buffering = false;
+    sess.weArePausing = false;
+    sess._bufferingSince = null;
+    rememberMissedRealtimeSegment(sess, expected, 'brief_current_cue_hold_expired');
+    recordDiagnostic(sess, 'brief_current_cue_hold_expired_keep_video_moving', {
+      currentTime: +(Number(sess.video?.currentTime || t || 0)).toFixed(3),
+      start: hold.start,
+    });
+    hideBufferIndicator();
+    try { sess.video?.play?.().catch(() => {}); } catch (_) {}
+  }, BRIEF_CURRENT_CUE_HOLD_MS);
+  return true;
+}
+
 function rememberPlayedSourceEvent(sess, seg, mode = 'audio') {
   if (!sess || !seg) return;
   sess._playedSourceEvents = sess._playedSourceEvents || [];
@@ -3574,7 +3656,10 @@ function _ensureLocalCacheLead(sess, t) {
         currentTime: +(t || 0).toFixed(3),
         maxSynthedTime: +(sess._maxSynthedTime || 0).toFixed(3),
       });
-      if (!sess._startupGatePending && sess._buffering && _segReadyAt(sess, sess.video.currentTime)) {
+      if (releaseBriefCurrentCueHoldIfReady(sess, sess.video?.currentTime || t,
+        'forward_local_cache_loaded')) {
+        // The short hold has its own exact-current-cue release path.
+      } else if (!sess._startupGatePending && sess._buffering && _segReadyAt(sess, sess.video.currentTime)) {
         sess._buffering = false;
         sess.weArePausing = false;
         sess._bufferingSince = null;
@@ -3608,6 +3693,8 @@ function ensurePlaybackWindowFromLocalCache(sess, t, reason = 'playback_window_m
           currentTime: +current.toFixed(3),
           count,
         });
+        releaseBriefCurrentCueHoldIfReady(sess, sess.video?.currentTime || current,
+          'playback_window_hydrated_from_local_cache');
         playNextDue(sess, sess.video?.currentTime || current);
       }
     })
@@ -3678,6 +3765,11 @@ function maybeBufferForSynthesis(sess, t) {
 
   // 该句还没合成 → 先催合成
   requestSynthAround(sess, t);
+
+  // 中后段也不能在“当前连续库存为零”时无条件地把画面一路放过去。这里最多
+  // 停 1.8 秒，只给 IndexedDB 当前句恢复/优先合成一个机会；超时就自动续播，
+  // 不会重现过去那种无限“正在补齐”。
+  if (brieflyHoldForCurrentCue(sess, expected, t)) return true;
 
   // “前五分钟重要”指优先补齐、提高重试频率，绝不等于前五分钟任意一条缺口
   // 都可以把视频暂停。旧条件只看 t < 5min：首批已经开始播放后，23 秒处遇到
@@ -5772,7 +5864,10 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
         primeStartupAudio(sess, video.currentTime || t0);
         const frontier = Math.max(...fresh.map(segmentTimelineEnd));
         sess._maxSynthedTime = Math.max(sess._maxSynthedTime, frontier);
-        if (!sess._startupGatePending && !sess._networkRecoveryPaused && sess._buffering
+        if (releaseBriefCurrentCueHoldIfReady(sess, video.currentTime || t0,
+          'streaming_progress_current_cue_ready')) {
+          // Exact current-cue hold released above.
+        } else if (!sess._startupGatePending && !sess._networkRecoveryPaused && sess._buffering
             && getLoadedDubQueueFrontier(sess, video.currentTime) > video.currentTime + 0.25) {
           sess._buffering = false; sess.weArePausing = false;
           hideBufferIndicator();
@@ -5947,7 +6042,10 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
           const frontier = Math.max(...got.map(segmentTimelineEnd));
           sess._maxSynthedTime = Math.max(sess._maxSynthedTime, frontier);
           // 若视频正因合成落后而暂停缓冲，且前沿已追上 → 自动恢复播放
-          if (!sess._startupGatePending && !sess._networkRecoveryPaused && sess._buffering
+          if (releaseBriefCurrentCueHoldIfReady(sess, video.currentTime || t0,
+            'stream_batch_current_cue_ready')) {
+            // Exact current-cue hold released above.
+          } else if (!sess._startupGatePending && !sess._networkRecoveryPaused && sess._buffering
               && getLoadedDubQueueFrontier(sess, video.currentTime) > video.currentTime + 0.25) {
             sess._buffering = false;
             sess.weArePausing = false;
