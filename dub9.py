@@ -2793,6 +2793,34 @@ def translate_chapters(chapters, target_lang=TARGET_LANG):
         return chapters
 
 
+def normalize_bilibili_chapter_title(timestamp, title):
+    """把平台自动补出的首章“无题”统一显示为“开始”。"""
+    text = str(title or '').strip()
+    try:
+        is_start = timestamp_to_seconds(str(timestamp)) == 0
+    except Exception:
+        is_start = False
+    placeholder = text.casefold()
+    if is_start and any(word in placeholder for word in (
+        '无题', '无标题', '未命名', 'untitled', 'no title',
+    )):
+        return '开始'
+    return text
+
+
+def normalize_bilibili_description_start_chapter(description):
+    """兼容已保存的旧简介，避免旧 ``0:00 无题`` 继续被投稿界面复用。"""
+    lines = []
+    for line in str(description or '').splitlines():
+        match = re.match(r'^(\s*((?:\d{1,2}:)?\d{1,2}:\d{2})\s+)(.*?)\s*$', line)
+        if match:
+            chapter_title = normalize_bilibili_chapter_title(match.group(2), match.group(3))
+            lines.append(match.group(1) + chapter_title)
+        else:
+            lines.append(line)
+    return '\n'.join(lines)
+
+
 def build_bilibili_description(src, title):
     """
     获取YouTube视频简介，提取其中的章节时间轴并翻译成中文，
@@ -2806,7 +2834,7 @@ def build_bilibili_description(src, title):
     lines.append('')
     lines.append('时间轴：')
     for ts, ch_title in chapters_zh:
-        lines.append(f"{ts} {ch_title}")
+        lines.append(f"{ts} {normalize_bilibili_chapter_title(ts, ch_title)}")
     return '\n'.join(lines)
 
 
@@ -3565,7 +3593,11 @@ def load_bilibili_desc(folder, base, title, meta=None):
         with open(desc_path, 'r', encoding='utf-8') as f:
             existing = f.read()
         if '时间轴：' in existing:
-            return existing
+            normalized = normalize_bilibili_description_start_chapter(existing)
+            if normalized != existing:
+                with open(desc_path, 'w', encoding='utf-8') as f:
+                    f.write(normalized)
+            return normalized
     src = (meta or {}).get('source_url')
     if src:
         rebuilt = build_bilibili_description(src, re.sub(r'^【[^】]*】\s*', '', (meta or {}).get('title') or title))
