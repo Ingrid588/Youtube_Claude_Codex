@@ -2584,6 +2584,81 @@ function compareDubSegments(a, b) {
 // 也不能直接用服务端返回的 duration/end：服务端会按 TTS 时长重算。解决办法是把
 // 字幕源事件键(_sourceKey)随请求带着走；服务端没返回时，前端按请求顺序补回来。
 const _segKey = (s) => makeSourceSegKey(s);
+
+function sourceEventStart(seg) {
+  return Number(seg?._sourceStart ?? seg?.start ?? 0);
+}
+
+function sourceEventEnd(seg) {
+  const start = sourceEventStart(seg);
+  const direct = Number(seg?._sourceEnd ?? seg?.end);
+  return Number.isFinite(direct) && direct >= start ? direct : segmentTimelineEnd(seg);
+}
+
+function sourceEventText(seg) {
+  return normalizeCaptionCompareText(seg?._sourceText || seg?.translation || seg?.text || '');
+}
+
+// 同一句可能在“旧本地缓存 → 新字幕时间轴 → 即时补救”之间各有一份对象。
+// 这些对象的 sourceKey 会因为旧版切句、服务端回填或缓存版本不同而变化；若仍只
+// 比 key，就会在第一份音频播完后把第二份当成下一句再播一次。这里的判定只认
+// 同一个原字幕时间窗且原文相同（或 key 完全相同），不按“相似文本”删除，也不
+// 跨时间窗删除，因此真正重复说的台词/副歌会保留。
+function isSameLogicalSourceEvent(a, b) {
+  if (!a || !b) return false;
+  const keyA = _segKey(a);
+  const keyB = _segKey(b);
+  if (keyA && keyB && keyA === keyB) return true;
+  const textA = sourceEventText(a);
+  const textB = sourceEventText(b);
+  if (!textA || textA !== textB) return false;
+  const startA = sourceEventStart(a);
+  const startB = sourceEventStart(b);
+  const endA = sourceEventEnd(a);
+  const endB = sourceEventEnd(b);
+  // 0.35 秒容纳播放器/缓存的毫秒舍入误差；结束时间允许更宽一点，因为
+  // 不同来源的 cue 边界会略有不同。两项都满足才是同一事件。
+  return Math.abs(startA - startB) <= 0.35 && Math.abs(endA - endB) <= 0.9;
+}
+
+function preferLogicalEventCandidate(current, candidate) {
+  const score = (seg) => {
+    let value = 0;
+    if (seg?.audio_b64 || seg?.audio_url || seg?.web_speech) value += 4;
+    if (seg?._persistedLocalAudio) value += 2;
+    if (seg?._sourceKey) value += 1;
+    value += Math.min(1, sourceEventText(seg).length / 10000);
+    return value;
+  };
+  return score(candidate) > score(current) ? candidate : current;
+}
+
+function dedupLogicalSourceEvents(segments, label = '队列') {
+  if (!Array.isArray(segments) || segments.length < 2) return segments || [];
+  const ordered = segments.slice().sort(compareDubSegments);
+  const out = [];
+  let removed = 0;
+  for (const seg of ordered) {
+    // Same source event can only occur in a narrow timestamp neighborhood.
+    // Search backwards a little instead of keeping an unbounded text history.
+    let duplicateAt = -1;
+    for (let i = out.length - 1; i >= 0; i--) {
+      if (sourceEventStart(seg) - sourceEventStart(out[i]) > 1.2) break;
+      if (isSameLogicalSourceEvent(out[i], seg)) { duplicateAt = i; break; }
+    }
+    if (duplicateAt < 0) {
+      out.push(seg);
+      continue;
+    }
+    out[duplicateAt] = preferLogicalEventCandidate(out[duplicateAt], seg);
+    removed++;
+  }
+  if (removed) {
+    console.warn(`[配音插件] ${label}移除了 ${removed} 个同一原字幕事件的重复对象（不删除真实重复台词）`);
+  }
+  return out;
+}
+
 function applySessionVoice(sess, segments) {
   return segments.map((seg) => {
     const manualVoice = getPreferredChineseVoice();
@@ -3641,13 +3716,26 @@ function playNextDue(sess, t) {
   // 真实重复台词（如歌词副歌）不受影响。
   if (sess._recentSpoken) {
     const sameEventDup = sess._recentSpoken.find((r) => {
-      if (!r?.key || r.key !== _segKey(best)) return false;
       if (r.videoId && sess.videoId && r.videoId !== sess.videoId) return false;
       if (r.seekEpoch != null && sess._seekEpoch != null && r.seekEpoch !== sess._seekEpoch) return false;
-      return true;
+      // Do not rely on sourceKey alone.  A local-cache row and a repaired row
+      // can represent the same source event with different keys.
+      return isSameLogicalSourceEvent(r, best);
     });
     if (sameEventDup) {
-      console.warn('[配音插件] 检测到同一字幕事件重复调度，跳过朗读：', best.start.toFixed(1) + 's', String(best.text || '').slice(0, 20));
+      console.warn('[配音插件] 检测到同一原字幕事件重复调度，跳过朗读：', {
+        start: best.start.toFixed(1),
+        text: String(best.text || '').slice(0, 40),
+        previousKey: sameEventDup.key || '',
+        candidateKey: _segKey(best),
+      });
+      recordDiagnostic(sess, 'logical_source_event_duplicate_suppressed', {
+        start: +(best.start || 0).toFixed(3),
+        end: +segmentTimelineEnd(best).toFixed(3),
+        text: String(best.text || '').slice(0, 100),
+        previousKey: sameEventDup.key || '',
+        candidateKey: _segKey(best),
+      });
       best.played = true;
       return playNextDue(sess, t);
     }
@@ -4181,7 +4269,11 @@ function buildSegmentsFromLocalDubRows(rows) {
       _sourceIndex: Number.isFinite(Number(value._sourceIndex)) ? Number(value._sourceIndex) : byKey.size,
     });
   }
-  return [...byKey.values()].sort(compareDubSegments);
+  // A video may have audio written by different extension revisions.  Those
+  // revisions can assign different cache keys to the same source cue; collapse
+  // only the same timestamp+source-text event before it becomes a subtitle
+  // timeline, otherwise it will be spoken twice after a cache-first start.
+  return dedupLogicalSourceEvents([...byKey.values()], '本地缓存时间轴');
 }
 
 async function inferCachedVoiceForVideo(videoId, segments = null, centerTime = 0) {
@@ -7030,6 +7122,9 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     // 字幕跟随配音段（curSegment）显示，合并后屏幕字幕自动变成整句。
     rawSegments = groupChineseSentences(rawSegments);
     rawSegments = pruneExcessYesFillers(rawSegments, '配音字幕');
+    // 只压缩同一原字幕事件在多个缓存/补救来源留下的副本。这里不按文本相似度、
+    // 不跨时间窗去重，真实重复的台词仍按原字幕分别配音。
+    rawSegments = dedupLogicalSourceEvents(rawSegments, '配音字幕时间轴');
     if (!rawSegments.length) return fail('字幕清理后无可配音正文');
     sess._hasMerged = before > rawSegments.length;
     console.log(`[配音插件] 按句合并：${before} 行 → ${rawSegments.length} 句`);
