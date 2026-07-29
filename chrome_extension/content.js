@@ -1939,6 +1939,20 @@ async function loadAudioOnce(sess, seg) {
         if (localAudioB64) {
           sess.audioCache[seg.audio_url] = audioFromBase64(localAudioB64);
         } else {
+          // A segment marked persisted should be playable without the network.
+          // Keep an explicit diagnostic when its IndexedDB lookup misses: this
+          // distinguishes a real connection problem from a cache-key/timeline
+          // mismatch instead of presenting both as "network unavailable".
+          if (seg._persistedLocalAudio) {
+            recordDiagnostic(sess, 'persisted_audio_lookup_missed_before_network_fallback', {
+              start: +(Number(seg.start || 0)).toFixed(3),
+              end: +segmentTimelineEnd(seg).toFixed(3),
+              sourceKey: _segKey(seg),
+              voice: seg.voice || '',
+            });
+            console.warn('[配音插件] 标记为本地已保存的音频未从 IndexedDB 读到；将记录后再尝试网络兜底：',
+              `${Number(seg.start || 0).toFixed(1)}s`);
+          }
           const urls = getDubAudioUrlCandidates(seg);
           let lastFetchErr = null;
           for (const url of urls) {
@@ -3224,6 +3238,55 @@ function _currentSegReadyAt(sess, t) {
   });
 }
 
+// A segment may be marked played before its Audio element actually starts.
+// If a seek, abort, or late cache hydration interrupts that hand-off, the old
+// flag can otherwise make an already-local current sentence permanently silent.
+// "played" alone is therefore not evidence that the listener heard it; only a
+// completed event in the active seek epoch is.
+function sourceEventCompletedInActiveEpoch(sess, seg) {
+  const epoch = sess?._seekEpoch || 0;
+  return !!(sess?._completedSourceEvents || []).some((event) =>
+    event?.seekEpoch === epoch && isSameLogicalSourceEvent(event, seg));
+}
+
+function rearmStrandedCurrentDubSegment(sess, expected, t) {
+  if (!sess || !expected || !Array.isArray(sess.dubSegments)) return null;
+  const candidate = sess.dubSegments.find((seg) => {
+    const end = segmentTimelineEnd(seg);
+    return (seg.audio_url || seg.web_speech) && !seg._invalidAudio
+      && end >= t - 0.5 && seg.start <= t + 0.5
+      && isSameLogicalSourceEvent(seg, expected);
+  });
+  if (!candidate || candidate === sess.curSegment || candidate === sess._pendingSeg) return candidate;
+  if (!candidate.played || sourceEventCompletedInActiveEpoch(sess, candidate)) return candidate;
+
+  // This is not a true repeated line: the same cue never reached onended in
+  // this playback epoch.  Make it eligible again and use the local cache
+  // before any repair request is considered.
+  candidate.played = false;
+  delete candidate._skippedStale;
+  delete candidate._logicalDuplicateSuppressed;
+  recordDiagnostic(sess, 'stranded_current_cached_segment_rearmed', {
+    currentTime: +(Number(t || 0)).toFixed(3),
+    start: +(Number(candidate.start || 0)).toFixed(3),
+    end: +segmentTimelineEnd(candidate).toFixed(3),
+    sourceKey: _segKey(candidate),
+  });
+  console.warn('[配音插件] 当前句已有本地/已合成音频但未真正播出，已立即重新排入播放：',
+    `${Number(candidate.start || 0).toFixed(1)}s`);
+  return candidate;
+}
+
+function segmentCountsTowardPlayableFrontier(sess, seg, now) {
+  if (!seg || (!seg.audio_url && !seg.web_speech) || seg._invalidAudio || seg._skippedStale) return false;
+  // A future/overlapping item marked played but never completed is a stranded
+  // item, not usable stock.  Counting it made the button claim a lead while
+  // the scheduler had nothing it could actually play.
+  if (!seg.played || seg === sess?.curSegment || seg === sess?._pendingSeg) return true;
+  if (segmentTimelineEnd(seg) < now - 0.5) return true;
+  return sourceEventCompletedInActiveEpoch(sess, seg);
+}
+
 function rememberPlayedSourceEvent(sess, seg, mode = 'audio') {
   if (!sess || !seg) return;
   sess._playedSourceEvents = sess._playedSourceEvents || [];
@@ -3296,8 +3359,7 @@ function rememberCompletedSpoken(sess, seg) {
 function _hasForwardDubCache(sess, t, windowSec = 45) {
   const end = t + windowSec;
   return !!sess.dubSegments?.some((s) => {
-    if (!s.audio_url && !s.web_speech) return false;
-    if (s._invalidAudio || s._skippedStale) return false;
+    if (!segmentCountsTowardPlayableFrontier(sess, s, t)) return false;
     const segEnd = segmentTimelineEnd(s);
     return segEnd >= t - 0.5 && s.start <= end;
   });
@@ -3370,7 +3432,7 @@ function getLoadedDubQueueFrontier(sess, t = null) {
   const now = t == null ? Number(sess?.video?.currentTime || 0) : Number(t || 0);
   let frontier = now;
   const sorted = (sess?.dubSegments || [])
-    .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
+    .filter((s) => segmentCountsTowardPlayableFrontier(sess, s, now))
     .sort(compareDubSegments);
   for (const seg of sorted) {
     const end = segmentTimelineEnd(seg);
@@ -3463,7 +3525,7 @@ function _ensureLocalCacheLead(sess, t) {
       const from = Math.max(0, t - 2);
       const to = t + LOCAL_CACHE_TARGET_SECONDS;
       const existingReady = new Set((sess.dubSegments || [])
-        .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
+        .filter((s) => segmentCountsTowardPlayableFrontier(sess, s, t))
         .map(_segKey));
       const candidates = sess._allSegments
         .filter((s) => {
@@ -3585,6 +3647,17 @@ function maybeBufferForSynthesis(sess, t) {
       refreshCurrentYTCaptionTimeline?.(sess, 'buffer_no_current_caption', t);
     }
     unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false;
+  }
+  const rearmed = rearmStrandedCurrentDubSegment(sess, expected, t);
+  if (rearmed && !sess.curAudio && !sess._audioLoading && rearmed.played === false) {
+    // Do not wait for the next sparse YouTube timeupdate.  This path only
+    // replays an already-synthesised/current local segment, so it neither
+    // sends Gemini nor waits for the TTS network path.
+    setTimeout(() => {
+      if (sess.started && !sess._userPaused && !sess.video?.paused) {
+        playNextDue(sess, sess.video.currentTime || t);
+      }
+    }, 0);
   }
   if (_currentSegReadyAt(sess, t)) { unbuffer(); hideBufferIndicator(); sess._synthMiss = 0; return false; }
   ensurePlaybackWindowFromLocalCache(sess, t, 'maybe_buffer_current_sentence_missing',
@@ -4280,22 +4353,34 @@ function localDubRowMatchesSegment(row, key, seg, requireAudio = true) {
   const sourceKey = seg._sourceKey || makeSourceSegKey(seg);
   const rowSourceKey = String(row._sourceKey || '');
   const keySourceKey = String(key || '').split('|')[1] || '';
+  const targetStart = Math.round((seg?.start || 0) * 1000);
+  const rowStart = Math.round((row._sourceStart ?? row.start ?? 0) * 1000);
+  const targetEnd = Number(seg?._sourceEnd ?? seg?.end);
+  const rowEnd = Number(row._sourceEnd ?? row.end);
+  const normalizedTargetText = normalizeLocalDubMatchText(seg?._sourceText || seg?.text || '');
+  const normalizedRowText = normalizeLocalDubMatchText(row?._sourceText || row?.text || '');
+  const sameStart = Math.abs(rowStart - targetStart) <= 150;
+  const sameEnd = Number.isFinite(targetEnd) && Number.isFinite(rowEnd)
+    && Math.abs(rowEnd - targetEnd) <= 0.8;
   if (rowSourceKey || keySourceKey) {
     // A source key is the cue identity, not merely a timestamp. Never allow a
     // former VTT mega-cue to impersonate one of the new json3 source events.
-    return (rowSourceKey || keySourceKey) === sourceKey;
+    if ((rowSourceKey || keySourceKey) === sourceKey) return true;
+
+    // YouTube may refresh the same subtitle cue with a slightly different
+    // source key after a player refresh (for example a tiny end-time change).
+    // A strict key-only check then makes already-persisted local audio look
+    // absent and unnecessarily falls through to the network.  Permit a
+    // fallback only when start, end, and the *raw source text* are all exact
+    // enough.  This deliberately does not use contains()/fuzzy text matching,
+    // so an old VTT mega-cue still cannot impersonate a json3 cue.
+    return sameStart && sameEnd && !!normalizedTargetText
+      && normalizedTargetText === normalizedRowText;
   }
-  const targetStart = Math.round((seg?.start || 0) * 1000);
-  const rowStart = Math.round((row._sourceStart ?? row.start ?? 0) * 1000);
-  const sameStart = Math.abs(rowStart - targetStart) <= 150;
   if (!sameStart) return false;
   const targetText = String(seg?.text || '').trim();
   const rowText = String(row._sourceText || row.text || '').trim();
   if (localDubTextLooksCompatible(rowText, targetText)) return true;
-  const targetEnd = Number(seg?._sourceEnd ?? seg?.end);
-  const rowEnd = Number(row._sourceEnd ?? row.end);
-  const sameEnd = Number.isFinite(targetEnd) && Number.isFinite(rowEnd)
-    && Math.abs(rowEnd - targetEnd) <= 0.8;
   // Only truly legacy rows without source identities may use this timestamp
   // fallback. New rows must match the exact source event above.
   return sameEnd;
@@ -5872,8 +5957,10 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
           // 时间轴对齐不在此做：视频恒定 1.0x，每句播放时压缩配音音频塞进
           // 自己的原始窗口（见 playNextDue），保证内容严格对齐、不累积漂移。
         }
+        // "最远已合成"必须按原字幕时间轴的结束点统计；TTS 文件自身的
+        // duration 只代表语音长度，拿它相加会把状态按钮显示成错误的库存时间。
         const maxSec = sess.dubSegments.reduce(
-          (max, s) => Math.max(max, s.start + (s.duration || 0)), 0);
+          (max, s) => Math.max(max, segmentTimelineEnd(s)), 0);
         if (sess._onChunkProgress) sess._onChunkProgress(maxSec);
         console.log(`[配音插件] 第${chunkNo}批返回${got.length}段`);
       }
@@ -7639,8 +7726,24 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       const continuousLead = Math.max(0, continuousTo - now);
       const generatedHms = formatHMS(upToSec);
       const continuousHms = formatHMS(continuousTo);
-      btn.textContent = `${icon}${modeTag}库存${Math.floor(continuousLead / 60)}分 · 生成→${generatedHms}`;
-      btn.title = `${verb}生成中：连续可播到 ${continuousHms}（库存 ${Math.round(continuousLead)} 秒）；最远已生成到 ${generatedHms}`;
+      const currentExpected = (sess._allSegments || []).find((seg) => {
+        const end = segmentTimelineEnd(seg);
+        return seg.start <= now + 0.5 && end >= now - 0.5;
+      });
+      const currentReady = !currentExpected || (sess.dubSegments || []).some((seg) => {
+        const end = segmentTimelineEnd(seg);
+        return segmentCountsTowardPlayableFrontier(sess, seg, now)
+          && end >= now - 0.5 && seg.start <= now + 0.5
+          && isSameLogicalSourceEvent(seg, currentExpected);
+      });
+      if (!currentReady && currentExpected) {
+        const gapAt = formatHMS(currentExpected.start || now);
+        btn.textContent = `${icon}${modeTag}断档→${gapAt} · 最远→${generatedHms}`;
+        btn.title = `${verb}当前句在 ${gapAt} 尚未可播；连续库存到 ${continuousHms}，最远已合成到 ${generatedHms}。插件正优先从本地缓存恢复该句，只有本地确实没有时才请求服务器。`;
+      } else {
+        btn.textContent = `${icon}${modeTag}库存${Math.floor(continuousLead / 60)}分 · 最远→${generatedHms}`;
+        btn.title = `${verb}生成中：从当前点连续可播到 ${continuousHms}（库存 ${Math.round(continuousLead)} 秒）；最远已合成到 ${generatedHms}`;
+      }
     };
 
     // 全部生成完成
