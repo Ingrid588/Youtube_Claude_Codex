@@ -2703,10 +2703,47 @@ def get_video_chapters(src):
     return chapters or extract_chapters((info or {}).get('description') or '')
 
 
+def _split_title_sort_prefix(title):
+    """拆出文件/播放列表排序号；只接受明确的 ``3-标题`` 形式，避免误伤原题的 ``5 Secret``。"""
+    text = str(title or '').strip()
+    m = re.match(r'^\s*#?(\d{1,4})\s*[-—–_]\s*(.+)$', text)
+    if not m:
+        return None, text
+    return m.group(1), m.group(2).strip()
+
+
+def strip_bilibili_title_sort_prefix(title, expected_index=None):
+    """删除仅用于本地排序的编号，保留标题中真实的数字。
+
+    `expected_index` 来自输出文件名（例如 ``3-..._dubbed.mp4``）。它允许清理旧
+    meta 中 Gemini 曾把 ``3-`` 改写成 ``3 标题`` 的残留；没有这个确切编号时，不会
+    删除 ``5 Secret Methods`` 这类原题自身以数字开头的标题。
+    """
+    _index, cleaned = _split_title_sort_prefix(title)
+    if _index:
+        return cleaned
+    text = str(title or '').strip()
+    if expected_index:
+        pattern = rf'^\s*#?{re.escape(str(expected_index))}(?:\s*[-—–_:：.]\s*|\s+)(?=\S)'
+        text = re.sub(pattern, '', text, count=1).strip()
+    return text
+
+
+def strip_bilibili_sort_prefix_from_display_title(title, expected_index=None):
+    """从含 ``【频道】`` 前缀的展示标题中清除内部排序号，且保留频道前缀。"""
+    text = str(title or '').strip()
+    channel_prefix = re.match(r'^(【[^】]*】\s*)', text)
+    if not channel_prefix:
+        return strip_bilibili_title_sort_prefix(text, expected_index)
+    return channel_prefix.group(1) + strip_bilibili_title_sort_prefix(
+        text[channel_prefix.end():], expected_index
+    )
+
+
 def translate_title(title, target_lang=TARGET_LANG):
     """把视频标题翻译成目标语言，用于B站投稿标题；失败时返回原标题"""
     # 播放列表/下载器附带的“3-”“#3-”是排序号，不是标题正文；B站标题中不保留。
-    title = re.sub(r'^\s*#?\d+\s*[-—–_]\s*', '', str(title or '')).strip()
+    title = strip_bilibili_title_sort_prefix(title)
     if not GEMINI_API_KEY:
         return title
     try:
@@ -2719,7 +2756,7 @@ def translate_title(title, target_lang=TARGET_LANG):
 原题：{title}"""
         response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
         result = (response.text or '').strip().strip('"\'')
-        return result.splitlines()[0].strip() if result else title
+        return strip_bilibili_title_sort_prefix(result.splitlines()[0]) if result else title
     except Exception:
         return title
 
@@ -2914,6 +2951,7 @@ def build_bilibili_meta(src, title_zh):
     生成B站投稿用的元数据：标题前缀【频道英文短词】、分区tid、推荐标签。
     返回dict：{'title':..., 'tid':..., 'tags':[...], 'category':...}
     """
+    title_zh = strip_bilibili_title_sort_prefix(title_zh)
     channel_tag = get_channel_short_tag(src)
     category = classify_bilibili_category(title_zh, src)
     config = BILIBILI_CATEGORY_CONFIG[category]
@@ -2937,11 +2975,15 @@ def build_bilibili_meta(src, title_zh):
 def refresh_bilibili_meta_for_upload(meta, fallback_title):
     """上传前按当前规则刷新旧 meta，避免旧文件继续沿用错误的分区、合集或频道标签。"""
     meta = dict(meta or {})
+    file_index, fallback_clean_title = _split_title_sort_prefix(fallback_title)
+    fallback_clean_title = strip_bilibili_title_sort_prefix(fallback_clean_title, file_index)
     src = meta.get('source_url')
     if not src:
         # 手动加入、没有在线来源信息的文件按用户规则归为情感类。
         config = BILIBILI_CATEGORY_CONFIG['情感']
-        title = meta.get('title') or fallback_title
+        title = strip_bilibili_sort_prefix_from_display_title(
+            meta.get('title') or fallback_clean_title, file_index
+        ) or fallback_clean_title
         return {
             **meta,
             'title': title[:80],
@@ -2953,7 +2995,8 @@ def refresh_bilibili_meta_for_upload(meta, fallback_title):
         }
 
     # meta 中的 title 已经是中文；去掉旧频道前缀后重新按最新规则加前缀、分区和合集。
-    title_zh = re.sub(r'^【[^】]*】\s*', '', meta.get('title') or fallback_title).strip() or fallback_title
+    title_zh = re.sub(r'^【[^】]*】\s*', '', meta.get('title') or fallback_clean_title).strip()
+    title_zh = strip_bilibili_title_sort_prefix(title_zh, file_index) or fallback_clean_title
     return build_bilibili_meta(src, title_zh)
 
 
