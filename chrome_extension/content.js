@@ -2726,6 +2726,16 @@ function dedupLogicalSourceEvents(segments, label = '队列') {
   return out;
 }
 
+// A successful HTTP response is not necessarily a complete batch: a server
+// can return audio for 7/8 sentences.  Treat the omitted source cue as a real
+// gap, rather than letting the producer advance and creating a deceptive
+// "far ahead but silent here" cache.
+function missingReturnedSourceSegments(expected, returned) {
+  const actual = (returned || []).filter((seg) => seg && (seg.audio_url || seg.audio_b64 || seg.web_speech));
+  return (expected || []).filter((wanted) =>
+    !actual.some((received) => isSameLogicalSourceEvent(wanted, received)));
+}
+
 function applySessionVoice(sess, segments) {
   return segments.map((seg) => {
     const manualVoice = getPreferredChineseVoice();
@@ -5689,35 +5699,29 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
   // 反而意味着每碎片都要重新发一次请求、重新判断一次相关术语，效率更低。改用大得多的
   // 批量，让服务器一次拿到更完整的上下文。普通模式（已经是中文，不用翻译）维持原来的
   // 小批量节奏不变，那条路径不存在"按批次重复开销"的问题，没必要跟着改。
-  // 默认只保留约十分钟前瞻，避免用户刚打开视频就生产大量不会收看的音频。
-  // 但播放位置超过全片三分之一后，用户继续看完的概率已经很高；此时改为持续生成到结尾，
-  // 让长视频后段不再因为固定十分钟窗口而断粮。拖动到三分之一以后也同样适用：此时
-  // 立即为用户实际要看的剩余部分铺好库存，而不会回头合成已跳过的前半段。
-  const FULL_REMAINDER_CACHE_START_RATIO = 1 / 3;
+  // 硬规则：先保证“从当前播放点连续可播”至少十五分钟。不能因为后面某批返回较快，
+  // 就跳过近处缺口去做远期库存；那种“最远很靠前、当前却没声音”的状态没有价值。
+  // 连续库存达到十五分钟以后才说明速度有富余，此时可以一次性做完剩余视频。
   const getSynthesisAheadSeconds = () => {
     const duration = Number(video.duration || 0);
     const current = Number(video.currentTime || 0);
-    const watchedFromHeadEnough = !!sess._startedFromBeginning && current >= REALTIME_START_CRITICAL_SECONDS;
-    const watchedThirdEnough = Number.isFinite(duration) && duration > 0
-      && current >= duration * FULL_REMAINDER_CACHE_START_RATIO;
-    if (!Number.isFinite(duration) || duration <= 0 || (!watchedFromHeadEnough && !watchedThirdEnough)) {
-      return current < REALTIME_START_CRITICAL_SECONDS
-        ? REALTIME_START_AHEAD_SECONDS
-        : REALTIME_NORMAL_AHEAD_SECONDS;
+    const continuousLead = getDubLeadSeconds(sess, current);
+    if (continuousLead < REALTIME_MIN_READY_SECONDS) {
+      return REALTIME_MIN_READY_SECONDS;
     }
+    if (!Number.isFinite(duration) || duration <= 0) return REALTIME_NORMAL_AHEAD_SECONDS;
     if (!sess._fullRemainderCaching) {
       sess._fullRemainderCaching = true;
-      sess._watchedFiveFullCacheLogged = watchedFromHeadEnough;
       const remaining = Math.max(0, duration - current);
-      recordDiagnostic(sess, 'watched_third_switch_to_full_remainder_cache', {
+      recordDiagnostic(sess, 'continuous_fifteen_minutes_switch_to_full_remainder_cache', {
         currentTime: +current.toFixed(3),
         duration: +duration.toFixed(3),
+        continuousLead: +continuousLead.toFixed(3),
         remaining: +remaining.toFixed(3),
-        reason: watchedFromHeadEnough ? 'played_from_start_over_5min' : 'watched_over_one_third',
       });
-      console.log(`[配音插件] 缓存策略升级：${watchedFromHeadEnough ? '从头播放已超过5分钟' : '已播放到三分之一以后'}，持续生成剩余 ${formatHMS(remaining)} 配音`);
+      console.log(`[配音插件] 连续库存已达到15分钟（${Math.round(continuousLead)}秒），开始生成剩余 ${formatHMS(remaining)} 配音`);
     }
-    return Math.max(REALTIME_NORMAL_AHEAD_SECONDS, duration - current + 1);
+    return duration - current + 1;
   };
   const STARTUP_PREROLL_MAX_SEGMENTS = STARTUP_PLAYABLE_SEGMENTS;
   let firstDone = false;
@@ -5769,8 +5773,12 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
       // sess.dubSegments，表现就是"切到新视频，配音内容却完全对不上"。
       // 必须同时确认 sess.videoId 没变过，才说明这个调用没有跨视频。
       if (!sess.started || sess.videoId !== videoId) return;
-      const chunkStartIndex = idx;
       if (isPrimary) {
+        // Playback may have advanced or sought while an earlier request was in
+        // flight.  Do not spend the main forward producer on already-past
+        // rows; the current playback window must be rebuilt first.
+        while (idx < queue.length && segmentTimelineEnd(queue[idx]) < video.currentTime - 1) idx++;
+        if (idx >= queue.length) return;
         while (idx < queue.length
             && queue[idx].start > video.currentTime + getSynthesisAheadSeconds()) {
           if (!sess.started || sess.videoId !== videoId) return;
@@ -5779,6 +5787,7 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
         }
         sess._longVideoWaiting = false;
       }
+      const chunkStartIndex = idx;
       let chunk;
       if (sess._subtitleMode === 'gemini') {
         // 首批小而快，尽快让第一段真正出声；后续再用大批量建立长视频缓存。
@@ -5950,6 +5959,41 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
         pauseForTranslateFailure(sess, got.translateFailedStarts);
         return;
       }
+      // A partial successful response used to be treated as a completed batch:
+      // its missing cue was forgotten while idx advanced into remote future
+      // batches.  Keep the producer on this batch until the nearest gap is
+      // filled (or playback has naturally moved past it); this enforces the
+      // fifteen-minute *continuous* stock rule rather than a farthest-time
+      // illusion.
+      const missingFromPrimaryChunk = isPrimary && Array.isArray(got)
+        ? missingReturnedSourceSegments(chunkWithVoice, got) : [];
+      const chunkRetryKey = chunkWithVoice[0] ? _segKey(chunkWithVoice[0]) : '';
+      if (missingFromPrimaryChunk.length) {
+        // Preserve the successful siblings immediately; next pass will read
+        // them from IndexedDB and only re-request the genuinely missing cues.
+        acceptProgress(got);
+        sess._primaryPartialChunkAttempts = sess._primaryPartialChunkAttempts || new Map();
+        const attempts = (sess._primaryPartialChunkAttempts.get(chunkRetryKey) || 0) + 1;
+        sess._primaryPartialChunkAttempts.set(chunkRetryKey, attempts);
+        recordDiagnostic(sess, 'primary_chunk_partial_response_held_for_near_gap', {
+          currentTime: +(Number(video.currentTime || 0)).toFixed(3),
+          chunkStart: +(Number(chunkWithVoice[0]?.start || 0)).toFixed(3),
+          expected: chunkWithVoice.length,
+          returned: got.length,
+          missing: missingFromPrimaryChunk.length,
+          firstMissingStart: +(Number(missingFromPrimaryChunk[0]?.start || 0)).toFixed(3),
+          attempts,
+        });
+        if (attempts === 1 || attempts % 10 === 0) {
+          console.warn(`[配音插件] 第${chunkNo}批仅返回 ${got.length}/${chunkWithVoice.length} 段；`
+            + `先补 ${missingFromPrimaryChunk.length} 个近处缺口，不推进远期库存（第${attempts}次）`);
+        }
+        idx = chunkStartIndex;
+        chunkNo = Math.max(0, chunkNo - 1);
+        await new Promise((resolve) => setTimeout(resolve, Math.min(5000, 250 + attempts * 350)));
+        continue;
+      }
+      if (chunkRetryKey) sess._primaryPartialChunkAttempts?.delete(chunkRetryKey);
       if (got && got.length) {
         const ct = video.currentTime;
         // 只有明显已经播过(用户手动快进)的段才标记已播；
