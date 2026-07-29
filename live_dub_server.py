@@ -37,6 +37,7 @@ _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(HERE, 'live_dub.log')
+DIAGNOSTIC_LOG_DIR = os.path.join(HERE, 'chrome_extension', 'diagnostic_logs')
 
 # 关键：用 pythonw 无窗口启动时 sys.stdout / sys.stderr 是 None，
 # 而 dub9.py 里大量 print() 会因此崩溃（导致每个请求500、插件显示"失败"）。
@@ -499,6 +500,39 @@ class PrivateNetworkMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(PrivateNetworkMiddleware)
 app.mount("/audio", StaticFiles(directory=LIVE_TEMP_DIR), name="audio")
+
+
+@app.post("/save_diagnostic_log")
+async def save_diagnostic_log(request: Request):
+    """接收插件当前播放轮次的诊断账本，固定写到插件目录，便于长视频复盘。"""
+    try:
+        data = await request.json()
+        payload = data.get('payload')
+        if not isinstance(payload, dict):
+            return JSONResponse(status_code=400, content={'ok': False, 'error': 'payload 必须是对象'})
+
+        requested = str(data.get('filename') or '').strip()
+        safe_name = os.path.basename(requested)
+        safe_name = re.sub(r'[\\/:*?"<>|]+', '_', safe_name).strip(' ._')
+        if not safe_name:
+            safe_name = f"{payload.get('videoId') or 'video'}_{int(time.time())}_diaglog.json"
+        if not safe_name.lower().endswith('.json'):
+            safe_name += '.json'
+        safe_name = safe_name[:180]
+
+        os.makedirs(DIAGNOSTIC_LOG_DIR, exist_ok=True)
+        path = os.path.join(DIAGNOSTIC_LOG_DIR, safe_name)
+        payload['savedAt'] = datetime.now(timezone.utc).isoformat()
+        payload['savedReason'] = str(data.get('reason') or 'session')[:80]
+        temp_path = path + '.tmp'
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(temp_path, path)
+        log.info('[诊断日志] 已保存 %s', path)
+        return {'ok': True, 'filename': safe_name, 'path': path}
+    except Exception as e:
+        log.exception('[诊断日志] 保存失败')
+        return JSONResponse(status_code=500, content={'ok': False, 'error': str(e)})
 
 
 class RawSeg(BaseModel):

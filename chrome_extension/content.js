@@ -358,6 +358,9 @@ function makeSession(video) {
     _rateLog: null,
     _diagnosticLog: [],
     _diagnosticCounts: {},
+    _missedRealtimeSegments: new Map(),
+    _completedSourceEvents: [],
+    _diagnosticLogFilename: '',
     _tabRecording: false,   // 是否已经通过 tabCapture 在录这个标签页的音频（见 startTabAudioRecording）
   };
 }
@@ -2119,15 +2122,7 @@ function exportRateLog(sess) {
 
 function exportDiagnosticLog(sess) {
   if (!sess || (!sess._diagnosticLog?.length && !Object.keys(sess._diagnosticCounts || {}).length)) return;
-  const payload = {
-    videoId: sess.videoId,
-    title: sess.title,
-    videoUrl: location.href,
-    generatedAt: new Date().toISOString(),
-    counts: sess._diagnosticCounts || {},
-    entries: sess._diagnosticLog || [],
-    playedSourceEvents: sess._playedSourceEvents || [],
-  };
+  const payload = buildDiagnosticLogPayload(sess);
   try {
     downloadBlob(
       new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
@@ -2135,6 +2130,64 @@ function exportDiagnosticLog(sess) {
     );
   } catch (e) {
     console.warn('[配音插件] 导出诊断日志失败', e);
+  }
+}
+
+function buildDiagnosticLogPayload(sess) {
+  const missedRows = getMissedRealtimeDisplayRows(sess);
+  return {
+    schemaVersion: 2,
+    videoId: sess.videoId,
+    title: sess.title,
+    videoUrl: location.href,
+    generatedAt: new Date().toISOString(),
+    counts: sess._diagnosticCounts || {},
+    entries: sess._diagnosticLog || [],
+    playedSourceEvents: sess._playedSourceEvents || [],
+    missedRealtimeRows: missedRows,
+    subtitleStats: {
+      platformRawEvents: sess._sourceRawSubtitles?.length || 0,
+      processedTimelineEvents: sess._allSegments?.length || 0,
+      queueEvents: sess.dubSegments?.length || 0,
+      completedEventsInCurrentRun: sess._completedSourceEvents?.length || 0,
+      missedEventsInCurrentRun: missedRows.length,
+    },
+  };
+}
+
+function getDiagnosticLogFilename(sess) {
+  if (sess._diagnosticLogFilename) return sess._diagnosticLogFilename;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const prefix = buildExportFilenamePrefix(sess).replace(/[\\/:*?"<>|]/g, '_');
+  sess._diagnosticLogFilename = `${prefix.slice(0, 80) || sess.videoId || 'video'}_${stamp}_diaglog.json`;
+  return sess._diagnosticLogFilename;
+}
+
+async function persistDiagnosticLogToLocalPluginFolder(sess, reason = 'session') {
+  if (!sess || sess._diagnosticLogSaving) return;
+  sess._diagnosticLogSaving = true;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), 4000) : null;
+  try {
+    const resp = await fetch('http://127.0.0.1:8765/save_diagnostic_log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: getDiagnosticLogFilename(sess),
+        reason,
+        payload: buildDiagnosticLogPayload(sess),
+      }),
+      signal: controller?.signal,
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const result = await resp.json();
+    console.log('[配音插件] 诊断日志已保存到插件目录：', result.path || result.filename || 'diagnostic_logs');
+  } catch (e) {
+    // 本地服务不是实时配音的必要条件；保存失败不能影响正在播放的视频。
+    console.warn('[配音插件] 未能保存本地诊断日志（不影响配音）', e?.message || e);
+  } finally {
+    if (timer) clearTimeout(timer);
+    sess._diagnosticLogSaving = false;
   }
 }
 
@@ -2972,16 +3025,20 @@ function rememberMissedRealtimeSegment(sess, seg, reason = 'not_ready') {
 
 function getMissedRealtimeDisplayRows(sess) {
   if (!sess?._missedRealtimeSegments?.size) return [];
-  const playedKeys = new Set((sess._playedSourceEvents || [])
-    .filter((item) => item?.mode === 'audio' || item?.mode === 'web_speech')
-    .map((item) => item.sourceKey));
+  // 不能只查 _playedSourceEvents：它为了控制内存只保留最近 2000 条，四小时
+  // 视频到结尾时，开头已成功补播的句子会被历史记录挤掉，旧代码便把它们又误报为
+  // “未显示”。完成账本只用于当前一次播放，既不会跨 run 累积，也会在补播成功时
+  // 主动删掉对应漏句。
+  const completedKeys = new Set((sess._completedSourceEvents || []).map((item) => item.sourceKey));
+  const completedEvents = sess._completedSourceEvents || [];
   const all = Array.isArray(sess._allSegments) ? sess._allSegments : [];
   const lineByKey = new Map(all.map((seg, index) => [
     _segKey(seg),
     Number.isFinite(Number(seg._sourceIndex)) ? Number(seg._sourceIndex) + 1 : index + 1,
   ]));
   return [...sess._missedRealtimeSegments.values()]
-    .filter((item) => item?.key && !playedKeys.has(item.key))
+    .filter((item) => item?.key && !completedKeys.has(item.key)
+      && !completedEvents.some((event) => isSameLogicalSourceEvent(item, event)))
     .map((item) => ({
       ...item,
       line: Number.isFinite(Number(item.sourceIndex))
@@ -3068,6 +3125,9 @@ function showMissedRealtimeSummary(sess) {
       text: item.text,
     })),
   });
+  // 漏句报告不是只留在 Console；本机 live_dub_server 运行时会写入插件目录。
+  // 请求异步且有短超时，保存失败绝不阻塞视频收尾。
+  void persistDiagnosticLogToLocalPluginFolder(sess, 'missed_realtime_summary');
 }
 
 function isRealtimeSubtitleSuppressed(sess, seg) {
@@ -3200,6 +3260,37 @@ function rememberCompletedSpoken(sess, seg) {
     seekEpoch: sess._seekEpoch || 0,
   });
   if (sess._recentSpoken.length > 6) sess._recentSpoken.shift();
+
+  const completed = {
+    sourceKey: _segKey(seg),
+    seekEpoch: sess._seekEpoch || 0,
+    start: +(+seg.start || 0).toFixed(3),
+    end: +(segmentTimelineEnd(seg) || 0).toFixed(3),
+    text: String(seg.translation || seg.text || ''),
+  };
+  sess._completedSourceEvents = sess._completedSourceEvents || [];
+  sess._completedSourceEvents.push(completed);
+  // 只需要保留最近的事件以防缓存/修复路径的 sourceKey 略有不同；真正的漏句
+  // 会在下方从 Map 中立即删除，不依赖这份有限历史来得出最终统计。
+  if (sess._completedSourceEvents.length > 512) sess._completedSourceEvents.shift();
+
+  const missed = sess._missedRealtimeSegments;
+  if (missed?.size) {
+    let recovered = 0;
+    for (const [key, item] of missed) {
+      if (key === completed.sourceKey || isSameLogicalSourceEvent(item, completed)) {
+        missed.delete(key);
+        recovered++;
+      }
+    }
+    if (recovered) {
+      recordDiagnostic(sess, 'realtime_missed_sentence_recovered', {
+        count: recovered,
+        sourceKey: completed.sourceKey,
+        start: completed.start,
+      });
+    }
+  }
 }
 
 function _hasForwardDubCache(sess, t, windowSec = 45) {
@@ -3704,6 +3795,24 @@ function playNextDue(sess, t) {
     // 决定——只有它真正暂停视频缓冲时才显示提示（用户要求：不暂停就不提示）。
     ensurePlaybackWindowFromLocalCache(sess, t, 'play_scheduler_no_due_segment', 5, LOCAL_CACHE_TARGET_SECONDS);
     return;
+  }
+  // 缓存命中、即时合成和“补救”可能为同一原字幕事件各插入一份对象。最近 6
+  // 句的 _recentSpoken 只能拦住最紧邻的副本；长视频中异步回填晚到时，重复对象
+  // 可能隔了一段调度才出现。只要同一次 seek 已完整播过同一“时间窗+原文”事件，
+  // 就绝不再占一次播放位置；真正重复的台词因时间窗不同不会命中。
+  const completedLogicalDuplicate = (sess._completedSourceEvents || []).find((event) =>
+    event?.seekEpoch === (sess._seekEpoch || 0) && isSameLogicalSourceEvent(event, best));
+  if (completedLogicalDuplicate) {
+    best.played = true;
+    best._logicalDuplicateSuppressed = true;
+    recordDiagnostic(sess, 'completed_logical_source_event_duplicate_suppressed', {
+      start: +(best.start || 0).toFixed(3),
+      end: +segmentTimelineEnd(best).toFixed(3),
+      sourceKey: _segKey(best),
+      completedSourceKey: completedLogicalDuplicate.sourceKey || '',
+      text: String(best.translation || best.text || '').slice(0, 100),
+    });
+    return playNextDue(sess, t);
   }
   // 二道防线：即使字幕解析阶段的滚动去重（dedupRollingCaptions）漏掉了某条，
   // 这里再挡一次——文字完全相同的段，直接当重复跳过（标记已播但不出声）。
@@ -7381,6 +7490,16 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     sess._startedFromBeginning = !sess._resumeFromCurrentPosition;
     sess._watchedFiveFullCacheLogged = false;
     sess._knownFullLocalCache = false;
+    // 每一次点击“配音”都是一轮独立播放。此前漏句 Map 和诊断计数留在同一个
+    // video session 中，用户反复从头测试四小时视频时会把几轮旧漏句累加到本轮
+    // 结束报告里，出现“几百句未显示”的假象。必须早于监听器挂载清零，保证
+    // 启动阶段的诊断也属于这一轮。
+    sess._missedRealtimeSegments = new Map();
+    sess._completedSourceEvents = [];
+    sess._playedSourceEvents = [];
+    sess._diagnosticLog = [];
+    sess._diagnosticCounts = {};
+    sess._diagnosticLogFilename = '';
     // 朗读：静音原视频（朗读音频独立全音量）；配音：压低原音
     video.volume = sess._readMode ? 0 : origVolume;
     // 保留 CC：不自动关闭，由用户手动控制。配音时插件自绘中文覆盖层；朗读时显示原生 CC。
