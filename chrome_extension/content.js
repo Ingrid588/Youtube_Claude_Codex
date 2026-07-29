@@ -6252,13 +6252,12 @@ function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refre
   const title = sess.title;
   const run = async () => {
     const attempts = new Map();
-    const deferredUntil = new Map();
+    const heldNearGapKeys = new Set();
     while (sess.started && sess.videoId === videoId) {
       const now = Number(sess.video?.currentTime || fromTime || 0);
       const duration = Number(sess.video?.duration || 0);
-      const watchedFromHeadEnough = !!sess._startedFromBeginning && now >= REALTIME_START_CRITICAL_SECONDS;
-      const watchedThirdEnough = duration > 0 && now >= duration / 3;
-      const fullRemainder = watchedFromHeadEnough || watchedThirdEnough;
+      const continuousLead = getDubLeadSeconds(sess, now);
+      const fullRemainder = continuousLead >= REALTIME_MIN_READY_SECONDS;
       const horizon = fullRemainder && duration > 0 ? duration + 1 : now + 15 * 60;
       const have = new Set((sess.dubSegments || [])
         .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
@@ -6266,7 +6265,6 @@ function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refre
       const candidates = (sess._allSegments || [])
         .filter((s) => segmentTimelineEnd(s) >= now - 0.5 && s.start <= horizon)
         .filter((s) => !have.has(_segKey(s)) && !sess._synthInFlight?.has(_segKey(s)))
-        .filter((s) => (deferredUntil.get(_segKey(s)) || 0) <= Date.now())
         .sort((a, b) => a.start - b.start);
       if (!candidates.length) {
         const sourceEnd = getCaptionTimelineEnd(sess._allSegments);
@@ -6280,8 +6278,11 @@ function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refre
         continue;
       }
 
-      // 先处理离播放点最近的一小批；后续批次再按时间顺序排入，避免单次请求过大。
-      const batch = candidates.slice(0, 16);
+      // 已发生过“部分返回”的近处缺口，必须先单独补它，不能夹带新的远期句子。
+      // 没有缺口时仍用小批量并发，快速铺满前十五分钟库存。
+      const heldCandidates = !fullRemainder
+        ? candidates.filter((seg) => heldNearGapKeys.has(_segKey(seg))) : [];
+      const batch = heldCandidates.length ? heldCandidates.slice(0, 1) : candidates.slice(0, 16);
       const keys = batch.map(_segKey);
       sess._synthInFlight = sess._synthInFlight || new Set();
       keys.forEach((key) => sess._synthInFlight.add(key));
@@ -6318,6 +6319,23 @@ function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refre
         }
         sess.dubSegments.sort(compareDubSegments);
         markReturnedAudioPersisted(sess, got, current);
+        const missingFromBatch = missingReturnedSourceSegments(requested, got);
+        if (missingFromBatch.length) {
+          missingFromBatch.forEach((seg) => heldNearGapKeys.add(_segKey(seg)));
+          recordDiagnostic(sess, 'timeline_producer_partial_response_held_for_near_gap', {
+            reason,
+            currentTime: +current.toFixed(3),
+            expected: requested.length,
+            returned: got.length,
+            missing: missingFromBatch.length,
+            firstMissingStart: +(Number(missingFromBatch[0]?.start || 0)).toFixed(3),
+            continuousLead: +continuousLead.toFixed(3),
+          });
+          console.warn(`[配音插件] 刷新时间轴生产器仅返回 ${got.length}/${requested.length} 段；`
+            + '先锁定近处缺口，不生成更远库存');
+        } else {
+          batch.forEach((seg) => heldNearGapKeys.delete(_segKey(seg)));
+        }
         const frontier = Math.max(...got.map(segmentTimelineEnd));
         sess._maxSynthedTime = Math.max(sess._maxSynthedTime || 0, frontier);
         if (sess._onChunkProgress) sess._onChunkProgress(sess._maxSynthedTime);
@@ -6330,9 +6348,9 @@ function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refre
         for (const key of keys) {
           const count = (attempts.get(key) || 0) + 1;
           attempts.set(key, count);
-          // 不让一批临时网络错误把后续十五分钟库存全部堵住；失败句子在短间隔后
-          // 重新进入候选队列，当前位置还会由 requestSynthAround 单独优先补救。
-          deferredUntil.set(key, Date.now() + Math.min(8000, 800 + count * 800));
+          // 连续库存尚未达标时，失败的近处句子就是生产器的锚点；不能把它延后
+          // 然后跑去生产更远的句子。catch 后已有短等待，下一轮会先单独重试此键。
+          heldNearGapKeys.add(key);
         }
         recordDiagnostic(sess, 'timeline_refresh_producer_batch_failed', {
           reason, currentTime: +(Number(sess.video?.currentTime || now)).toFixed(3),
