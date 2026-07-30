@@ -469,7 +469,7 @@ function recordDiagnostic(sess, type, detail = {}) {
     ...detail,
   };
   sess._diagnosticLog.push(entry);
-  if (sess._diagnosticLog.length > 500) sess._diagnosticLog.shift();
+  if (sess._diagnosticLog.length > 2000) sess._diagnosticLog.shift();
   console.log('[配音插件][诊断]', entry);
 }
 
@@ -512,6 +512,11 @@ function getAdaptiveChunkSize(sess, chunkNo) {
   const current = Number(sess?.video?.currentTime || 0);
   if (current < REALTIME_START_CRITICAL_SECONDS && !risk.troubleSignals) {
     return chunkNo <= 1 ? 12 : 18;
+  }
+  const urgentInventory = !!sess?._inventoryLowWaterUntil
+    && Date.now() < sess._inventoryLowWaterUntil;
+  if (urgentInventory && !risk.troubleSignals) {
+    return chunkNo === 0 ? 12 : 16;
   }
   if (risk.tailRisk && !risk.troubleSignals) {
     if (!sess._tailInventoryAccelerationLogged) {
@@ -2615,6 +2620,10 @@ const REALTIME_START_CRITICAL_SECONDS = 5 * 60;
 const REALTIME_MIN_READY_SECONDS = 15 * 60;
 const REALTIME_NORMAL_AHEAD_SECONDS = REALTIME_MIN_READY_SECONDS;
 const REALTIME_START_AHEAD_SECONDS = 15 * 60;
+const REALTIME_INVENTORY_AUDIT_INTERVAL_MS = 1000;
+const REALTIME_INVENTORY_LOG_INTERVAL_MS = 15000;
+const REALTIME_INVENTORY_REFRESH_COOLDOWN_MS = 12000;
+const REALTIME_INVENTORY_ACCELERATION_MS = 12000;
 const AUTO_DOWNLOAD_SIDECARS = false; // 暂停自动下载 ASS/SRT/变速JSON；手动导出按钮仍可用
 
 function makeSourceSegKey(seg) {
@@ -3600,6 +3609,106 @@ function initialPlayedStateForInsertedSegment(sess, seg, t) {
 
 const LOCAL_CACHE_LOW_WATER_SECONDS = REALTIME_MIN_READY_SECONDS;
 const LOCAL_CACHE_TARGET_SECONDS = 25 * 60;
+
+function readyDubKeySet(sess, now = 0) {
+  return new Set((sess?.dubSegments || [])
+    .filter((s) => segmentCountsTowardPlayableFrontier(sess, s, now))
+    .map(_segKey));
+}
+
+function firstMissingDubSegmentInWindow(sess, t, windowSec = REALTIME_MIN_READY_SECONDS) {
+  if (!sess?.started || !Array.isArray(sess._allSegments)) return null;
+  const current = Number(t || sess.video?.currentTime || 0);
+  const horizon = current + Number(windowSec || REALTIME_MIN_READY_SECONDS);
+  const have = readyDubKeySet(sess, current);
+  return sess._allSegments
+    .filter((s) => segmentTimelineEnd(s) >= current - 0.5 && s.start <= horizon)
+    .sort(compareDubSegments)
+    .find((s) => !have.has(_segKey(s)) && !sess._synthInFlight?.has(_segKey(s))) || null;
+}
+
+function captionTimelineNeedsInventoryRefresh(sess, t, windowSec = REALTIME_MIN_READY_SECONDS) {
+  if (!sess?.started || sess._readMode || !Array.isArray(sess._allSegments) || !sess._allSegments.length) return false;
+  if (!IS_YOUTUBE || typeof refreshCurrentYTCaptionTimeline !== 'function') return false;
+  const duration = Number(sess.video?.duration || 0);
+  if (!Number.isFinite(duration) || duration < 20 * 60) return false;
+  const sourceEnd = getCaptionTimelineEnd(sess._allSegments);
+  const tailGap = Math.max(0, duration - sourceEnd);
+  if (tailGap < Math.max(15 * 60, duration * 0.12)) return false;
+  const current = Number(t || sess.video?.currentTime || 0);
+  const requiredEnd = Math.min(duration - 30, current + Number(windowSec || REALTIME_MIN_READY_SECONDS));
+  return sourceEnd < requiredEnd;
+}
+
+function auditRealtimeInventory(sess, reason = 'timer') {
+  if (!sess?.started || sess._readMode || !Array.isArray(sess._allSegments) || !sess._allSegments.length) return;
+  if (sess._phase === 'preparing') return;
+  const current = Number(sess.video?.currentTime || 0);
+  if (!Number.isFinite(current)) return;
+
+  const lead = getDubLeadSeconds(sess, current);
+  const sourceEnd = getCaptionTimelineEnd(sess._allSegments);
+  const needsTimelineRefresh = captionTimelineNeedsInventoryRefresh(sess, current);
+  if (needsTimelineRefresh) {
+    const nowMs = Date.now();
+    if (nowMs - (sess._lastInventoryCaptionRefreshAt || 0) >= REALTIME_INVENTORY_REFRESH_COOLDOWN_MS) {
+      sess._lastInventoryCaptionRefreshAt = nowMs;
+      recordDiagnostic(sess, 'inventory_caption_timeline_refresh_requested', {
+        reason,
+        currentTime: +current.toFixed(3),
+        sourceEnd: +sourceEnd.toFixed(3),
+        continuousLead: +lead.toFixed(3),
+      });
+      refreshCurrentYTCaptionTimeline?.(sess, `inventory_${reason}`, current);
+    }
+  }
+
+  const firstGap = firstMissingDubSegmentInWindow(sess, current, REALTIME_MIN_READY_SECONDS);
+  if (!firstGap && !needsTimelineRefresh) return;
+  if (Date.now() - (sess._lastRealtimeInventoryActionAt || 0) < 750) return;
+  sess._lastRealtimeInventoryActionAt = Date.now();
+  sess._inventoryLowWaterUntil = Date.now() + REALTIME_INVENTORY_ACCELERATION_MS;
+  if (sess._phase === 'done') {
+    sess._phase = 'dubbing';
+    sess._allDone = false;
+    sess._synthDone = false;
+  }
+
+  const nowMs = Date.now();
+  if (nowMs - (sess._lastInventoryAuditLogAt || 0) >= REALTIME_INVENTORY_LOG_INTERVAL_MS) {
+    sess._lastInventoryAuditLogAt = nowMs;
+    recordDiagnostic(sess, 'realtime_inventory_low_water', {
+      reason,
+      currentTime: +current.toFixed(3),
+      continuousLead: +lead.toFixed(3),
+      sourceEnd: +sourceEnd.toFixed(3),
+      firstGapStart: firstGap ? +(firstGap.start || 0).toFixed(3) : null,
+      targetLead: REALTIME_MIN_READY_SECONDS,
+      action: needsTimelineRefresh ? 'refresh_caption_and_fill_near_gap' : 'fill_near_gap',
+    });
+    console.warn('[配音插件] 当前点后15分钟库存不足，优先补近处缺口', {
+      reason,
+      current: +current.toFixed(1),
+      continuousLead: +lead.toFixed(1),
+      firstGap: firstGap ? +Number(firstGap.start || 0).toFixed(1) : null,
+      sourceEnd: +sourceEnd.toFixed(1),
+    });
+  }
+
+  ensurePlaybackWindowFromLocalCache(sess, current, 'inventory_low_water',
+    current < REALTIME_START_CRITICAL_SECONDS ? 2 : 12,
+    LOCAL_CACHE_TARGET_SECONDS);
+  const anchor = firstGap ? Math.max(current, Number(firstGap.start || current)) : current;
+  requestSynthAround(sess, anchor);
+  launchTimelineProducer(sess, current, `inventory_${reason}`);
+  if (!sess._startupGatePending && sess._buffering && getLoadedDubQueueFrontier(sess, current) > current + 0.25) {
+    sess._buffering = false;
+    sess.weArePausing = false;
+    sess._bufferingSince = null;
+    hideBufferIndicator();
+    try { sess.video.play().catch(() => {}); } catch (_) {}
+  }
+}
 
 function _ensureLocalCacheLead(sess, t) {
   if (!sess?.started || !sess.videoId || !Array.isArray(sess._allSegments)) return;
@@ -6267,6 +6376,11 @@ function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refre
         .filter((s) => !have.has(_segKey(s)) && !sess._synthInFlight?.has(_segKey(s)))
         .sort((a, b) => a.start - b.start);
       if (!candidates.length) {
+        if (captionTimelineNeedsInventoryRefresh(sess, now)) {
+          refreshCurrentYTCaptionTimeline?.(sess, 'producer_inventory_horizon', now);
+          await new Promise((resolve) => setTimeout(resolve, 700));
+          continue;
+        }
         const sourceEnd = getCaptionTimelineEnd(sess._allSegments);
         if (duration > sourceEnd + Math.max(5 * 60, duration * 0.12)
             && now >= sourceEnd - 10) {
@@ -6282,7 +6396,10 @@ function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refre
       // 没有缺口时仍用小批量并发，快速铺满前十五分钟库存。
       const heldCandidates = !fullRemainder
         ? candidates.filter((seg) => heldNearGapKeys.has(_segKey(seg))) : [];
-      const batch = heldCandidates.length ? heldCandidates.slice(0, 1) : candidates.slice(0, 16);
+      const batchLimit = !fullRemainder
+        ? (continuousLead < 2 * 60 ? 24 : (continuousLead < 10 * 60 ? 20 : 16))
+        : 16;
+      const batch = heldCandidates.length ? heldCandidates.slice(0, 1) : candidates.slice(0, batchLimit);
       const keys = batch.map(_segKey);
       sess._synthInFlight = sess._synthInFlight || new Set();
       keys.forEach((key) => sess._synthInFlight.add(key));
@@ -7516,6 +7633,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
         try { sess.video.volume = expectedVolume; } catch (_) {}
       }
       const t = video.currentTime;
+      auditRealtimeInventory(sess, 'timeupdate');
       // 看门狗：curAudio 已结束/被异常暂停（非我方主动暂停、非缓冲）却没被清，
       // 会让 playNextDue 永久 early-return → 后续全程没声音。这里兜底清掉并恢复调度。
       // 还加了"早就该播完却还没结束"的超时判断（_curAudioDeadline）——有些卡死场景
@@ -8263,6 +8381,14 @@ if (IS_YOUTUBE) {
       // 本来就没人说话）不会误触发——那种情况窗口内没有缺失句。动态冷却防止
       // 服务器持续故障时连环触发。
       const ws = _lastActiveSess;
+      if (ws && ws.started && !ws._readMode && (ws._phase === 'dubbing' || ws._phase === 'done')
+          && !ws._userPaused && ws._allSegments?.length) {
+        const now = Date.now();
+        if (now - (ws._lastRealtimeInventoryAuditAt || 0) >= REALTIME_INVENTORY_AUDIT_INTERVAL_MS) {
+          ws._lastRealtimeInventoryAuditAt = now;
+          auditRealtimeInventory(ws, 'watchdog');
+        }
+      }
       // 完整缓存（绿色按钮）仍然只是“生成完成”，不是播放调度可以停止。
       // 旧条件排除了 phase=done，导致缓存播放在中途卡住时看门狗永远不再介入。
       if (ws && ws.started && !ws._readMode && (ws._phase === 'dubbing' || ws._phase === 'done')
