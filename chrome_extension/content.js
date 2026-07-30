@@ -1144,6 +1144,57 @@ function mergeOverlappingText(a, b) {
   return k > 0 ? a + b.slice(k) : a + b;
 }
 
+function rollingCueMatchKind(prev, seg, maxGap = 1.5) {
+  if (!prev || !seg) return '';
+  const gap = Number(seg.start || 0) - Number(prev.end ?? prev.start ?? 0);
+  if (gap > maxGap) return '';
+  const prevText = String(prev.text || '');
+  const segText = String(seg.text || '');
+  const prevNorm = normalizeCaptionCompareText(prevText);
+  const segNorm = normalizeCaptionCompareText(segText);
+  if (!prevNorm || !segNorm) return '';
+  if (segText === prevText || segNorm === prevNorm) return 'same';
+  if (isCueLineExpansion(prev, seg) || isNormalizedPrefix(prevText, segText, 4)) return 'seg_expands_prev';
+  if (isCueLineExpansion(seg, prev) || prevText.startsWith(segText) || isNormalizedPrefix(segText, prevText, 4)) {
+    return 'prev_expands_seg';
+  }
+  return '';
+}
+
+function removeRecentCuesCoveredBy(out, keepIndex) {
+  const keep = out[keepIndex];
+  const keepNorm = normalizeCaptionCompareText(keep?.text || '');
+  if (!keep || keepNorm.length < 4) return 0;
+  let removed = 0;
+  for (let i = out.length - 1; i > keepIndex; i--) {
+    const seg = out[i];
+    const segNorm = normalizeCaptionCompareText(seg?.text || '');
+    if (!segNorm || segNorm.length < 4) continue;
+    const near = Number(seg.start || 0) - Number(keep.start || 0) <= 10
+      && Number(seg.end || seg.start || 0) <= Number(keep.end || keep.start || 0) + 1.5;
+    if (near && (keepNorm.includes(segNorm) || segNorm.includes(keepNorm))) {
+      out.splice(i, 1);
+      removed++;
+    }
+  }
+  return removed;
+}
+
+function findRecentRollingDuplicateIndex(out, seg) {
+  const segNorm = normalizeCaptionCompareText(seg?.text || '');
+  if (!segNorm || segNorm.length < 4) return -1;
+  for (let i = out.length - 1; i >= 0; i--) {
+    const prev = out[i];
+    const gap = Number(seg.start || 0) - Number(prev.end ?? prev.start ?? 0);
+    if (gap > 6) break;
+    const prevNorm = normalizeCaptionCompareText(prev?.text || '');
+    if (!prevNorm || prevNorm.length < 4) continue;
+    const kind = rollingCueMatchKind(prev, seg, 6);
+    if (kind) return i;
+  }
+  return -1;
+}
+
 // 去除"滚动字幕"渐进重复：YouTube 自动字幕（含自动翻译轨）逐字/逐行滚动刷新时，
 // 相邻 cue 常是同一句话的"渐进版本"——前一条是后一条的文本前缀（或反过来，
 // 后一条是前一条被截断的残留），时间窗紧贴甚至重叠。直接顺序朗读会把同一句读
@@ -1153,25 +1204,30 @@ function mergeOverlappingText(a, b) {
 function dedupRollingCaptions(segments) {
   if (!segments || segments.length < 2) return segments;
   const out = [];
+  let removed = 0;
   for (const seg of segments) {
     const prev = out[out.length - 1];
     if (prev) {
-      const closeInTime = (seg.start - prev.end) < 1.5;
-      if (closeInTime) {
-        if (seg.text === prev.text
-          || normalizeCaptionCompareText(seg.text) === normalizeCaptionCompareText(prev.text)) {
+      const kind = rollingCueMatchKind(prev, seg, 1.5);
+      if (kind) {
+        if (kind === 'same') {
           prev.end = Math.max(prev.end, seg.end);
+          removed++;
           continue;   // 完全相同的紧邻重复 cue：合并时间窗，不重复保留
         }
-        if (isCueLineExpansion(prev, seg)) {
-          out[out.length - 1] = { ...seg, start: prev.start };  // 后一条是更完整的渐进版本
-          continue;
+        if (kind === 'seg_expands_prev') {
+          out[out.length - 1] = { ...seg, start: prev.start, end: Math.max(prev.end, seg.end) };
+          removed += removeRecentCuesCoveredBy(out, out.length - 1);
+          removed++;
+          continue;   // 后一条是更完整的渐进版本
         }
-        if (isCueLineExpansion(seg, prev)
-          || prev.text.startsWith(seg.text)
-          || isNormalizedPrefix(seg.text, prev.text, 4)) {
+        if (kind === 'prev_expands_seg') {
+          removed++;
           continue;   // 这一条是前一条的截断残留，跳过
         }
+      }
+      const closeInTime = (seg.start - prev.end) < 1.5;
+      if (closeInTime) {
         // 换行滚动时常见「前条尾字 = 后条首字」的部分重叠（非整句前缀），合并去重，
         // 避免拼接后变成"天天蝎座"这种重复字，配音念出来就是"口吃"。
         const overlap = textBoundaryOverlapLen(prev.text, seg.text);
@@ -1181,12 +1237,35 @@ function dedupRollingCaptions(segments) {
             end: Math.max(prev.end, seg.end),
             text: mergeOverlappingText(prev.text, seg.text),
           };
+          removed++;
           continue;
         }
       }
     }
+    // YouTube 自动翻译轨有时不是相邻回填，而是 A、B、AB 或 A、B、A 这样隔一条
+    // 复现。只在 6 秒内、且文本完全相同/严格前缀扩展时合并；不做相似度删除。
+    const recentDuplicateAt = findRecentRollingDuplicateIndex(out, seg);
+    if (recentDuplicateAt >= 0) {
+      const kind = rollingCueMatchKind(out[recentDuplicateAt], seg, 6);
+      if (kind === 'same' || kind === 'prev_expands_seg') {
+        out[recentDuplicateAt].end = Math.max(out[recentDuplicateAt].end || 0, seg.end || 0);
+        removed++;
+        continue;
+      }
+      if (kind === 'seg_expands_prev') {
+        out[recentDuplicateAt] = {
+          ...seg,
+          start: out[recentDuplicateAt].start,
+          end: Math.max(out[recentDuplicateAt].end || 0, seg.end || 0),
+        };
+        removed += removeRecentCuesCoveredBy(out, recentDuplicateAt);
+        removed++;
+        continue;
+      }
+    }
     out.push(seg);
   }
+  if (removed) console.warn(`[配音插件] 滚动字幕去重合并 ${removed} 个重复/回填 cue`);
   return out;
 }
 
