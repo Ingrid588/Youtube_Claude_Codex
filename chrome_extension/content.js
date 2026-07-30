@@ -8053,6 +8053,10 @@ let ytTimedtextWaiter = null;
 let ytUrlWaiter = null;             // 等待拦截到带 pot 的字幕 URL
 let ytPrefetchStarted = false;      // 是否已发起后台预取，避免重复
 let ytPrefetchScheduled = false;    // 是否已调度预取（playerResponse 会重复触发）
+// 用户已亲手在 YouTube 菜单选择“自动翻译→中文”后，某些播放器只会暴露带
+// tlang 的请求 URL、不会把响应 body 交给 inject.js。为这类明确的用户动作保留
+// 每个 URL 一次的读取机会；它独立于自动预取的安全上限，绝不形成轮询/重试风暴。
+const _manualChinesePlayerFetchAttempted = new Map();
 let _chineseFetchPromise = null;    // 正在飞行的中文字幕请求 Promise（去重）
 // 这次取字幕有没有用到"非理想路径"（脚本自己点CC/找服务器要翻译，而不是用户
 // 自己提前选好、纯被动监听到的）——用来在配音开始后提示用户"建议自己开自动翻译
@@ -8075,6 +8079,21 @@ let refreshCurrentYTCaptionTimeline = null;
 function getCaptionTimelineEnd(segs) {
   return (Array.isArray(segs) ? segs : []).reduce(
     (max, seg) => Math.max(max, Number(seg?.end || seg?.start || 0)), 0);
+}
+
+function isChineseTimedtextUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  try {
+    const url = new URL(rawUrl, location.href);
+    if (!/\/api\/timedtext(?:$|\/|\?)/i.test(url.pathname)) return false;
+    const values = [url.searchParams.get('tlang'), url.searchParams.get('lang')]
+      .filter(Boolean)
+      .map((value) => decodeURIComponent(String(value)).replace(/_/g, '-').toLowerCase());
+    return values.some((value) => /^zh(?:-(?:hans|hant|cn|tw|hk|sg|mo))?$/.test(value));
+  } catch (_) {
+    // 保留给极少数非标准 URL 的兼容分支；主路径走 URLSearchParams，避免编码差异误判。
+    return /[?&](?:tlang|lang)=zh(?:%2d|-)(?:hans|hant|cn|tw|hk|sg|mo)(?:&|$)|[?&](?:tlang|lang)=zh(?:&|$)/i.test(rawUrl);
+  }
 }
 
 function captionTimelineIsExhaustedAtPlayhead(sess, t) {
@@ -8180,6 +8199,7 @@ if (IS_YOUTUBE) {
         _forceRequestPromise = null;
         _lastSubFetchWasFallback = false;
         _autoTranslatePlayerFetchAttempted.clear();
+        _manualChinesePlayerFetchAttempted.clear();
         injectPlayerResponseScript();
       }
 
@@ -8375,8 +8395,7 @@ if (IS_YOUTUBE) {
       // 新版播放器可能只让页面脚本看到请求URL、看不到响应正文。后台预取也必须
       // 使用播放器生成的当前视频中文URL，不能只有用户点击后的取字幕路径才使用。
       if (!segs?.length && ytTimedtextVideoId === vid
-          && ytTimedtextUrl
-          && /[?&](?:tlang|lang)=zh(?:-|&|$)/i.test(ytTimedtextUrl)) {
+          && isChineseTimedtextUrl(ytTimedtextUrl)) {
         segs = await fetchSubtitleSegments(ytTimedtextUrl, true, { allowPlayerUrlOnce: true });
         if (segs?.length) {
           console.log('[配音插件] 后台预取通过播放器中文URL拿到字幕', segs.length, '条');
@@ -8466,6 +8485,7 @@ if (IS_YOUTUBE) {
     ytPrefetchScheduled = false;
     _chineseFetchPromise = null;
     _forceRequestPromise = null;
+    _manualChinesePlayerFetchAttempted.clear();
     _autoTranslatePlayerFetchAttempted.clear();
     // 播放列表连续播放时，YouTube 常常在这个事件触发前就已经把 <video> 换成全新
     // 元素——这时 document.querySelector('video') 拿到的是新视频的元素，
@@ -8573,8 +8593,8 @@ if (IS_YOUTUBE) {
   async function ensurePlayerChineseTrack(vid) {
     requestPlayerChineseTrack();
     await sleep(1500);
-    const hasChineseRequest = ytTimedtextVideoId === vid && ytTimedtextUrl
-      && /[?&](?:tlang|lang)=zh(?:-|&|$)/i.test(ytTimedtextUrl);
+    const hasChineseRequest = ytTimedtextVideoId === vid
+      && isChineseTimedtextUrl(ytTimedtextUrl);
     if (hasChineseRequest) return true;
     console.log('[配音插件] 内部切轨未产生中文字幕请求，改用YouTube设置菜单');
     return selectChineseCaptionsViaMenu();
@@ -8681,13 +8701,25 @@ if (IS_YOUTUBE) {
       if (ytInterceptedSegments?.length && ytInterceptedVideoId === vid) {
         hideBufferIndicator();
         console.log('[配音插件] 已检测到用户手动打开的中文字幕，继续配音', ytInterceptedSegments.length, '条');
-        return captionsReadyForVideo(vid, ytInterceptedSegments);
+        return resolveChineseCaptionTimeline(vid, ytInterceptedSegments, 'manual_player_intercept');
       }
-      if (ytTimedtextVideoId === vid && ytTimedtextUrl
-          && /[?&](?:tlang|lang)=zh(?:-|&|$)/i.test(ytTimedtextUrl)) {
+      if (ytTimedtextVideoId === vid && isChineseTimedtextUrl(ytTimedtextUrl)) {
         if (Date.now() - lastLogAt > 5000) {
           lastLogAt = Date.now();
-          console.log('[配音插件] 已检测到中文字幕URL，等待播放器返回字幕正文');
+          console.log('[配音插件] 已检测到用户手动选择的中文字幕URL，读取播放器已生成正文');
+        }
+        // 关键：有些播放器把实际的中文轨已切到画面上，却不让主世界拦到
+        // XHR/fetch 的 body。此前这里只会“等待 body”，故明明界面显示中文还会
+        // 提示用户没打开。这里仅对用户手动选出的当前 URL 读取一次，不生成 URL、
+        // 不调用 Gemini、也不进行定时重试。
+        const direct = await fetchSubtitleSegments(ytTimedtextUrl, true, {
+          allowPlayerUrlOnce: true,
+          manualPlayerSelection: true,
+        });
+        if (direct?.length) {
+          hideBufferIndicator();
+          console.log('[配音插件] 已从用户手动选择的播放器中文轨取得正文，继续配音', direct.length, '条');
+          return resolveChineseCaptionTimeline(vid, direct, 'manual_player_chinese_url');
         }
       }
       await sleep(600);
@@ -8712,6 +8744,7 @@ if (IS_YOUTUBE) {
   // 这两条路。这里不再对自动翻译URL做 0/3/8/20 秒硬重试，避免越补越触发限流。
   async function fetchSubtitleSegments(baseUrl, isAutoTranslate, options = {}) {
     const allowPlayerUrlOnce = !!options.allowPlayerUrlOnce;
+    const manualPlayerSelection = !!options.manualPlayerSelection;
     if (isAutoTranslate && !allowPlayerUrlOnce) {
       console.log('[配音插件] 跳过浏览器直取自动翻译字幕URL，避免触发YouTube 429；改走服务器/缓存路径');
       return [];
@@ -8720,13 +8753,28 @@ if (IS_YOUTUBE) {
     if (isAutoTranslate) {
       const key = String(baseUrl || '');
       const attempted = _autoTranslatePlayerFetchAttempted.get(videoId) || new Set();
-      if (attempted.has(key) || attempted.size >= 2) {
+      const manuallyAttempted = _manualChinesePlayerFetchAttempted.get(videoId) || new Set();
+      // 正常自动流程最多读取两个由播放器生成的不同 URL，避免触发 429。
+      // 但用户已经亲手选择中文的这一次，允许对当前 URL 再读一次：这不是自动
+      // 重试，且每个 URL 只会发生一次，用来处理“URL 已到、拦截不到 body”的
+      // YouTube 播放器版本。
+      if (manualPlayerSelection && manuallyAttempted.has(key)) {
+        console.log('[配音插件] 用户手动选择的中文字幕URL本轮已读取过，不重复请求');
+        return [];
+      }
+      if (!manualPlayerSelection && (attempted.has(key) || attempted.size >= 2)) {
         console.log('[配音插件] 播放器中文URL本轮已读取过，或已达到两条不同URL的安全上限；不重复请求');
         return [];
       }
+      if (manualPlayerSelection) {
+        manuallyAttempted.add(key);
+        _manualChinesePlayerFetchAttempted.set(videoId, manuallyAttempted);
+      }
       attempted.add(key);
       _autoTranslatePlayerFetchAttempted.set(videoId, attempted);
-      console.log(`[配音插件] 读取播放器刚生成的中文URL（第 ${attempted.size}/2 条不同URL；不重试同一URL）`);
+      console.log(manualPlayerSelection
+        ? '[配音插件] 检测到用户手动选择的中文字幕URL，读取一次正文（不调用Gemini）'
+        : `[配音插件] 读取播放器刚生成的中文URL（第 ${attempted.size}/2 条不同URL；不重试同一URL）`);
     }
     const delays = isAutoTranslate ? [0] : [0, 2000];
     const jsonUrl = baseUrl.includes('fmt=') ? baseUrl : baseUrl + '&fmt=json3';
@@ -8845,7 +8893,7 @@ if (IS_YOUTUBE) {
     });
     removeCachedSubs(vid);
     const playerChineseUrl = ytTimedtextVideoId === vid ? ytTimedtextUrl : null;
-    if (playerChineseUrl && /[?&](?:tlang|lang)=zh(?:-|&|$)/i.test(playerChineseUrl)) {
+    if (isChineseTimedtextUrl(playerChineseUrl)) {
       const direct = await fetchSubtitleSegments(playerChineseUrl, true, { allowPlayerUrlOnce: true });
       const directInfo = captionTimelineInfo(direct);
       if (direct?.length && directInfo.lastEnd > info.lastEnd + 60) {
@@ -8924,7 +8972,12 @@ if (IS_YOUTUBE) {
         if (resp.ok) {
           const data = await resp.json();
           if (data.segments && data.segments.length) {
-            console.log('[配音插件] 服务器字幕', data.segments.length, '条');
+            const lastEnd = Number(data.last_end || getCaptionTimelineEnd(data.segments));
+            if (data.complete === false) {
+              console.warn(`[配音插件] 服务器字幕仅到 ${formatHMS(lastEnd)}，不把它当作完整字幕/完整音频缓存`);
+            } else {
+              console.log('[配音插件] 服务器字幕', data.segments.length, '条');
+            }
             return data.segments;
           }
           console.log('[配音插件] 服务器没取到字幕（返回了空结果）');
@@ -9004,7 +9057,7 @@ if (IS_YOUTUBE) {
       // tlang=zh，直接读取它即可；这不是重新构造字幕请求，也不依赖服务器猜轨道。
       const liveChineseUrl = ytTimedtextUrl;
       if (liveChineseUrl && ytTimedtextVideoId === vid
-          && /[?&](?:tlang|lang)=zh(?:-|&|$)/i.test(liveChineseUrl)) {
+          && isChineseTimedtextUrl(liveChineseUrl)) {
         const directChinese = await fetchSubtitleSegments(liveChineseUrl, true, { allowPlayerUrlOnce: true });
         if (directChinese?.length) {
           console.log('[配音插件] 通过播放器中文字幕URL拿到字幕', directChinese.length, '条');
@@ -9034,7 +9087,11 @@ if (IS_YOUTUBE) {
     if (!sess?.started || sess._readMode || sess.videoId !== curVideoId()) return false;
     if (sess._captionTimelineRefreshPromise) return sess._captionTimelineRefreshPromise;
     const now = Date.now();
-    if (now - (sess._lastCaptionTimelineRefreshAt || 0) < 30000) return false;
+    // 后段时间轴恢复失败常见于短暂断网、代理换线或播放器刚刷新。旧版一律
+    // 30 秒冷却，意味着视频已经无字幕时会安静半分钟以上；失败后缩短为 8 秒，
+    // 但始终保持单飞请求，不会并发撞 YouTube/服务器。
+    const retryDelay = sess._captionTimelineRefreshFailures ? 8000 : 15000;
+    if (now - (sess._lastCaptionTimelineRefreshAt || 0) < retryDelay) return false;
     sess._lastCaptionTimelineRefreshAt = now;
     const vid = sess.videoId;
     const oldEnd = getCaptionTimelineEnd(sess._allSegments);
@@ -9047,7 +9104,10 @@ if (IS_YOUTUBE) {
       console.warn('[配音插件] 字幕时间轴已在当前播放点前结束，开始刷新当前后的字幕', {
         reason, current: +current.toFixed(1), oldEnd: +oldEnd.toFixed(1), duration: +duration.toFixed(1),
       });
-      removeCachedSubs(vid);
+      // 不能在刷新一开始删除现有字幕缓存：若当前 session 因一次截断响应只拿到
+      // 前段，而 storage 中其实保留着较长的原始时间轴，提前删除会把唯一可恢复
+      // 的字幕也丢掉。坏缓存由 getCachedSubs 的尾部校验自行废弃。
+      const cachedBeforeRefresh = await getCachedSubs(vid);
       const oldUrl = ytTimedtextVideoId === vid ? ytTimedtextUrl : '';
       const oldInterceptEnd = ytInterceptedVideoId === vid ? getCaptionTimelineEnd(ytInterceptedSegments) : 0;
       // 先让 YouTube 播放器自己换发轨道。forceRequestCaptions 只在 CC 关闭时打开一次；
@@ -9057,12 +9117,16 @@ if (IS_YOUTUBE) {
       await sleep(900);
 
       const candidates = [];
+      if (cachedBeforeRefresh?.length
+          && getCaptionTimelineEnd(cachedBeforeRefresh) > oldEnd + 30) {
+        candidates.push({ source: 'validated_local_caption_cache', segments: cachedBeforeRefresh });
+      }
       const intercepted = ytInterceptedVideoId === vid ? ytInterceptedSegments : null;
       if (intercepted?.length && getCaptionTimelineEnd(intercepted) > oldInterceptEnd + 30) {
         candidates.push({ source: 'fresh_player_intercept', segments: intercepted });
       }
       const freshUrl = ytTimedtextVideoId === vid ? ytTimedtextUrl : '';
-      if (freshUrl && /[?&](?:tlang|lang)=zh(?:-|&|$)/i.test(freshUrl)) {
+      if (isChineseTimedtextUrl(freshUrl)) {
         // 同一 URL 不会再次读取；只有播放器确实更新 token/URL 时才有第二次安全尝试。
         const direct = await fetchSubtitleSegments(freshUrl, true, { allowPlayerUrlOnce: true });
         if (direct?.length) candidates.push({
@@ -9086,6 +9150,7 @@ if (IS_YOUTUBE) {
       const bestEnd = getCaptionTimelineEnd(best?.segments);
       // 只接受真正能覆盖当前点以后一段的结果。否则会出现“补救后播一两句又停”的假恢复。
       if (!best || bestEnd <= oldEnd + 60 || bestEnd < current + 5 * 60) {
+        sess._captionTimelineRefreshFailures = (sess._captionTimelineRefreshFailures || 0) + 1;
         recordDiagnostic(sess, 'caption_timeline_refresh_insufficient', {
           reason, currentTime: +current.toFixed(3), oldEnd: +oldEnd.toFixed(3),
           receivedEnd: +bestEnd.toFixed(3), source: best?.source || 'none',
@@ -9097,6 +9162,7 @@ if (IS_YOUTUBE) {
       }
       const replaced = mergeRefreshedCaptionTimeline(sess, best.segments, reason, current);
       if (!replaced) return false;
+      sess._captionTimelineRefreshFailures = 0;
       const info = captionTimelineInfo(best.segments, sess.video);
       if (!hasUnexpectedCaptionTailGap(info)) captionsReadyForVideo(vid, best.segments);
       await hydrateLocalCacheWindow(sess, current, 12, 15 * 60).catch(() => 0);
@@ -9109,6 +9175,7 @@ if (IS_YOUTUBE) {
       });
       return true;
     })().catch((e) => {
+      sess._captionTimelineRefreshFailures = (sess._captionTimelineRefreshFailures || 0) + 1;
       recordDiagnostic(sess, 'caption_timeline_refresh_failed', {
         reason, currentTime: +current.toFixed(3), error: e?.message || String(e || ''),
       });

@@ -1651,6 +1651,10 @@ async def prefetch_captions(req: Request):
     不做任何翻译——朗读项目就是有什么语言字幕就读什么语言，没有就让用户自己去 YouTube 设置。
 
     lang 不传时退回旧默认值 zh-CN（兼容 Chrome 插件等没传这个参数的旧调用方）。"""
+    # 每次取字幕都必须使用独立临时目录。旧实现复用系统 temp 根目录，yt-dlp
+    # 这次失败时 glob 会捡起同一 video_id 上一次遗留的前段 .vtt，再把它伪装
+    # 成本次成功结果；这正是长视频总在相同位置断字幕/断配音的一个根因。
+    tmp_dir = None
     try:
         data = await req.json()
         video_id = data.get('video_id')
@@ -1662,7 +1666,7 @@ async def prefetch_captions(req: Request):
 
         import subprocess
         import glob as _glob
-        tmp_dir = tempfile.gettempdir()
+        tmp_dir = tempfile.mkdtemp(prefix=f'dub_caption_{video_id}_')
 
         sub_langs = _sub_lang_variants(lang)
 
@@ -1769,7 +1773,24 @@ async def prefetch_captions(req: Request):
                         os.remove(p)
                     except OSError:
                         pass
-                return {'ok': True, 'segments': segments, 'matched_lang': detected_lang}
+                requested_duration = float(data.get('duration') or 0)
+                last_end = max((float(s.get('end') or s.get('start') or 0) for s in segments), default=0.0)
+                tail_gap = max(0.0, requested_duration - last_end)
+                complete = not (
+                    requested_duration >= 20 * 60
+                    and tail_gap >= max(15 * 60, requested_duration * 0.12)
+                )
+                if not complete:
+                    log.warning(
+                        f'[后台预取] {video_id}: 字幕只到 {last_end:.1f}s，'
+                        f'距视频尾部仍 {tail_gap:.1f}s；明确标为不完整，前端不可当作完整缓存')
+                return {
+                    'ok': True,
+                    'segments': segments,
+                    'matched_lang': detected_lang,
+                    'complete': complete,
+                    'last_end': last_end,
+                }
 
             log.warning(f'[后台预取] {video_id}: 未找到 {lang} 语言的字幕文件，yt-dlp stderr: '
                         f'{(out.stderr or "")[-1500:] if out else "(无 out)"}')
@@ -1782,6 +1803,9 @@ async def prefetch_captions(req: Request):
     except Exception as e:
         log.error(f'[后台预取] 异常: {e}\n{traceback.format_exc()}')
         return JSONResponse(status_code=500, content={'error': str(e)})
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _parse_vtt_fallback(vtt_path):
