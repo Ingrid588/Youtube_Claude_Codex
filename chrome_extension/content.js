@@ -1689,13 +1689,15 @@ function updateSubtitle(sess) {
     const isDup = seg && sess._recentSpoken && sess._recentSpoken.some(
       (r) => r.text === seg.text && (seg.start - r.end) < 12
     );
-    if (seg && !isDup && !suppressed) {
+    const playableDub = seg ? findPlayableDubForDisplaySegment(sess, seg, t) : null;
+    // 实时配音里，自绘字幕不能单独往前跑：只要当前时间窗没有可播放配音，
+    // 就宁可隐藏自绘字幕，避免用户看到“有字幕但没有配音”的断裂感。
+    if (seg && !isDup && !suppressed && playableDub) {
       // _displaySegments 存的是原始（外语）字幕，不是译文——之前这里直接显示
       // seg.text，配音真正播放时显示的是中文译文（绿色高亮），两者一对比就像
       // "突然冒出一句不相关的黑色字幕"。这里按时间戳去 dubSegments 里找同一句，
       // 有译文就显示译文，跟"刚配完音"那句保持同一种语言，不会显得像两句话。
-      const dub = sess.dubSegments && sess.dubSegments.find((d) => _segKey(d) === _segKey(seg));
-      const text = (dub && (dub.translation || dub.text)) || seg.text;
+      const text = (playableDub && (playableDub.translation || playableDub.text)) || seg.text;
       cur = getSubtitleLine(text, t - seg.start, seg.end - seg.start);
     } else {
       cur = '';
@@ -3258,6 +3260,17 @@ function isRealtimeSubtitleSuppressed(sess, seg) {
   return !ready;
 }
 
+function findPlayableDubForDisplaySegment(sess, seg, t) {
+  if (!sess || !seg || !Array.isArray(sess.dubSegments)) return null;
+  const now = Number(t || 0);
+  return sess.dubSegments.find((d) => {
+    if (!d || (!d.audio_url && !d.web_speech) || d._invalidAudio || d._skippedStale) return false;
+    const end = segmentTimelineEnd(d);
+    if (d.start > now + 0.5 || end < now - 0.5) return false;
+    return _segKey(d) === _segKey(seg) || isSameLogicalSourceEvent(d, seg);
+  }) || null;
+}
+
 // 前十分钟是实时配音唯一没有冗余的区域。主流合成即使后来已经做到十分钟之后，
 // 也不能掩盖前面某批失败、坏音频或浏览器解码失败造成的洞。这里按“织地毯”方式：
 // 每 2 秒审计已播位置前后 90 秒，优先小批替换缺段/坏段；绝不暂停已开始的视频。
@@ -3396,8 +3409,8 @@ function segmentCountsTowardPlayableFrontier(sess, seg, now) {
 // audio, or pause indefinitely.  A short, one-shot gate gives the local cache
 // an opportunity to hydrate the current cue without turning a temporary server
 // hiccup into an endless video freeze.
-const BRIEF_CURRENT_CUE_HOLD_MS = 1800;
-const BRIEF_CURRENT_CUE_HOLD_COOLDOWN_MS = 15000;
+const BRIEF_CURRENT_CUE_HOLD_MS = 2400;
+const BRIEF_CURRENT_CUE_HOLD_COOLDOWN_MS = 2500;
 
 function releaseBriefCurrentCueHoldIfReady(sess, t, reason = 'current_audio_ready') {
   const hold = sess?._briefCurrentCueHold;
