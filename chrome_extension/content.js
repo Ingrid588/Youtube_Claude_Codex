@@ -575,6 +575,9 @@ function getAdaptiveChunkSize(sess, chunkNo) {
   if (urgentInventory && !risk.troubleSignals) {
     return chunkNo === 0 ? 12 : 16;
   }
+  if (current >= REALTIME_FULL_CACHE_AFTER_SECONDS && !risk.troubleSignals) {
+    return chunkNo === 0 ? 12 : 18;
+  }
   if (risk.tailRisk && !risk.troubleSignals) {
     if (!sess._tailInventoryAccelerationLogged) {
       sess._tailInventoryAccelerationLogged = true;
@@ -2758,6 +2761,7 @@ const REALTIME_START_CRITICAL_SECONDS = 5 * 60;
 const REALTIME_MIN_READY_SECONDS = 15 * 60;
 const REALTIME_NORMAL_AHEAD_SECONDS = REALTIME_MIN_READY_SECONDS;
 const REALTIME_START_AHEAD_SECONDS = 15 * 60;
+const REALTIME_FULL_CACHE_AFTER_SECONDS = 5 * 60;
 const REALTIME_INVENTORY_AUDIT_INTERVAL_MS = 1000;
 const REALTIME_INVENTORY_LOG_INTERVAL_MS = 15000;
 const REALTIME_INVENTORY_REFRESH_COOLDOWN_MS = 12000;
@@ -3729,13 +3733,27 @@ function recoverFailedPlaybackAudio(sess, seg, reason, error = '') {
 function getLoadedDubQueueFrontier(sess, t = null) {
   const now = t == null ? Number(sess?.video?.currentTime || 0) : Number(t || 0);
   let frontier = now;
-  const sorted = (sess?.dubSegments || [])
-    .filter((s) => segmentCountsTowardPlayableFrontier(sess, s, now))
-    .sort(compareDubSegments);
-  for (const seg of sorted) {
+  const ready = (sess?.dubSegments || [])
+    .filter((s) => segmentCountsTowardPlayableFrontier(sess, s, now));
+  const source = Array.isArray(sess?._allSegments) && sess._allSegments.length
+    ? sess._allSegments.slice().sort(compareDubSegments) : null;
+  if (!source) {
+    for (const seg of ready.sort(compareDubSegments)) {
+      const end = segmentTimelineEnd(seg);
+      if (end < frontier - 0.5) continue;
+      if (seg.start > frontier + 1.2) break;
+      frontier = Math.max(frontier, end);
+    }
+    return frontier;
+  }
+  const readyKeys = new Set(ready.map(_segKey));
+  for (const seg of source) {
     const end = segmentTimelineEnd(seg);
-    if (end < frontier - 0.5) continue;
-    if (seg.start > frontier + 1.2) break;
+    if (end < now - 0.5) continue;
+    // 没有字幕的自然停顿不需要配音，不能把它算成库存断档；
+    // 真正会断的是下一条有字幕的句子没有可播放音频。
+    if (seg.start > frontier) frontier = seg.start;
+    if (!readyKeys.has(_segKey(seg))) break;
     frontier = Math.max(frontier, end);
   }
   return frontier;
@@ -3807,6 +3825,29 @@ function initialPlayedStateForInsertedSegment(sess, seg, t) {
 const LOCAL_CACHE_LOW_WATER_SECONDS = REALTIME_MIN_READY_SECONDS;
 const LOCAL_CACHE_TARGET_SECONDS = 25 * 60;
 
+function shouldBuildFullRemainderCache(sess, current = null) {
+  if (!sess || sess._readMode || sess._knownFullLocalCache) return false;
+  if (sess._fullRemainderCaching) return true;
+  const t = current == null ? Number(sess.video?.currentTime || 0) : Number(current || 0);
+  const duration = Number(sess.video?.duration || 0);
+  return Number.isFinite(duration) && duration > REALTIME_FULL_CACHE_AFTER_SECONDS
+    && t >= REALTIME_FULL_CACHE_AFTER_SECONDS;
+}
+
+function markFullRemainderCaching(sess, reason = 'played_over_5_minutes', current = null) {
+  if (!sess || sess._fullRemainderCaching) return;
+  const t = current == null ? Number(sess.video?.currentTime || 0) : Number(current || 0);
+  const duration = Number(sess.video?.duration || 0);
+  sess._fullRemainderCaching = true;
+  recordDiagnostic(sess, 'realtime_full_remainder_cache_enabled', {
+    reason,
+    currentTime: +t.toFixed(3),
+    duration: Number.isFinite(duration) ? +duration.toFixed(3) : null,
+    targetLead: REALTIME_MIN_READY_SECONDS,
+  });
+  console.log('[配音插件] 已播放超过5分钟，开始补齐剩余全片配音；当前附近仍优先保持15分钟库存');
+}
+
 function readyDubKeySet(sess, now = 0) {
   return new Set((sess?.dubSegments || [])
     .filter((s) => segmentCountsTowardPlayableFrontier(sess, s, now))
@@ -3861,10 +3902,23 @@ function auditRealtimeInventory(sess, reason = 'timer') {
   }
 
   const firstGap = firstMissingDubSegmentInWindow(sess, current, REALTIME_MIN_READY_SECONDS);
-  if (!firstGap && !needsTimelineRefresh) return;
+  const wantsFullRemainder = shouldBuildFullRemainderCache(sess, current);
+  const duration = Number(sess.video?.duration || 0);
+  const firstFullGap = wantsFullRemainder && Number.isFinite(duration) && duration > current
+    ? firstMissingDubSegmentInWindow(sess, current,
+      Math.max(REALTIME_MIN_READY_SECONDS, duration - current + 1))
+    : null;
+  if (!firstGap && !needsTimelineRefresh && !firstFullGap) {
+    if (sess._onChunkProgress && Date.now() - (sess._lastInventoryButtonRefreshAt || 0) >= 1000) {
+      sess._lastInventoryButtonRefreshAt = Date.now();
+      sess._onChunkProgress(Math.max(sess._maxSynthedTime || 0, getLoadedDubQueueFrontier(sess, current)));
+    }
+    return;
+  }
   if (Date.now() - (sess._lastRealtimeInventoryActionAt || 0) < 750) return;
   sess._lastRealtimeInventoryActionAt = Date.now();
   sess._inventoryLowWaterUntil = Date.now() + REALTIME_INVENTORY_ACCELERATION_MS;
+  if (wantsFullRemainder) markFullRemainderCaching(sess, 'inventory_audit_played_over_5_minutes', current);
   if (sess._phase === 'done') {
     sess._phase = 'dubbing';
     sess._allDone = false;
@@ -3879,15 +3933,20 @@ function auditRealtimeInventory(sess, reason = 'timer') {
       currentTime: +current.toFixed(3),
       continuousLead: +lead.toFixed(3),
       sourceEnd: +sourceEnd.toFixed(3),
-      firstGapStart: firstGap ? +(firstGap.start || 0).toFixed(3) : null,
+      firstGapStart: firstGap ? +(firstGap.start || 0).toFixed(3)
+        : (firstFullGap ? +(firstFullGap.start || 0).toFixed(3) : null),
       targetLead: REALTIME_MIN_READY_SECONDS,
-      action: needsTimelineRefresh ? 'refresh_caption_and_fill_near_gap' : 'fill_near_gap',
+      action: needsTimelineRefresh ? 'refresh_caption_and_fill_near_gap'
+        : (firstGap ? 'fill_near_gap' : 'fill_full_remainder'),
     });
-    console.warn('[配音插件] 当前点后15分钟库存不足，优先补近处缺口', {
+    console.warn(firstGap
+      ? '[配音插件] 当前点后15分钟库存不足，优先补近处缺口'
+      : '[配音插件] 已播放超过5分钟，15分钟库存满足后继续补齐全片', {
       reason,
       current: +current.toFixed(1),
       continuousLead: +lead.toFixed(1),
-      firstGap: firstGap ? +Number(firstGap.start || 0).toFixed(1) : null,
+      firstGap: firstGap ? +Number(firstGap.start || 0).toFixed(1)
+        : (firstFullGap ? +Number(firstFullGap.start || 0).toFixed(1) : null),
       sourceEnd: +sourceEnd.toFixed(1),
     });
   }
@@ -3896,7 +3955,7 @@ function auditRealtimeInventory(sess, reason = 'timer') {
     current < REALTIME_START_CRITICAL_SECONDS ? 2 : 12,
     LOCAL_CACHE_TARGET_SECONDS);
   const anchor = firstGap ? Math.max(current, Number(firstGap.start || current)) : current;
-  requestSynthAround(sess, anchor);
+  if (firstGap) requestSynthAround(sess, anchor);
   launchTimelineProducer(sess, current, `inventory_${reason}`);
   if (!sess._startupGatePending && sess._buffering && getLoadedDubQueueFrontier(sess, current) > current + 0.25) {
     sess._buffering = false;
@@ -6048,22 +6107,16 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
     const duration = Number(video.duration || 0);
     const current = Number(video.currentTime || 0);
     const continuousLead = getDubLeadSeconds(sess, current);
+    if (shouldBuildFullRemainderCache(sess, current)) {
+      markFullRemainderCaching(sess, 'main_stream_played_over_5_minutes', current);
+      return Number.isFinite(duration) && duration > current
+        ? duration - current + 1
+        : REALTIME_NORMAL_AHEAD_SECONDS;
+    }
     if (continuousLead < REALTIME_MIN_READY_SECONDS) {
       return REALTIME_MIN_READY_SECONDS;
     }
-    if (!Number.isFinite(duration) || duration <= 0) return REALTIME_NORMAL_AHEAD_SECONDS;
-    if (!sess._fullRemainderCaching) {
-      sess._fullRemainderCaching = true;
-      const remaining = Math.max(0, duration - current);
-      recordDiagnostic(sess, 'continuous_fifteen_minutes_switch_to_full_remainder_cache', {
-        currentTime: +current.toFixed(3),
-        duration: +duration.toFixed(3),
-        continuousLead: +continuousLead.toFixed(3),
-        remaining: +remaining.toFixed(3),
-      });
-      console.log(`[配音插件] 连续库存已达到15分钟（${Math.round(continuousLead)}秒），开始生成剩余 ${formatHMS(remaining)} 配音`);
-    }
-    return duration - current + 1;
+    return REALTIME_NORMAL_AHEAD_SECONDS;
   };
   const STARTUP_PREROLL_MAX_SEGMENTS = STARTUP_PLAYABLE_SEGMENTS;
   let firstDone = false;
@@ -6599,7 +6652,8 @@ function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refre
       const now = Number(sess.video?.currentTime || fromTime || 0);
       const duration = Number(sess.video?.duration || 0);
       const continuousLead = getDubLeadSeconds(sess, now);
-      const fullRemainder = continuousLead >= REALTIME_MIN_READY_SECONDS;
+      const fullRemainder = shouldBuildFullRemainderCache(sess, now);
+      if (fullRemainder) markFullRemainderCaching(sess, `${reason}_played_over_5_minutes`, now);
       const horizon = fullRemainder && duration > 0 ? duration + 1 : now + 15 * 60;
       const have = new Set((sess.dubSegments || [])
         .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
@@ -6885,6 +6939,13 @@ function formatHMS(totalSeconds) {
   const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
   const ss = String(s % 60).padStart(2, '0');
   return `${hh}:${mm}:${ss}`;
+}
+
+function formatInventoryLead(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds || 0)));
+  if (s < 60) return `${s}秒`;
+  if (s < 3600) return `${Math.floor(s / 60)}分${String(s % 60).padStart(2, '0')}秒`;
+  return formatHMS(s);
 }
 
 // 点击按钮时根据当前阶段弹确认框，避免用户乱点导致状态不明。
@@ -8252,8 +8313,10 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       const now = Number(sess.video?.currentTime || 0);
       const continuousTo = getLoadedDubQueueFrontier(sess, now);
       const continuousLead = Math.max(0, continuousTo - now);
+      const leadLabel = formatInventoryLead(continuousLead);
       const generatedHms = formatHMS(upToSec);
       const continuousHms = formatHMS(continuousTo);
+      const fullTag = shouldBuildFullRemainderCache(sess, now) ? ' · 全片补齐中' : '';
       const currentExpected = (sess._allSegments || []).find((seg) => {
         const end = segmentTimelineEnd(seg);
         return seg.start <= now + 0.5 && end >= now - 0.5;
@@ -8266,11 +8329,11 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       });
       if (!currentReady && currentExpected) {
         const gapAt = formatHMS(currentExpected.start || now);
-        btn.textContent = `${icon}${modeTag}断档→${gapAt} · 最远→${generatedHms}`;
+        btn.textContent = `${icon}${modeTag}断档→${gapAt} · 库存${leadLabel}`;
         btn.title = `${verb}当前句在 ${gapAt} 尚未可播；连续库存到 ${continuousHms}，最远已合成到 ${generatedHms}。插件正优先从本地缓存恢复该句，只有本地确实没有时才请求服务器。`;
       } else {
-        btn.textContent = `${icon}${modeTag}库存${Math.floor(continuousLead / 60)}分 · 最远→${generatedHms}`;
-        btn.title = `${verb}生成中：从当前点连续可播到 ${continuousHms}（库存 ${Math.round(continuousLead)} 秒）；最远已合成到 ${generatedHms}`;
+        btn.textContent = `${icon}${modeTag}库存${leadLabel}${fullTag}`;
+        btn.title = `${verb}生成中：从当前点连续可播到 ${continuousHms}（库存 ${Math.round(continuousLead)} 秒）；最远已合成到 ${generatedHms}${fullTag}`;
       }
     };
 
