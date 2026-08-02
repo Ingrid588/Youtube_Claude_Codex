@@ -185,16 +185,19 @@ async function sendChunkReadAloudCloud(segments, lang) {
     const text = (seg.text || '').trim();
     const duration = seg.end - seg.start;
     let audio_url = null;
+    let web_speech = false;
     if (text) {
       try {
         audio_url = await fetchCloudTTS(text, voice, 0);
       } catch (e) {
         console.warn('[朗读] 云端TTS重试多次后仍失败，回退浏览器自带语音', seg.start, e.message);
-        speakWithWebSpeech(text, lang);
+        // 不能在合成阶段立即 speak()：那会绕过播放时间轴，和后续正常音频叠在一起。
+        // 标记为 web_speech，让 playNextDue 在该句真正到点时统一调度。
+        web_speech = true;
       }
     }
     return { start: seg.start, end: seg.end, text: seg.text, translation: text,
-             duration, tts_duration: duration, audio_url,
+             duration, tts_duration: duration, audio_url, web_speech,
              _sourceKey: makeSourceSegKey(seg),
              _sourceStart: seg.start, _sourceEnd: seg.end, _sourceText: seg.text };
   }));
@@ -228,6 +231,60 @@ let langVoiceOverrides = {};
 let dubCacheVoiceAutoPick = false;
 let defaultMaleVoice = 'zh-CN-YunxiNeural';
 let defaultFemaleVoice = 'zh-CN-XiaoxiaoNeural';
+let _globalActiveDubAudio = null;
+
+function stopAudioElementForSingleVoice(audio) {
+  if (!audio) return false;
+  try {
+    if (!audio.paused && !audio.ended) audio.pause();
+    audio.currentTime = 0;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function clearActiveDubbingAudio(sess, audio, token = null) {
+  if (!audio) return;
+  if (token == null || audio._dubPlayToken === token) {
+    sess?._activeDubAudios?.delete(audio);
+    if (_globalActiveDubAudio === audio) _globalActiveDubAudio = null;
+  }
+}
+
+function stopOtherDubbingAudio(sess, keep = null, reason = 'single_voice_guard') {
+  let stopped = 0;
+  const stopOne = (audio) => {
+    if (!audio || audio === keep) return;
+    if (stopAudioElementForSingleVoice(audio)) stopped++;
+    sess?._activeDubAudios?.delete(audio);
+    if (_globalActiveDubAudio === audio) _globalActiveDubAudio = null;
+  };
+  if (_globalActiveDubAudio && _globalActiveDubAudio !== keep) stopOne(_globalActiveDubAudio);
+  for (const audio of Array.from(sess?._activeDubAudios || [])) stopOne(audio);
+  for (const audio of Object.values(sess?.audioCache || {})) {
+    if (audio && audio !== keep && !audio.paused && !audio.ended) stopOne(audio);
+  }
+  if (!sess?._webSpeechActive) {
+    try { window.speechSynthesis?.cancel(); } catch (_) {}
+  }
+  if (stopped && sess) {
+    recordDiagnostic(sess, 'single_voice_guard_stopped_overlap_audio', {
+      reason,
+      stopped,
+      currentTime: +(Number(sess.video?.currentTime || 0)).toFixed(3),
+    });
+    console.warn(`[配音插件] 单声道护栏：停止 ${stopped} 个残留配音音频`, reason);
+  }
+}
+
+function markActiveDubbingAudio(sess, audio, token) {
+  if (!sess || !audio) return;
+  sess._activeDubAudios = sess._activeDubAudios || new Set();
+  audio._dubPlayToken = token;
+  sess._activeDubAudios.add(audio);
+  _globalActiveDubAudio = audio;
+}
 
 // chrome.storage.local.get 是异步的：如果用户点"开始配音"很快（或开了自动配音），
 // 第一批字幕段可能在这个回调跑完之前就已经在拼 voice 字段了，那时 langVoiceOverrides
@@ -4173,6 +4230,10 @@ function playNextDue(sess, t) {
   // 等真正点击播放时这一段已经 played=true，听感上就是"第一句被吃掉"。
   // 直接以 video.paused 为准，不区分"谁"让它暂停的。
   if (sess.video && sess.video.paused) return;
+  // 单声道护栏：极少数情况下旧 Audio 对象已经不再由 curAudio 持有，
+  // 但浏览器仍在播放它；下一句再开始就会出现两个声音同时说话。
+  // 每次进入主调度先清理非当前句的残留音频。
+  stopOtherDubbingAudio(sess, sess.curAudio, 'scheduler_entry_cleanup');
   // 看门狗：_audioLoading 卡死超过 4 秒还没解锁（极端情况下 getAudio 的 promise
   // 因为某种异常没走到任何一条 resolve/reject 路径），强制解锁，避免"配音明明已经
   // 生成好了，却一直不开始播"——表现就是卡死后再也不会有声音，直到用户重新触发。
@@ -4301,6 +4362,9 @@ function playNextDue(sess, t) {
   best.played = true;
   if (best.web_speech) {
     try {
+      const webSpeechToken = (sess._webSpeechToken || 0) + 1;
+      sess._webSpeechToken = webSpeechToken;
+      stopOtherDubbingAudio(sess, null, 'before_web_speech');
       const utter = new SpeechSynthesisUtterance(best.translation || best.text || '');
       const voices = window.speechSynthesis?.getVoices?.() || [];
       const wanted = String(sess._autoVoice || langVoiceOverrides['zh'] || '')
@@ -4313,6 +4377,7 @@ function playNextDue(sess, t) {
       sess._webSpeechActive = true;
       sess.curSegment = best;
       utter.onend = () => {
+        if (sess._webSpeechToken !== webSpeechToken) return;
         sess._webSpeechActive = false;
         if (sess.curSegment === best) sess.curSegment = null;
         rememberCompletedSpoken(sess, best);
@@ -4320,6 +4385,7 @@ function playNextDue(sess, t) {
         if (sess.started) playNextDue(sess, sess.video.currentTime);
       };
       utter.onerror = () => {
+        if (sess._webSpeechToken !== webSpeechToken) return;
         sess._webSpeechActive = false;
         best.played = false;
         if (sess.curSegment === best) sess.curSegment = null;
@@ -4356,9 +4422,13 @@ function playNextDue(sess, t) {
       recoverFailedPlaybackAudio(sess, best, 'audio_loader_returned_empty', 'loadAudioOnce returned no playable Audio');
       return;
     }
-    if (!sess.started) return;
+    if (!sess.started) { stopAudioElementForSingleVoice(audio); return; }
     // 加载期间已有别的段抢先开播 → 放弃本段，避免两段同时响（重叠）
-    if (sess.curAudio) { best.played = false; return; }
+    if (sess.curAudio) { best.played = false; stopAudioElementForSingleVoice(audio); return; }
+    const playToken = (sess._audioPlayToken || 0) + 1;
+    sess._audioPlayToken = playToken;
+    stopOtherDubbingAudio(sess, audio, 'before_current_audio');
+    markActiveDubbingAudio(sess, audio, playToken);
     sess.curAudio = audio;
     sess.curSegment = best;
     // 跟随音频进度逐句刷新字幕（视频放慢时 video 的 timeupdate 较稀疏，靠音频自身的更稳）
@@ -4436,10 +4506,13 @@ function playNextDue(sess, t) {
     sess._curAudioDeadline = Date.now() + (ttsDur / audioRate) * 1000 + 5000;
 
     audio.onended = () => {
+      const stillCurrent = audio._dubPlayToken === playToken && sess.curAudio === audio;
+      clearActiveDubbingAudio(sess, audio, playToken);
       // 播完立即释放 Blob URL 和缓存，避免内存持续积累
       try { if (audio.src?.startsWith('blob:')) URL.revokeObjectURL(audio.src); } catch (_) {}
       delete sess.audioCache[best.audio_url];
-      if (sess.curAudio === audio) { sess.curAudio = null; sess.curSegment = null; }
+      if (!stillCurrent) return;
+      if (stillCurrent) { sess.curAudio = null; sess.curSegment = null; }
       sess.lastSubText = null;
       rememberCompletedSpoken(sess, best);
       // 句末恢复默认速率：配音档3慢放只作用于这一句，读完即恢复1.0x；
@@ -4451,13 +4524,21 @@ function playNextDue(sess, t) {
     // 使这一句永久消失，且 audio_url 仍让库存显示为领先。统一交给恢复器重试/重合成。
     audio.onerror = () => {
       console.warn('[配音插件] 音频出错，正在恢复本段', best.start.toFixed(1) + 's');
+      const stillCurrent = audio._dubPlayToken === playToken && sess.curAudio === audio;
+      clearActiveDubbingAudio(sess, audio, playToken);
       try { if (audio.src?.startsWith('blob:')) URL.revokeObjectURL(audio.src); } catch (_) {}
       delete sess.audioCache[best.audio_url];
-      if (sess.curAudio === audio) { sess.curAudio = null; sess.curSegment = null; }
+      if (!stillCurrent) return;
+      if (stillCurrent) { sess.curAudio = null; sess.curSegment = null; }
       setVideoRate(sess, defaultVideoRate(sess));
       recoverFailedPlaybackAudio(sess, best, 'media_element_error', audio.error?.message || audio.error?.code || 'audio error');
     };
     audio.play().then(() => {
+      if (sess.curAudio !== audio || audio._dubPlayToken !== playToken) {
+        stopAudioElementForSingleVoice(audio);
+        clearActiveDubbingAudio(sess, audio, playToken);
+        return;
+      }
       // 必须等 play() 真正成功后再记“最近出声时间”。旧版 Chrome 可能先返回
       // Audio 对象、随后 play() 被 pause() 打断；若提前记时间，看门狗会误以为
       // 配音仍正常，从而让“按钮显示配音中但一直没声音”的状态持续很久。
@@ -4474,10 +4555,14 @@ function playNextDue(sess, t) {
         if (rb) { rb.textContent = '🔊朗读中'; rb.title = '点击暂停朗读'; }
       }
     }).catch((e) => {
+      clearActiveDubbingAudio(sess, audio, playToken);
+      stopAudioElementForSingleVoice(audio);
       if (e?.name === 'AbortError') {
         // 切视频、缓冲或主动暂停会中断尚未完成的 play()。旧实现只清 curAudio，
         // 却把该句永久留在 played=true，随后整条播放队列可能静默停住。
-        if (sess.curAudio === audio) { sess.curAudio = null; sess.curSegment = null; }
+        if (sess.curAudio === audio && audio._dubPlayToken === playToken) {
+          sess.curAudio = null; sess.curSegment = null;
+        }
         best.played = false;
         setVideoRate(sess, defaultVideoRate(sess));
         if (sess.started && !sess._userPaused && !sess.video.paused) {
@@ -4496,7 +4581,9 @@ function playNextDue(sess, t) {
       // 修复链，不能沿用旧代码的“重两次就整个会话暂停”，否则长视频会在一段
       // 坏 MP3 后永久静音。只有 NotAllowedError 才需要用户手势恢复。
       console.error('[配音插件] ✗ audio.play() 被拦截/失败', e?.name, e?.message);
-      if (sess.curAudio === audio) { sess.curAudio = null; sess.curSegment = null; }
+      if (sess.curAudio === audio && audio._dubPlayToken === playToken) {
+        sess.curAudio = null; sess.curSegment = null;
+      }
       setVideoRate(sess, defaultVideoRate(sess));
       if (e?.name !== 'NotAllowedError') {
         recoverFailedPlaybackAudio(sess, best, 'audio_play_rejected', e?.message || e?.name || 'play rejected');
@@ -6862,6 +6949,11 @@ function stopDubbing(sess, btn, keepRecordingForNextVideo = false) {
   sess._readMode = false;
   sess.weArePausing = false;
   sess.bufferMissCount = 0;
+  if (sess.curAudio) {
+    stopAudioElementForSingleVoice(sess.curAudio);
+    clearActiveDubbingAudio(sess, sess.curAudio);
+  }
+  stopOtherDubbingAudio(sess, null, 'stop_dubbing');
   try { window.speechSynthesis?.cancel(); } catch (_) {}  // 停止时也要喊停浏览器自带语音兜底
   // 默认不自动下载变速日志/字幕/录音，要用popup里"下载本次配音变速日志+字幕"手动导出；
   // 勾了popup里"自动下载配音文件"这个独立开关（autoExportFiles）才自动导出整套文件——
@@ -6924,7 +7016,11 @@ function stopDubbing(sess, btn, keepRecordingForNextVideo = false) {
 // 长时间暂停后建议整段重新配音，不要指望这种情况下时间轴还能精确对齐。
 function pauseDubbing(sess, btn) {
   sess._userPaused = true;
-  if (sess.curAudio) { try { sess.curAudio.pause(); } catch (_) {} }
+  if (sess.curAudio) {
+    stopAudioElementForSingleVoice(sess.curAudio);
+    clearActiveDubbingAudio(sess, sess.curAudio);
+  }
+  stopOtherDubbingAudio(sess, null, 'pause_dubbing');
   if (sess.curSegment) sess.curSegment.played = false;  // 当前段放回，继续时从当前位置重选
   sess.curAudio = null; sess.curSegment = null;
   try { window.speechSynthesis?.cancel(); } catch (_) {}  // 同样要喊停浏览器自带语音兜底
@@ -7822,12 +7918,14 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       const seekEpoch = sess._seekEpoch;
       sess._audioLoading = false;
       if (sess.curAudio) {
-        try { sess.curAudio.pause(); } catch (_) {}
+        stopAudioElementForSingleVoice(sess.curAudio);
+        clearActiveDubbingAudio(sess, sess.curAudio);
         // 释放被打断段的 blob 和缓存，否则泄漏且下次取到已失效的缓存元素
         try { if (sess.curAudio.src?.startsWith('blob:')) URL.revokeObjectURL(sess.curAudio.src); } catch (_) {}
         if (sess.curSegment) delete sess.audioCache[sess.curSegment.audio_url];
         sess.curAudio = null; sess.curSegment = null;
       }
+      stopOtherDubbingAudio(sess, null, 'seeking');
       try { window.speechSynthesis?.cancel(); } catch (_) {}  // 跳转了，旧位置的兜底语音不能再念
       setVideoRate(sess, defaultVideoRate(sess));  // 防御性复位到默认速率
       sess.bufferMissCount = 0;
@@ -7930,10 +8028,12 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       // 表现就是"暂停再播放，少读了一两句"。这里改回 false，续播时会重新选中它、
       // 从头重念这一句（保证一定能听到，比漏读体验好得多）。
       if (sess.curAudio) {
-        try { sess.curAudio.pause(); } catch (_) {}
+        stopAudioElementForSingleVoice(sess.curAudio);
+        clearActiveDubbingAudio(sess, sess.curAudio);
         if (sess.curSegment) sess.curSegment.played = false;
         sess.curAudio = null; sess.curSegment = null;
       }
+      stopOtherDubbingAudio(sess, null, 'video_pause');
       // 同样的道理：还在异步加载中、还没真正赋给 curAudio 的那一句（见 _pendingSeg）
       // 也要重置，否则它会卡在"已播"状态、续播时被跳过——这是另一种"少读一句"的成因。
       if (sess._pendingSeg) {
