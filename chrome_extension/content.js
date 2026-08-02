@@ -2757,11 +2757,11 @@ function stopTabAudioRecordingAndDownload(sess, keepStream = false) {
 // 合成宽限：字幕没就绪时先让视频继续播多少个 timeupdate（约每秒4次）再考虑暂停。
 // 非常短暂的缺口（≈1秒内）能自己缓过来，不必停；连续没就绪才真暂停缓冲。
 const SYNTH_GRACE_TICKS = 4;
-const REALTIME_START_CRITICAL_SECONDS = 5 * 60;
+const REALTIME_START_CRITICAL_SECONDS = 2 * 60;
 const REALTIME_MIN_READY_SECONDS = 15 * 60;
 const REALTIME_NORMAL_AHEAD_SECONDS = REALTIME_MIN_READY_SECONDS;
 const REALTIME_START_AHEAD_SECONDS = 15 * 60;
-const REALTIME_FULL_CACHE_AFTER_SECONDS = 5 * 60;
+const REALTIME_FULL_CACHE_AFTER_SECONDS = 2 * 60;
 const REALTIME_INVENTORY_AUDIT_INTERVAL_MS = 1000;
 const REALTIME_INVENTORY_LOG_INTERVAL_MS = 15000;
 const REALTIME_INVENTORY_REFRESH_COOLDOWN_MS = 12000;
@@ -3834,7 +3834,7 @@ function shouldBuildFullRemainderCache(sess, current = null) {
     && t >= REALTIME_FULL_CACHE_AFTER_SECONDS;
 }
 
-function markFullRemainderCaching(sess, reason = 'played_over_5_minutes', current = null) {
+function markFullRemainderCaching(sess, reason = 'played_over_2_minutes', current = null) {
   if (!sess || sess._fullRemainderCaching) return;
   const t = current == null ? Number(sess.video?.currentTime || 0) : Number(current || 0);
   const duration = Number(sess.video?.duration || 0);
@@ -3845,7 +3845,7 @@ function markFullRemainderCaching(sess, reason = 'played_over_5_minutes', curren
     duration: Number.isFinite(duration) ? +duration.toFixed(3) : null,
     targetLead: REALTIME_MIN_READY_SECONDS,
   });
-  console.log('[配音插件] 已播放超过5分钟，开始补齐剩余全片配音；当前附近仍优先保持15分钟库存');
+  console.log('[配音插件] 已播放超过2分钟，开始补齐剩余全片配音；当前附近仍优先保持15分钟库存');
 }
 
 function readyDubKeySet(sess, now = 0) {
@@ -3918,7 +3918,7 @@ function auditRealtimeInventory(sess, reason = 'timer') {
   if (Date.now() - (sess._lastRealtimeInventoryActionAt || 0) < 750) return;
   sess._lastRealtimeInventoryActionAt = Date.now();
   sess._inventoryLowWaterUntil = Date.now() + REALTIME_INVENTORY_ACCELERATION_MS;
-  if (wantsFullRemainder) markFullRemainderCaching(sess, 'inventory_audit_played_over_5_minutes', current);
+  if (wantsFullRemainder) markFullRemainderCaching(sess, 'inventory_audit_played_over_2_minutes', current);
   if (sess._phase === 'done') {
     sess._phase = 'dubbing';
     sess._allDone = false;
@@ -3941,7 +3941,7 @@ function auditRealtimeInventory(sess, reason = 'timer') {
     });
     console.warn(firstGap
       ? '[配音插件] 当前点后15分钟库存不足，优先补近处缺口'
-      : '[配音插件] 已播放超过5分钟，15分钟库存满足后继续补齐全片', {
+      : '[配音插件] 已播放超过2分钟，15分钟库存满足后继续补齐全片', {
       reason,
       current: +current.toFixed(1),
       continuousLead: +lead.toFixed(1),
@@ -4152,8 +4152,8 @@ function maybeBufferForSynthesis(sess, t) {
   // 不会重现过去那种无限“正在补齐”。
   if (brieflyHoldForCurrentCue(sess, expected, t)) return true;
 
-  // “前五分钟重要”指优先补齐、提高重试频率，绝不等于前五分钟任意一条缺口
-  // 都可以把视频暂停。旧条件只看 t < 5min：首批已经开始播放后，23 秒处遇到
+  // “前两分钟重要”指优先补齐、提高重试频率，绝不等于前两分钟任意一条缺口
+  // 都可以把视频暂停。旧条件只看一个固定开头窗口：首批已经开始播放后，23 秒处遇到
   // 一条暂未装载的段也会重新进入启动闸门；视频一旦被自身暂停，t 不再变化，
   // 形成“正在补齐当前配音”的无限暂停。真正允许阻塞画面的仅是启动/归零闸门。
   const criticalStart = Number(t || 0) < REALTIME_START_CRITICAL_SECONDS
@@ -6100,15 +6100,15 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
   // 反而意味着每碎片都要重新发一次请求、重新判断一次相关术语，效率更低。改用大得多的
   // 批量，让服务器一次拿到更完整的上下文。普通模式（已经是中文，不用翻译）维持原来的
   // 小批量节奏不变，那条路径不存在"按批次重复开销"的问题，没必要跟着改。
-  // 硬规则：先保证“从当前播放点连续可播”至少十五分钟。不能因为后面某批返回较快，
+  // 硬规则：前2分钟只保证“从当前播放点连续可播”至少十五分钟。不能因为后面某批返回较快，
   // 就跳过近处缺口去做远期库存；那种“最远很靠前、当前却没声音”的状态没有价值。
-  // 连续库存达到十五分钟以后才说明速度有富余，此时可以一次性做完剩余视频。
+  // 播放超过2分钟后，生产范围扩到片尾，但队列仍按时间顺序从当前点向后补，先保当前15分钟。
   const getSynthesisAheadSeconds = () => {
     const duration = Number(video.duration || 0);
     const current = Number(video.currentTime || 0);
     const continuousLead = getDubLeadSeconds(sess, current);
     if (shouldBuildFullRemainderCache(sess, current)) {
-      markFullRemainderCaching(sess, 'main_stream_played_over_5_minutes', current);
+      markFullRemainderCaching(sess, 'main_stream_played_over_2_minutes', current);
       return Number.isFinite(duration) && duration > current
         ? duration - current + 1
         : REALTIME_NORMAL_AHEAD_SECONDS;
@@ -6637,8 +6637,8 @@ function pauseForTranslateFailure(sess, failedStarts) {
 // 补回 sess.dubSegments，不影响已经在播的部分。复用收尾补漏同一套逐句比对逻辑，
 // 单独抽出来供手动触发。
 // 字幕时间轴在播放中被恢复后，原先的顺序合成流可能已经因旧时间轴到头而退出。
-// 这个生产器从当前播放点向前重建库存：先保证至少 15 分钟，用户从头观看满 5
-// 分钟或已经看过三分之一后再持续做到片尾。它和 seek 的即时补句共享 _synthInFlight，
+// 这个生产器从当前播放点向前重建库存：前 2 分钟先保证至少 15 分钟库存；
+// 超过 2 分钟后持续做到片尾。它和 seek 的即时补句共享 _synthInFlight，
 // 因而不会出现两个逻辑抢同一句、用不同音色各做一次的情况。
 function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refresh') {
   if (!sess?.started || sess._readMode || !Array.isArray(sess._allSegments)) return;
@@ -6653,7 +6653,7 @@ function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refre
       const duration = Number(sess.video?.duration || 0);
       const continuousLead = getDubLeadSeconds(sess, now);
       const fullRemainder = shouldBuildFullRemainderCache(sess, now);
-      if (fullRemainder) markFullRemainderCaching(sess, `${reason}_played_over_5_minutes`, now);
+      if (fullRemainder) markFullRemainderCaching(sess, `${reason}_played_over_2_minutes`, now);
       const horizon = fullRemainder && duration > 0 ? duration + 1 : now + 15 * 60;
       const have = new Set((sess.dubSegments || [])
         .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
