@@ -796,6 +796,47 @@ def prune_excess_yes_fillers(segments, field='text', label='字幕'):
     return changed
 
 
+_CANCER_MEDICAL_RE = re.compile(
+    r'(?:'
+    r'患(?:上|有)?癌症|得(?:了)?癌症|罹患癌症|患癌|得癌|抗癌|防癌|治癌|'
+    r'癌症(?:患者|病人|治疗|诊断|筛查|检查|风险|晚期|早期|扩散|复发|转移|死亡|研究|疫苗|药物|病灶|细胞|基因|中心|医院)|'
+    r'(?:乳腺|乳房|肺|胃|肝|胰腺|肠|结直肠|前列腺|宫颈|卵巢|皮肤|血液|淋巴|甲状腺|食道|食管|膀胱|脑|骨|口腔)癌'
+    r')'
+)
+
+_CANCER_ZODIAC_TEXT_RE = re.compile(
+    r'(?:'
+    r'(?:你好|嗨|哈喽|亲爱的|各位|欢迎回来|祝你好运|好运|谢谢你|感谢你|再见).{0,6}癌症|'
+    r'癌症.{0,8}(?:们|宝宝|朋友|亲|座|星座|本周|今天|这个月|下个月|新月|满月|太阳|月亮|上升|水星|金星|火星|运势|塔罗|占卜|爱情|感情|事业|财务|灵性|疗愈|能量|读牌|牌阵)'
+    r')'
+)
+
+_CANCER_ZODIAC_CONTEXT_TERMS = (
+    '塔罗', '占卜', '读牌', '牌阵', '星座', '黄道', '十二宫', '运势', '本周运势',
+    '太阳星座', '月亮星座', '上升星座', '新月', '满月', '水星', '金星', '火星',
+    '白羊座', '金牛座', '双子座', '巨蟹座', '狮子座', '处女座', '天秤座',
+    '天蝎座', '射手座', '摩羯座', '水瓶座', '双鱼座',
+)
+
+
+def should_replace_cancer_with_zodiac(text, context_text=None):
+    """判断 YouTube/Gemini 把星座 Cancer 译成“癌症”时，是否该校正为“巨蟹座”。
+
+    医学词组优先保护：比如“患癌症/癌症患者/癌症治疗”永远不能改。
+    占星/塔罗语境或直接称呼语境才把“癌症”视为 Cancer 星座。
+    """
+    if not text or '癌症' not in text:
+        return False
+    if _CANCER_MEDICAL_RE.search(text):
+        return False
+    if _CANCER_ZODIAC_TEXT_RE.search(text):
+        return True
+    ctx = context_text or text
+    if _CANCER_MEDICAL_RE.search(ctx) and not any(term in ctx for term in _CANCER_ZODIAC_CONTEXT_TERMS):
+        return False
+    return any(term in ctx for term in _CANCER_ZODIAC_CONTEXT_TERMS)
+
+
 def apply_glossary(text, context_text=None):
     """误译 → 正确术语 替换。
 
@@ -828,9 +869,12 @@ def apply_glossary(text, context_text=None):
     for w in keys:
         if w not in text:
             continue
+        if w == '癌症' and mapping.get(w) == '巨蟹座':
+            if not should_replace_cancer_with_zodiac(text, ctx):
+                continue
         f = file_of.get(w)
         others = (zh_by_file.get(f) or set()) - {mapping[w]} if f else set()
-        if w not in always_replace and others and not any(o in ctx for o in others):
+        if (w != '癌症' or mapping.get(w) != '巨蟹座') and w not in always_replace and others and not any(o in ctx for o in others):
             continue   # 同一主题包但没有其它词共现，大概率是别的语境，跳过这条有歧义的替换
         text = text.replace(w, mapping[w])
     return collapse_repeated_yes(text)

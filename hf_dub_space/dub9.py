@@ -1134,8 +1134,11 @@ def load_glossary_entries():
                     if not terms:
                         continue
                     wrongs = [w.strip() for w in (row.get('常见误译') or '').split('|') if w.strip()]
+                    # 记下来自哪个 csv 文件——同一文件代表同一主题包（比如整张星座表），
+                    # 用于下面 glossary_block_for_text 做"同主题共现"判断。
                     entries.append({'zh': zh, 'terms': terms, 'wrong_zh': wrongs,
-                                     'category': (row.get('分类') or '').strip()})
+                                     'category': (row.get('分类') or '').strip(),
+                                     'file': os.path.basename(f)})
         except Exception as e:
             print(f"  [术语表] 读取条目 {os.path.basename(f)} 失败: {e}")
     _glossary_entries_cache.update({'entries': entries, 'mtime': latest})
@@ -1166,8 +1169,24 @@ def glossary_block_for_text(source_text, limit=30):
                 break
     if not matched:
         return ''
-    lines = ['【专业术语参考——原文出现以下概念时，译名请使用括号里给的中文，不要按字面直译】']
+
+    # 同主题共现过滤：像 "Cancer" 同时有医学“癌症”和占星“巨蟹座”两种完全不同含义。
+    # 只有同一张主题表里至少命中两个概念时，才把这一整组术语注入 Gemini 提示；
+    # 只孤零零出现一个 Cancer，大概率可能是医学/日常语境，不能强迫模型译成巨蟹座。
+    file_counts = {}
+    for e in entries:
+        file_counts[e['file']] = file_counts.get(e['file'], 0) + 1
+    file_match_counts = {}
     for e in matched:
+        file_match_counts[e['file']] = file_match_counts.get(e['file'], 0) + 1
+    filtered = [
+        e for e in matched
+        if file_counts.get(e['file'], 1) <= 1 or file_match_counts.get(e['file'], 0) >= 2
+    ]
+    if not filtered:
+        return ''
+    lines = ['【专业术语参考——原文出现以下概念时，译名请使用括号里给的中文，不要按字面直译】']
+    for e in filtered:
         terms_str = ' | '.join(f'{k}:{v}' for k, v in e['terms'].items())
         wrong = ('；常见误译，勿用：' + '/'.join(e['wrong_zh'])) if e['wrong_zh'] else ''
         cat = f'（{e["category"]}）' if e.get('category') else ''
