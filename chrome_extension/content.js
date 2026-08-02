@@ -2756,6 +2756,50 @@ function sourceEventText(seg) {
   return normalizeCaptionCompareText(seg?._sourceText || seg?.translation || seg?.text || '');
 }
 
+function sourceEventIdentityKey(seg) {
+  const text = sourceEventText(seg);
+  if (!text) return '';
+  const start = Math.round(sourceEventStart(seg) * 10);
+  const end = Math.round(sourceEventEnd(seg) * 10);
+  return `${start}:${end}:${text}`;
+}
+
+function addBoundedSessionSetEntry(sess, setName, queueName, value, limit = 20000) {
+  if (!sess || !value) return;
+  sess[setName] = sess[setName] || new Set();
+  sess[queueName] = sess[queueName] || [];
+  if (!sess[setName].has(value)) {
+    sess[setName].add(value);
+    sess[queueName].push(value);
+  }
+  while (sess[queueName].length > limit) {
+    const old = sess[queueName].shift();
+    sess[setName].delete(old);
+  }
+}
+
+function rememberCompletedSourceEventIndex(sess, seg, epoch = sess?._seekEpoch || 0) {
+  if (!sess || !seg) return;
+  const exactKey = seg.key || _segKey(seg);
+  addBoundedSessionSetEntry(sess, '_completedSourceKeySet', '_completedSourceKeyQueue',
+    `${epoch}|${exactKey}`);
+  const identity = sourceEventIdentityKey(seg);
+  if (identity) {
+    addBoundedSessionSetEntry(sess, '_completedSourceIdentitySet', '_completedSourceIdentityQueue',
+      `${epoch}|${identity}`);
+  }
+}
+
+function sourceEventCompletedInEpoch(sess, seg, epoch = sess?._seekEpoch || 0) {
+  if (!sess || !seg) return false;
+  const exactKey = seg.key || _segKey(seg);
+  if (exactKey && sess._completedSourceKeySet?.has(`${epoch}|${exactKey}`)) return true;
+  const identity = sourceEventIdentityKey(seg);
+  if (identity && sess._completedSourceIdentitySet?.has(`${epoch}|${identity}`)) return true;
+  return !!(sess._completedSourceEvents || []).some((event) =>
+    event?.seekEpoch === epoch && isSameLogicalSourceEvent(event, seg));
+}
+
 // 同一句可能在“旧本地缓存 → 新字幕时间轴 → 即时补救”之间各有一份对象。
 // 这些对象的 sourceKey 会因为旧版切句、服务端回填或缓存版本不同而变化；若仍只
 // 比 key，就会在第一份音频播完后把第二份当成下一句再播一次。这里的判定只认
@@ -3129,15 +3173,22 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
 
 function rememberMissedRealtimeSegment(sess, seg, reason = 'not_ready') {
   if (!sess || !seg) return;
+  const seekEpoch = sess._seekEpoch || 0;
+  if (sourceEventCompletedInEpoch(sess, seg, seekEpoch)) return;
   sess._missedRealtimeSegments = sess._missedRealtimeSegments || new Map();
   const key = _segKey(seg);
   if (!sess._missedRealtimeSegments.has(key)) {
     sess._missedRealtimeSegments.set(key, {
       key,
+      _sourceKey: key,
+      _sourceStart: seg._sourceStart ?? seg.start,
+      _sourceEnd: seg._sourceEnd ?? seg.end,
+      _sourceText: seg._sourceText || seg.text || seg.translation || '',
       start: seg.start,
       end: seg.end,
       text: seg.translation || seg.text,
       sourceIndex: Number.isFinite(Number(seg._sourceIndex)) ? Number(seg._sourceIndex) : null,
+      seekEpoch,
       firstSeenAt: Date.now(),
       reason,
     });
@@ -3150,16 +3201,14 @@ function getMissedRealtimeDisplayRows(sess) {
   // 视频到结尾时，开头已成功补播的句子会被历史记录挤掉，旧代码便把它们又误报为
   // “未显示”。完成账本只用于当前一次播放，既不会跨 run 累积，也会在补播成功时
   // 主动删掉对应漏句。
-  const completedKeys = new Set((sess._completedSourceEvents || []).map((item) => item.sourceKey));
-  const completedEvents = sess._completedSourceEvents || [];
   const all = Array.isArray(sess._allSegments) ? sess._allSegments : [];
   const lineByKey = new Map(all.map((seg, index) => [
     _segKey(seg),
     Number.isFinite(Number(seg._sourceIndex)) ? Number(seg._sourceIndex) + 1 : index + 1,
   ]));
   return [...sess._missedRealtimeSegments.values()]
-    .filter((item) => item?.key && !completedKeys.has(item.key)
-      && !completedEvents.some((event) => isSameLogicalSourceEvent(item, event)))
+    .filter((item) => item?.key
+      && !sourceEventCompletedInEpoch(sess, item, item.seekEpoch ?? (sess._seekEpoch || 0)))
     .map((item) => ({
       ...item,
       line: Number.isFinite(Number(item.sourceIndex))
@@ -3362,9 +3411,7 @@ function _currentSegReadyAt(sess, t) {
 // "played" alone is therefore not evidence that the listener heard it; only a
 // completed event in the active seek epoch is.
 function sourceEventCompletedInActiveEpoch(sess, seg) {
-  const epoch = sess?._seekEpoch || 0;
-  return !!(sess?._completedSourceEvents || []).some((event) =>
-    event?.seekEpoch === epoch && isSameLogicalSourceEvent(event, seg));
+  return sourceEventCompletedInEpoch(sess, seg, sess?._seekEpoch || 0);
 }
 
 function rearmStrandedCurrentDubSegment(sess, expected, t) {
@@ -3409,8 +3456,8 @@ function segmentCountsTowardPlayableFrontier(sess, seg, now) {
 // audio, or pause indefinitely.  A short, one-shot gate gives the local cache
 // an opportunity to hydrate the current cue without turning a temporary server
 // hiccup into an endless video freeze.
-const BRIEF_CURRENT_CUE_HOLD_MS = 2400;
-const BRIEF_CURRENT_CUE_HOLD_COOLDOWN_MS = 2500;
+const BRIEF_CURRENT_CUE_HOLD_MS = 5000;
+const BRIEF_CURRENT_CUE_HOLD_COOLDOWN_MS = 1000;
 
 function releaseBriefCurrentCueHoldIfReady(sess, t, reason = 'current_audio_ready') {
   const hold = sess?._briefCurrentCueHold;
@@ -3524,6 +3571,7 @@ function rememberCompletedSpoken(sess, seg) {
     end: +(segmentTimelineEnd(seg) || 0).toFixed(3),
     text: String(seg.translation || seg.text || ''),
   };
+  rememberCompletedSourceEventIndex(sess, seg, completed.seekEpoch);
   sess._completedSourceEvents = sess._completedSourceEvents || [];
   sess._completedSourceEvents.push(completed);
   // 只需要保留最近的事件以防缓存/修复路径的 sourceKey 略有不同；真正的漏句
@@ -3928,6 +3976,12 @@ function maybeBufferForSynthesis(sess, t) {
     }
   };
   _ensureLocalCacheLead(sess, t);
+  // 不能在一句配音正在播放/加载时，为了下一句库存去暂停视频。之前这里会触发
+  // video.pause()，pause 处理又把当前句 played 改回 false，长视频里就表现成
+  // “刚说过的句子隔几句又重说，同时下一句被统计为漏句”。
+  if (sess.curAudio || sess._webSpeechActive || sess._audioLoading || sess._pendingSeg) {
+    return false;
+  }
   // 快速路径：只要合成前沿/可播缓存已经覆盖或明显领先当前时间，就不因为某个
   // 边界句短暂未命中而暂停视频。长视频几千段字幕时，这也是避免每个 timeupdate
   // 都全量扫描、最后二十分钟主线程越来越卡的关键。
@@ -7953,6 +8007,10 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     // 启动阶段的诊断也属于这一轮。
     sess._missedRealtimeSegments = new Map();
     sess._completedSourceEvents = [];
+    sess._completedSourceKeySet = new Set();
+    sess._completedSourceKeyQueue = [];
+    sess._completedSourceIdentitySet = new Set();
+    sess._completedSourceIdentityQueue = [];
     sess._playedSourceEvents = [];
     sess._diagnosticLog = [];
     sess._diagnosticCounts = {};
