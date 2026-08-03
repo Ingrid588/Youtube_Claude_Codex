@@ -3694,6 +3694,7 @@ function updateRealtimeMonitor(sess, reason = 'refresh') {
     stat('累计补全', String(stats.repairedTotal)),
     stat('剩余漏句', String(stats.remaining)),
     stat('时间轴补回', String(sess?._subtitlePipelineRepairTotal || 0)),
+    stat('审计疑似', String(sess?._subtitlePipelineRepairSuppressedTotal || 0)),
   );
 
   const repairingText = stats.repairing.length
@@ -3725,7 +3726,20 @@ function updateRealtimeMonitor(sess, reason = 'refresh') {
   panel.append(top, grid, repairing, hint, list);
 }
 
-function subtitleTextCoveredByProcessedTimeline(sourceSeg, processedSegments) {
+function countNeedleInNormalizedText(haystack, needle, max = 10000) {
+  if (!haystack || !needle) return 0;
+  let count = 0;
+  let index = 0;
+  while (count < max) {
+    index = haystack.indexOf(needle, index);
+    if (index < 0) break;
+    count += 1;
+    index += Math.max(1, needle.length);
+  }
+  return count;
+}
+
+function subtitleTextCoveredByProcessedTimeline(sourceSeg, processedSegments, processedGlobalNorm = '', sourceNormCounts = null, processedNormCountCache = null) {
   const sourceNorm = normalizeCaptionCompareText(sourceSeg?.text || '');
   if (!sourceNorm || sourceNorm.length < 4) return true;
   const start = Number(sourceSeg.start || 0);
@@ -3734,13 +3748,26 @@ function subtitleTextCoveredByProcessedTimeline(sourceSeg, processedSegments) {
     .filter((seg) => Number(seg.end || seg.start || 0) >= start - 3
       && Number(seg.start || 0) <= end + 6)
     .sort(compareDubSegments);
-  if (!nearby.length) return false;
-  const joined = normalizeCaptionCompareText(nearby.map((seg) => seg.text || '').join(''));
-  if (joined.includes(sourceNorm)) return true;
-  return nearby.some((seg) => {
-    const norm = normalizeCaptionCompareText(seg.text || '');
-    return norm.includes(sourceNorm) || (sourceNorm.includes(norm) && norm.length >= Math.min(8, sourceNorm.length));
-  });
+  if (nearby.length) {
+    const joined = normalizeCaptionCompareText(nearby.map((seg) => seg.text || '').join(''));
+    if (joined.includes(sourceNorm)) return true;
+    if (nearby.some((seg) => {
+      const norm = normalizeCaptionCompareText(seg.text || '');
+      return norm.includes(sourceNorm) || (sourceNorm.includes(norm) && norm.length >= Math.min(8, sourceNorm.length));
+    })) return true;
+  }
+  // YouTube 自动翻译字幕常被脚本合并成更长的中文句子；只看附近时间窗会把
+  // 已经包含在合并句中的原字幕误判为“漏句”，进而改写时间轴并让旧缓存失配。
+  // 因此在局部没命中时，再用全局合并文本确认一次；但要尊重重复出现的原句：
+  // 处理后文本中出现次数足够，才算已覆盖。
+  if (!processedGlobalNorm || !processedGlobalNorm.includes(sourceNorm)) return false;
+  const sourceTotal = sourceNormCounts?.get(sourceNorm) || 1;
+  let processedTotal = processedNormCountCache?.get(sourceNorm);
+  if (!Number.isFinite(processedTotal)) {
+    processedTotal = countNeedleInNormalizedText(processedGlobalNorm, sourceNorm, sourceTotal + 2);
+    processedNormCountCache?.set(sourceNorm, processedTotal);
+  }
+  return processedTotal >= sourceTotal;
 }
 
 function repairProcessedTimelineCoverage(sess, sourceSegments, processedSegments, label = '配音时间轴') {
@@ -3750,12 +3777,19 @@ function repairProcessedTimelineCoverage(sess, sourceSegments, processedSegments
   }
   const repaired = processedSegments.slice();
   const existingKeys = new Set(repaired.map((seg) => `${Math.round((seg.start || 0) * 1000)}|${normalizeCaptionCompareText(seg.text || '')}`));
+  const processedGlobalNorm = normalizeCaptionCompareText(processedSegments.map((seg) => seg?.text || '').join(''));
+  const sourceNormCounts = new Map();
+  for (const source of sourceSegments) {
+    const norm = normalizeCaptionCompareText(source?.text || '');
+    if (norm && norm.length >= 4) sourceNormCounts.set(norm, (sourceNormCounts.get(norm) || 0) + 1);
+  }
+  const processedNormCountCache = new Map();
   const missing = [];
   for (const source of sourceSegments) {
     const text = String(source.text || '').trim();
     const norm = normalizeCaptionCompareText(text);
     if (!text || norm.length < 4) continue;
-    if (subtitleTextCoveredByProcessedTimeline(source, repaired)) continue;
+    if (subtitleTextCoveredByProcessedTimeline(source, repaired, processedGlobalNorm, sourceNormCounts, processedNormCountCache)) continue;
     const key = `${Math.round((source.start || 0) * 1000)}|${norm}`;
     if (existingKeys.has(key)) continue;
     existingKeys.add(key);
@@ -3773,6 +3807,27 @@ function repairProcessedTimelineCoverage(sess, sourceSegments, processedSegments
     missing.push(restored);
   }
   if (!missing.length) return processedSegments;
+  const bulkRepairLimit = Math.max(80, Math.ceil(sourceSegments.length * 0.05));
+  if (missing.length > bulkRepairLimit) {
+    sess._subtitlePipelineRepairSuppressedTotal = (sess._subtitlePipelineRepairSuppressedTotal || 0) + missing.length;
+    recordDiagnostic(sess, 'subtitle_processing_coverage_bulk_restore_suppressed', {
+      label,
+      count: missing.length,
+      limit: bulkRepairLimit,
+      reason: 'bulk_restore_suppressed_to_preserve_existing_cache_timeline',
+      samples: missing.slice(0, 20).map((seg) => ({
+        line: getRealtimeMonitorLine(sess, seg),
+        start: +(Number(seg.start || 0)).toFixed(3),
+        end: +(Number(seg.end || seg.start || 0)).toFixed(3),
+        text: seg.text,
+      })),
+    });
+    missing.slice(0, 12).forEach((seg) => pushRealtimeMonitorEvent(sess, 'pipeline_missing', seg, {
+      reason: `疑似批量误判（${missing.length}条），已保留旧配音时间轴和缓存，不自动重排`,
+    }));
+    console.warn(`[配音插件] ${label}覆盖审计疑似批量误判 ${missing.length} 条，已保留原时间轴避免缓存失配`, missing.slice(0, 5));
+    return processedSegments;
+  }
   repaired.sort(compareDubSegments);
   sess._subtitlePipelineRepairTotal = (sess._subtitlePipelineRepairTotal || 0) + missing.length;
   recordDiagnostic(sess, 'subtitle_processing_coverage_repaired', {
