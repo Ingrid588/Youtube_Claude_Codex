@@ -3251,6 +3251,16 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
   state.lastAt = now;
   state.tries += 1;
   sess._realtimeCurrentRepair.set(key, state);
+  sess._realtimeRepairingSegments = sess._realtimeRepairingSegments || new Map();
+  sess._realtimeRepairingSegments.set(key, {
+    ...seg,
+    key,
+    reason: 'current_sentence',
+    tries: state.tries,
+  });
+  pushRealtimeMonitorEvent(sess, 'repairing', seg, {
+    reason: early ? '开头当前句优先补' : '当前句优先补',
+  });
   recordDiagnostic(sess, 'realtime_current_sentence_repair_start', {
     currentTime: +(t || 0).toFixed(3),
     missingStart: +(seg.start || 0).toFixed(3),
@@ -3287,6 +3297,10 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
           currentTime: +(sess.video?.currentTime || 0).toFixed(3),
           missingStart: +(seg.start || 0).toFixed(3),
           tries: state.tries,
+        });
+        sess._realtimeRepairingSegments?.delete(key);
+        pushRealtimeMonitorEvent(sess, 'cache_done', item, {
+          reason: '当前句命中本地缓存',
         });
         releaseBriefCurrentCueHoldIfReady(sess, sess.video?.currentTime || t,
           'current_sentence_loaded_from_local_cache');
@@ -3333,6 +3347,11 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
           repaired,
           tries: state.tries,
         });
+        sess._realtimeRepairingSegments?.delete(key);
+        pushRealtimeMonitorEvent(sess, 'cache_done', got[0] || seg, {
+          reason: '当前句音频已入库',
+          count: repaired,
+        });
         releaseBriefCurrentCueHoldIfReady(sess, sess.video?.currentTime || t,
           'current_sentence_repair_done');
         playNextDue(sess, sess.video.currentTime);
@@ -3343,6 +3362,10 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
         missingStart: +(seg.start || 0).toFixed(3),
         tries: state.tries,
         error: e?.message || String(e || ''),
+      });
+      sess._realtimeRepairingSegments?.delete(key);
+      pushRealtimeMonitorEvent(sess, 'repair_failed', seg, {
+        reason: e?.message || String(e || ''),
       });
       console.warn('[配音插件] 当前句即时补救失败，继续短间隔重试', e?.message || e);
     } finally {
@@ -3366,7 +3389,7 @@ function rememberMissedRealtimeSegment(sess, seg, reason = 'not_ready') {
   sess._missedRealtimeSegments = sess._missedRealtimeSegments || new Map();
   const key = _segKey(seg);
   if (!sess._missedRealtimeSegments.has(key)) {
-    sess._missedRealtimeSegments.set(key, {
+    const item = {
       key,
       _sourceKey: key,
       _sourceStart: seg._sourceStart ?? seg.start,
@@ -3379,8 +3402,12 @@ function rememberMissedRealtimeSegment(sess, seg, reason = 'not_ready') {
       seekEpoch,
       firstSeenAt: Date.now(),
       reason,
-    });
+    };
+    sess._missedRealtimeSegments.set(key, item);
+    sess._realtimeMissedTotal = (sess._realtimeMissedTotal || 0) + 1;
+    pushRealtimeMonitorEvent(sess, 'missed', item, { reason });
   }
+  updateRealtimeMonitor(sess, 'missed');
 }
 
 function getMissedRealtimeDisplayRows(sess) {
@@ -3488,6 +3515,184 @@ function showMissedRealtimeSummary(sess) {
   void persistDiagnosticLogToLocalPluginFolder(sess, 'missed_realtime_summary');
 }
 
+function getRealtimeMonitorLine(sess, seg) {
+  if (!seg) return 0;
+  if (Number.isFinite(Number(seg.sourceIndex))) return Number(seg.sourceIndex) + 1;
+  if (Number.isFinite(Number(seg._sourceIndex))) return Number(seg._sourceIndex) + 1;
+  const all = Array.isArray(sess?._allSegments) ? sess._allSegments : [];
+  const key = seg.key || _segKey(seg);
+  const index = all.findIndex((item) => _segKey(item) === key || isSameLogicalSourceEvent(item, seg));
+  return index >= 0 ? index + 1 : 0;
+}
+
+function getRealtimeMonitorText(seg, maxLen = 82) {
+  const raw = String(seg?.text || seg?.translation || seg?._sourceText || '').trim();
+  if (!raw) return '';
+  return raw.length > maxLen ? `${raw.slice(0, maxLen - 1)}…` : raw;
+}
+
+function getRealtimeMonitorStats(sess) {
+  const current = Number(sess?.video?.currentTime || 0);
+  const continuousFrontier = (typeof getLoadedDubQueueFrontier === 'function')
+    ? getLoadedDubQueueFrontier(sess, current) : Number(sess?._maxSynthedTime || 0);
+  const generated = Math.max(Number(sess?._maxSynthedTime || 0), continuousFrontier || 0);
+  const missedRows = getMissedRealtimeDisplayRows(sess);
+  const repairing = [...(sess?._realtimeRepairingSegments || new Map()).values()];
+  return {
+    current,
+    continuousFrontier: Number.isFinite(continuousFrontier) ? continuousFrontier : 0,
+    generated: Number.isFinite(generated) ? generated : 0,
+    lead: Math.max(0, (continuousFrontier || 0) - current),
+    missedTotal: sess?._realtimeMissedTotal || 0,
+    repairedTotal: sess?._realtimeRepairedTotal || 0,
+    remaining: missedRows.length,
+    repairing,
+  };
+}
+
+function ensureRealtimeMonitorPanel(sess) {
+  if (!sess || sess._realtimeMonitorClosed) return null;
+  let panel = document.getElementById('yt-dub-realtime-monitor');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'yt-dub-realtime-monitor';
+    panel.style.cssText = [
+      'position:relative',
+      'z-index:2147483646',
+      'box-sizing:border-box',
+      'max-width:min(920px,calc(100vw - 24px))',
+      'max-height:min(420px,58vh)',
+      'overflow:auto',
+      'background:#0f172a',
+      'color:#f8fafc',
+      'font:13px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+      'border:1px solid rgba(148,163,184,.35)',
+      'border-radius:14px',
+      'box-shadow:0 12px 30px rgba(15,23,42,.28)',
+      'padding:12px',
+      'margin:10px 0',
+    ].join(';');
+    const anchor = document.querySelector('#player') || document.querySelector('#movie_player')?.parentElement;
+    if (anchor?.parentElement) {
+      anchor.insertAdjacentElement('afterend', panel);
+    } else {
+      panel.style.position = 'fixed';
+      panel.style.left = '50%';
+      panel.style.transform = 'translateX(-50%)';
+      panel.style.bottom = '16px';
+      document.body.appendChild(panel);
+    }
+  }
+  return panel;
+}
+
+function pushRealtimeMonitorEvent(sess, kind, seg = null, extra = {}) {
+  if (!sess) return;
+  sess._realtimeMonitorEvents = sess._realtimeMonitorEvents || [];
+  sess._realtimeMonitorEventThrottle = sess._realtimeMonitorEventThrottle || new Map();
+  const key = `${kind}:${seg?.key || (seg ? _segKey(seg) : extra.key || extra.reason || '')}`;
+  const now = Date.now();
+  const last = sess._realtimeMonitorEventThrottle.get(key) || 0;
+  const minGap = kind === 'inventory' ? 3500 : 700;
+  if (now - last < minGap) {
+    updateRealtimeMonitor(sess, kind);
+    return;
+  }
+  sess._realtimeMonitorEventThrottle.set(key, now);
+  const start = Number(seg?.start ?? seg?._sourceStart ?? extra.start ?? sess.video?.currentTime ?? 0);
+  const event = {
+    at: now,
+    kind,
+    line: getRealtimeMonitorLine(sess, seg),
+    start,
+    time: formatHMS(start),
+    text: getRealtimeMonitorText(seg),
+    reason: extra.reason || '',
+    detail: extra.detail || '',
+    count: Number.isFinite(Number(extra.count)) ? Number(extra.count) : null,
+  };
+  sess._realtimeMonitorEvents.push(event);
+  if (sess._realtimeMonitorEvents.length > 160) sess._realtimeMonitorEvents.splice(0, sess._realtimeMonitorEvents.length - 160);
+  updateRealtimeMonitor(sess, kind);
+}
+
+function updateRealtimeMonitor(sess, reason = 'refresh') {
+  if (!sess?.started || sess._readMode) return;
+  const panel = ensureRealtimeMonitorPanel(sess);
+  if (!panel) return;
+  const stats = getRealtimeMonitorStats(sess);
+  const events = (sess._realtimeMonitorEvents || []).slice(-14).reverse();
+  const make = (tag, text = '', css = '') => {
+    const el = document.createElement(tag);
+    if (css) el.style.cssText = css;
+    if (text) el.textContent = text;
+    return el;
+  };
+  const eventLabel = (kind) => ({
+    missed: '漏句',
+    repairing: '正在补',
+    repaired: '已补全',
+    repair_failed: '补句失败',
+    inventory: '库存',
+    cache_done: '已入库',
+  }[kind] || kind);
+  panel.replaceChildren();
+
+  const top = make('div', '', 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px');
+  const title = make('div', '实时配音逐句监控', 'font-weight:700;font-size:15px');
+  const close = make('button', '×', 'border:0;background:rgba(255,255,255,.08);color:#fff;border-radius:999px;width:24px;height:24px;line-height:22px;cursor:pointer;font-size:18px');
+  close.title = '关闭本页实时监控面板';
+  close.addEventListener('click', () => {
+    sess._realtimeMonitorClosed = true;
+    panel.remove();
+  });
+  top.append(title, close);
+
+  const grid = make('div', '', 'display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:7px;margin-bottom:9px');
+  const stat = (label, value) => {
+    const box = make('div', '', 'background:rgba(255,255,255,.07);border-radius:9px;padding:7px 8px');
+    box.append(
+      make('div', label, 'opacity:.72;font-size:12px;margin-bottom:2px'),
+      make('div', value, 'font-weight:700;font-size:13px;white-space:nowrap'));
+    return box;
+  };
+  grid.append(
+    stat('当前播放', formatHMS(stats.current)),
+    stat('连续库存到', `${formatHMS(stats.continuousFrontier)}（${Math.round(stats.lead)}秒）`),
+    stat('最远生成到', formatHMS(stats.generated)),
+    stat('累计漏句', String(stats.missedTotal)),
+    stat('累计补全', String(stats.repairedTotal)),
+    stat('剩余漏句', String(stats.remaining)),
+  );
+
+  const repairingText = stats.repairing.length
+    ? stats.repairing.slice(0, 3).map((item) => {
+      const line = getRealtimeMonitorLine(sess, item);
+      return `${line ? `第${line}行 / ` : ''}${formatHMS(Number(item.start || 0))}：${getRealtimeMonitorText(item, 46)}`;
+    }).join('；')
+    : '当前没有正在补的句子';
+  const repairing = make('div', `正在补：${repairingText}`, 'background:rgba(219,39,119,.16);border:1px solid rgba(244,114,182,.28);border-radius:10px;padding:8px 9px;margin-bottom:9px');
+
+  const hint = make('div',
+    `策略：先保当前句和后续15分钟连续库存；连续库存达标后才扩展全片。触发：${reason}`,
+    'opacity:.78;margin-bottom:8px');
+  const list = make('div', '', 'display:flex;flex-direction:column;gap:6px');
+  if (!events.length) {
+    list.append(make('div', '还没有漏句/补句事件；面板会继续刷新库存状态。', 'opacity:.72;background:rgba(255,255,255,.05);border-radius:8px;padding:7px 9px'));
+  } else {
+    for (const ev of events) {
+      const row = make('div', '', 'background:rgba(255,255,255,.06);border-radius:8px;padding:7px 9px');
+      const line = ev.line ? `第${ev.line}行 / ` : '';
+      const meta = `${eventLabel(ev.kind)} · ${line}${ev.time}`;
+      const body = ev.text ? `：${ev.text}` : (ev.detail ? `：${ev.detail}` : '');
+      const tail = ev.reason ? `（${ev.reason}）` : '';
+      row.textContent = `${meta}${body}${tail}`;
+      list.append(row);
+    }
+  }
+  panel.append(top, grid, repairing, hint, list);
+}
+
 function isRealtimeSubtitleSuppressed(sess, seg) {
   if (!sess?._missedRealtimeSegments || !seg) return false;
   const key = _segKey(seg);
@@ -3532,6 +3737,14 @@ function repairEarlyDubbingWindow(sess, t) {
   const keys = missing.map(_segKey);
   sess._synthInFlight = sess._synthInFlight || new Set();
   keys.forEach((key) => sess._synthInFlight.add(key));
+  sess._realtimeRepairingSegments = sess._realtimeRepairingSegments || new Map();
+  missing.forEach((seg) => {
+    const key = _segKey(seg);
+    sess._realtimeRepairingSegments.set(key, { ...seg, key, reason: 'early_window_gap' });
+  });
+  missing.slice(0, 6).forEach((seg) => pushRealtimeMonitorEvent(sess, 'repairing', seg, {
+    reason: critical ? '开头窗口漏句优先补' : '前段窗口漏句补齐',
+  }));
   recordDiagnostic(sess, 'early_window_gap_repair_start', {
     currentTime: +(+t || 0).toFixed(3), end, count: missing.length,
   });
@@ -3563,13 +3776,21 @@ function repairEarlyDubbingWindow(sess, t) {
       sess.dubSegments.sort(compareDubSegments);
       markReturnedAudioPersisted(sess, got, sess.video.currentTime || t || 0);
       recordDiagnostic(sess, 'early_window_gap_repair_done', { count: got.length, end });
+      got.slice(0, 8).forEach((item) => pushRealtimeMonitorEvent(sess, 'cache_done', item, {
+        reason: '前段漏句音频已入库',
+      }));
       playNextDue(sess, sess.video.currentTime);
     } catch (e) {
       recordDiagnostic(sess, 'early_window_gap_repair_failed', { error: e?.message || String(e || ''), end });
+      missing.slice(0, 6).forEach((seg) => pushRealtimeMonitorEvent(sess, 'repair_failed', seg, {
+        reason: e?.message || String(e || ''),
+      }));
       console.warn('[配音插件] 前十分钟缺段补救暂时失败，将继续短间隔审计', e?.message || e);
     } finally {
       keys.forEach((key) => sess._synthInFlight?.delete(key));
+      keys.forEach((key) => sess._realtimeRepairingSegments?.delete(key));
       sess._earlyWindowRepairing = false;
+      updateRealtimeMonitor(sess, 'early_window_repair_done');
     }
   })();
 }
@@ -3795,21 +4016,26 @@ function rememberCompletedSpoken(sess, seg) {
 
   const missed = sess._missedRealtimeSegments;
   if (missed?.size) {
-    let recovered = 0;
+    const recoveredItems = [];
     for (const [key, item] of missed) {
       if (key === completed.sourceKey || isSameLogicalSourceEvent(item, completed)) {
         missed.delete(key);
-        recovered++;
+        recoveredItems.push(item);
       }
     }
-    if (recovered) {
+    if (recoveredItems.length) {
+      sess._realtimeRepairedTotal = (sess._realtimeRepairedTotal || 0) + recoveredItems.length;
+      recoveredItems.forEach((item) => pushRealtimeMonitorEvent(sess, 'repaired', item, {
+        reason: '已实际播放完成',
+      }));
       recordDiagnostic(sess, 'realtime_missed_sentence_recovered', {
-        count: recovered,
+        count: recoveredItems.length,
         sourceKey: completed.sourceKey,
         start: completed.start,
       });
     }
   }
+  updateRealtimeMonitor(sess, 'spoken');
 }
 
 function _hasForwardDubCache(sess, t, windowSec = 45) {
@@ -4040,6 +4266,7 @@ function auditRealtimeInventory(sess, reason = 'timer') {
 
   const lead = getDubLeadSeconds(sess, current);
   const sourceEnd = getCaptionTimelineEnd(sess._allSegments);
+  updateRealtimeMonitor(sess, 'inventory_audit');
   const needsTimelineRefresh = captionTimelineNeedsInventoryRefresh(sess, current);
   if (needsTimelineRefresh) {
     const nowMs = Date.now();
@@ -4102,6 +4329,20 @@ function auditRealtimeInventory(sess, reason = 'timer') {
       firstGap: firstGap ? +Number(firstGap.start || 0).toFixed(1)
         : (firstFullGap ? +Number(firstFullGap.start || 0).toFixed(1) : null),
       sourceEnd: +sourceEnd.toFixed(1),
+    });
+  }
+  if (firstGap) {
+    pushRealtimeMonitorEvent(sess, 'inventory', firstGap, {
+      reason: `15分钟连续库存断点，当前余量${Math.round(lead)}秒`,
+    });
+  } else if (firstFullGap) {
+    pushRealtimeMonitorEvent(sess, 'inventory', firstFullGap, {
+      reason: '15分钟库存已优先满足，开始补全片后续缺口',
+    });
+  } else if (needsTimelineRefresh) {
+    pushRealtimeMonitorEvent(sess, 'inventory', null, {
+      reason: '字幕时间轴不足，正在刷新字幕轴',
+      start: current,
     });
   }
 
@@ -6264,6 +6505,9 @@ async function processDubbingChunked(rawSegments, videoId, title, sess, fail, on
     const continuousLead = getDubLeadSeconds(sess, current);
     if (shouldBuildFullRemainderCache(sess, current)) {
       markFullRemainderCaching(sess, 'main_stream_played_over_2_minutes', current);
+      if (continuousLead < REALTIME_MIN_READY_SECONDS) {
+        return REALTIME_MIN_READY_SECONDS;
+      }
       return Number.isFinite(duration) && duration > current
         ? duration - current + 1
         : REALTIME_NORMAL_AHEAD_SECONDS;
@@ -6807,8 +7051,9 @@ function launchTimelineProducer(sess, fromTime, reason = 'caption_timeline_refre
       const now = Number(sess.video?.currentTime || fromTime || 0);
       const duration = Number(sess.video?.duration || 0);
       const continuousLead = getDubLeadSeconds(sess, now);
-      const fullRemainder = shouldBuildFullRemainderCache(sess, now);
-      if (fullRemainder) markFullRemainderCaching(sess, `${reason}_played_over_2_minutes`, now);
+      const fullRemainderRequested = shouldBuildFullRemainderCache(sess, now);
+      if (fullRemainderRequested) markFullRemainderCaching(sess, `${reason}_played_over_2_minutes`, now);
+      const fullRemainder = fullRemainderRequested && continuousLead >= REALTIME_MIN_READY_SECONDS;
       const horizon = fullRemainder && duration > 0 ? duration + 1 : now + 15 * 60;
       const have = new Set((sess.dubSegments || [])
         .filter((s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale)
@@ -8469,6 +8714,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
           frontier: sess.video?.duration || upToSec,
           voice: sess._cachedVoice || sess._autoVoice || '',
         });
+        updateRealtimeMonitor(sess, 'full_local_cache');
         return;
       }
       const now = Number(sess.video?.currentTime || 0);
@@ -8496,6 +8742,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
         btn.textContent = `${icon}${modeTag}库存${leadLabel}${fullTag}`;
         btn.title = `${verb}生成中：从当前点连续可播到 ${continuousHms}（库存 ${Math.round(continuousLead)} 秒）；最远已合成到 ${generatedHms}${fullTag}`;
       }
+      updateRealtimeMonitor(sess, 'chunk_progress');
     };
 
     // 全部生成完成
