@@ -2441,8 +2441,11 @@ function postDiagnosticLogViaBackground(endpoint, body, timeoutMs = 4500) {
   });
 }
 
-async function persistDiagnosticLogToLocalPluginFolder(sess, reason = 'session') {
+async function persistDiagnosticLogToLocalPluginFolder(sess, reason = 'session', options = {}) {
   if (!sess || sess._diagnosticLogSaving) return;
+  const now = Date.now();
+  if (!options.force && sess._diagnosticLogSaveUnavailableUntil
+      && now < sess._diagnosticLogSaveUnavailableUntil) return;
   sess._diagnosticLogSaving = true;
   const body = {
     filename: getDiagnosticLogFilename(sess),
@@ -2458,6 +2461,8 @@ async function persistDiagnosticLogToLocalPluginFolder(sess, reason = 'session')
     };
     addEndpoint('http://127.0.0.1:8765');
     addEndpoint(SERVER);
+    addEndpoint(DEFAULT_SERVER);
+    addEndpoint(TEST_SERVER);
     const results = await Promise.allSettled(endpoints.map((endpoint) =>
       postDiagnosticLogViaBackground(endpoint, body)));
     const ok = results
@@ -2471,10 +2476,23 @@ async function persistDiagnosticLogToLocalPluginFolder(sess, reason = 'session')
     }
   } catch (e) {
     // 诊断保存不是实时配音的必要条件；保存失败不能影响正在播放的视频。
-    console.warn('[配音插件] 未能保存诊断日志（不影响配音）', e?.message || e);
+    sess._diagnosticLogSaveUnavailableUntil = Date.now() + (options.silent ? 60000 : 30000);
+    if (!options.silent) console.warn('[配音插件] 未能保存诊断日志（不影响配音）', e?.message || e);
   } finally {
     sess._diagnosticLogSaving = false;
   }
+}
+
+function scheduleDiagnosticLogPersist(sess, reason = 'realtime_monitor') {
+  if (!sess || !sess._diagnosticLog?.length) return;
+  const now = Date.now();
+  if (now - (sess._lastDiagnosticLogPersistScheduledAt || 0) < 20000) return;
+  sess._lastDiagnosticLogPersistScheduledAt = now;
+  clearTimeout(sess._diagnosticLogPersistTimer);
+  sess._diagnosticLogPersistTimer = setTimeout(() => {
+    if (!sess.started) return;
+    persistDiagnosticLogToLocalPluginFolder(sess, reason, { silent: true }).catch(() => {});
+  }, 1200);
 }
 
 function buildSourceSubtitleLedger(rawSegments, stage = 'source') {
@@ -3127,21 +3145,14 @@ async function requestSynthAround(sess, t) {
       const key = _segKey(s);
       const prior = existing.get(key);
       if (!prior) {
-        const inserted = { ...s, played: initialPlayedStateForInsertedSegment(sess, s, ct) };
+        const inserted = restorePlayableFlagsAfterCacheHydrate({ ...s }, ct, sess);
         sess.dubSegments.push(inserted);
         existing.set(key, inserted);
       } else if (prior._invalidAudio || prior._skipLocalCache || prior._skippedStale || !prior.audio_url
           || (!prior._persistedLocalAudio && s._persistedLocalAudio)) {
         const previousUrl = prior.audio_url;
         if (previousUrl && previousUrl !== s.audio_url) delete sess.audioCache?.[previousUrl];
-        Object.assign(prior, s, {
-          played: initialPlayedStateForInsertedSegment(sess, s, ct),
-          _invalidAudio: false,
-          _loadRetryCount: 0,
-        });
-        delete prior._skippedStale;
-        delete prior._skipLocalCache;
-        delete prior._audioFailureRecovering;
+        restorePlayableFlagsAfterCacheHydrate(Object.assign(prior, s), ct, sess);
       }
     }
     sess.dubSegments.sort(compareDubSegments);
@@ -3277,17 +3288,15 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
         const existingByKey = new Map((sess.dubSegments || []).map((x) => [_segKey(x), x]));
         const existing = existingByKey.get(_segKey(item));
         if (existing) {
-          Object.assign(existing, item, {
-            played: initialPlayedStateForInsertedSegment(sess, item, sess.video?.currentTime || t || 0),
-            _loadRetryCount: 0,
-            _invalidAudio: false,
-          });
-          delete existing._skippedStale;
+          restorePlayableFlagsAfterCacheHydrate(
+            Object.assign(existing, item),
+            sess.video?.currentTime || t || 0,
+            sess
+          );
         } else {
-          sess.dubSegments.push({
+          sess.dubSegments.push(restorePlayableFlagsAfterCacheHydrate({
             ...item,
-            played: initialPlayedStateForInsertedSegment(sess, item, sess.video?.currentTime || t || 0),
-          });
+          }, sess.video?.currentTime || t || 0, sess));
         }
         sess.dubSegments.sort(compareDubSegments);
         const frontier = segmentTimelineEnd(item);
@@ -3319,18 +3328,15 @@ function requestRealtimeCurrentSentenceRepair(sess, seg, t) {
         if (existing) {
           const previousUrl = existing.audio_url;
           if (previousUrl && previousUrl !== item.audio_url) delete sess.audioCache[previousUrl];
-          Object.assign(existing, item, {
-            played: initialPlayedStateForInsertedSegment(sess, item, sess.video?.currentTime || t || 0),
-            _loadRetryCount: 0,
-            _invalidAudio: false,
-          });
-          delete existing._skipLocalCache;
-          delete existing._audioFailureRecovering;
+          restorePlayableFlagsAfterCacheHydrate(
+            Object.assign(existing, item),
+            sess.video?.currentTime || t || 0,
+            sess
+          );
         } else {
-          sess.dubSegments.push({
+          sess.dubSegments.push(restorePlayableFlagsAfterCacheHydrate({
             ...item,
-            played: initialPlayedStateForInsertedSegment(sess, item, sess.video?.currentTime || t || 0),
-          });
+          }, sess.video?.currentTime || t || 0, sess));
           existingByKey.set(itemKey, item);
         }
         repaired++;
@@ -3641,6 +3647,9 @@ function pushRealtimeMonitorEvent(sess, kind, seg = null, extra = {}) {
   sess._realtimeMonitorEvents.push(event);
   if (sess._realtimeMonitorEvents.length > 160) sess._realtimeMonitorEvents.splice(0, sess._realtimeMonitorEvents.length - 160);
   updateRealtimeMonitor(sess, kind);
+  if (['missed', 'repairing', 'repaired', 'repair_failed', 'pipeline_missing', 'cache_done'].includes(kind)) {
+    scheduleDiagnosticLogPersist(sess, `realtime_${kind}`);
+  }
 }
 
 function updateRealtimeMonitor(sess, reason = 'refresh') {
@@ -3950,22 +3959,28 @@ function repairEarlyDubbingWindow(sess, t) {
 }
 
 // 当前时间 t 处是否已有"就绪(已合成带音频)"的配音段
+function segmentReadyForCurrentPlayback(sess, seg, t) {
+  if (!seg || (!seg.audio_url && !seg.web_speech) || seg._invalidAudio || seg._skippedStale) return false;
+  const segEnd = segmentTimelineEnd(seg);
+  if (seg.start > Number(t || 0) + 0.5 || segEnd < Number(t || 0) - 0.5) return false;
+  if (seg === sess?.curSegment || seg === sess?._pendingSeg) return true;
+  if (!seg.played) return true;
+  return sourceEventCompletedInActiveEpoch(sess, seg);
+}
+
 function _segReadyAt(sess, t) {
-  return sess.dubSegments.some((s) => {
-    const segEnd = segmentTimelineEnd(s);
-    return (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale
-      && s.start <= t + 0.5 && segEnd >= t - 0.5;
-  }) || sess.dubSegments.some(
-    (s) => (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale
-      && s.start > t && s.start <= t + 4);
+  return sess.dubSegments.some((s) => segmentReadyForCurrentPlayback(sess, s, t))
+    || sess.dubSegments.some((s) => {
+      if (!s || (!s.audio_url && !s.web_speech) || s._invalidAudio || s._skippedStale) return false;
+      if (s.start <= t || s.start > t + 4) return false;
+      if (s === sess?.curSegment || s === sess?._pendingSeg) return true;
+      if (!s.played) return true;
+      return sourceEventCompletedInActiveEpoch(sess, s);
+    });
 }
 
 function _currentSegReadyAt(sess, t) {
-  return sess.dubSegments.some((s) => {
-    const segEnd = segmentTimelineEnd(s);
-    return (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale
-      && s.start <= t + 0.5 && segEnd >= t - 0.5;
-  });
+  return sess.dubSegments.some((s) => segmentReadyForCurrentPlayback(sess, s, t));
 }
 
 // A segment may be marked played before its Audio element actually starts.
@@ -4013,6 +4028,46 @@ function segmentCountsTowardPlayableFrontier(sess, seg, now) {
   if (!seg.played || seg === sess?.curSegment || seg === sess?._pendingSeg) return true;
   if (segmentTimelineEnd(seg) < now - 0.5) return true;
   return sourceEventCompletedInActiveEpoch(sess, seg);
+}
+
+function restorePlayableFlagsAfterCacheHydrate(seg, t, sess = null) {
+  if (!seg) return seg;
+  seg._invalidAudio = false;
+  seg._loadRetryCount = 0;
+  seg._playRetryCount = 0;
+  delete seg._skipLocalCache;
+  delete seg._audioFailureRecovering;
+  delete seg._logicalDuplicateSuppressed;
+  const current = Number(t || 0);
+  const end = segmentEndForPlayback(seg);
+  const nearOverdue = current < 5 * 60 && end >= current - 8;
+  if (isRealtimeSegmentStale(seg, current) && !nearOverdue) {
+    skipRealtimeStaleSegment(sess, seg, current, 'cache_hydrated_after_window');
+  } else {
+    seg.played = false;
+    delete seg._skippedStale;
+  }
+  return seg;
+}
+
+function findNearOverduePlayableSegment(sess, t) {
+  if (!sess?.dubSegments?.length) return null;
+  const current = Number(t || 0);
+  // 开头几分钟要“织地毯”，不能因为句子刚过窗口就马上判漏；只对已经有
+  // 本地/已合成音频的段生效，不会额外等网络，也不会把远古漏句拖回来。
+  const maxBehind = current < 5 * 60 ? 8 : 1.2;
+  if (maxBehind <= REALTIME_STALE_SEGMENT_GRACE) return null;
+  const candidates = sess.dubSegments
+    .filter((seg) => {
+      if (!seg || seg.played || seg._invalidAudio || seg._skippedStale) return false;
+      if (!seg.audio_url && !seg.web_speech) return false;
+      if (seg === sess.curSegment || seg === sess._pendingSeg) return false;
+      if (sourceEventCompletedInActiveEpoch(sess, seg)) return false;
+      const end = segmentEndForPlayback(seg);
+      return end < current - REALTIME_STALE_SEGMENT_GRACE && end >= current - maxBehind;
+    })
+    .sort(compareDubSegments);
+  return candidates[0] || null;
 }
 
 // Mid-video used to have only two extremes: keep racing even with no current
@@ -4557,14 +4612,9 @@ function _ensureLocalCacheLead(sess, t) {
         if (existing && (existing.audio_url || existing.web_speech)
             && !existing._invalidAudio && !existing._skippedStale) continue;
         if (existing) {
-          Object.assign(existing, item, {
-            played: initialPlayedStateForInsertedSegment(sess, item, t),
-            _invalidAudio: false,
-            _loadRetryCount: 0,
-          });
-          delete existing._skippedStale;
+          restorePlayableFlagsAfterCacheHydrate(Object.assign(existing, item), t, sess);
         } else {
-          const inserted = { ...item, played: initialPlayedStateForInsertedSegment(sess, item, t) };
+          const inserted = restorePlayableFlagsAfterCacheHydrate({ ...item }, t, sess);
           sess.dubSegments.push(inserted);
           byKey.set(key, inserted);
         }
@@ -4859,32 +4909,43 @@ function playNextDue(sess, t) {
     sess._audioLoadingSince = null;
   }
   if (sess.curAudio || sess._webSpeechActive) return;
+  const nearOverdue = findNearOverduePlayableSegment(sess, t);
   if (Array.isArray(sess.dubSegments)) {
     sess.dubSegments.sort(compareDubSegments);
     for (const seg of sess.dubSegments) {
       if (seg.played) continue;
       if (seg === sess.curSegment || seg === sess._pendingSeg) continue;
+      if (seg === nearOverdue) break;
       if (!isRealtimeSegmentStale(seg, t)) break;
       skipRealtimeStaleSegment(sess, seg, t, 'play_scheduler_window_passed');
     }
   }
-  let best = null;
+  let best = nearOverdue || null;
   // 策略：优先找"包含当前时间或紧跟当前时间"的未播段
   // 1. 先找 start <= t < end 的段（当前正应播放）
   // 2. 再找 start <= t + 0.5 的段（即将播放）
   // 3. 最后找 start > t 的最近段（用户快进）
-  for (const seg of sess.dubSegments) {
-    if (seg.played) continue;
-    // 用原字幕时间窗调度；TTS 实际时长只用于音频自身结束与变速。
-    const segEnd = segmentTimelineEnd(seg);
-    if (seg.start <= t && t < segEnd) {
-      // 当前时间在这个段的时间窗内，优先级最高
-      best = seg;
-      break;
+  if (!best) {
+    for (const seg of sess.dubSegments) {
+      if (seg.played) continue;
+      // 用原字幕时间窗调度；TTS 实际时长只用于音频自身结束与变速。
+      const segEnd = segmentTimelineEnd(seg);
+      if (seg.start <= t && t < segEnd) {
+        // 当前时间在这个段的时间窗内，优先级最高
+        best = seg;
+        break;
+      }
+      if (seg.start <= t + 0.5) {
+        if (!best || seg.start > best.start) best = seg;
+      }
     }
-    if (seg.start <= t + 0.5) {
-      if (!best || seg.start > best.start) best = seg;
-    }
+  } else {
+    recordDiagnostic(sess, 'near_overdue_cached_segment_prioritized', {
+      currentTime: +(Number(t || 0)).toFixed(3),
+      start: +(Number(best.start || 0)).toFixed(3),
+      end: +segmentTimelineEnd(best).toFixed(3),
+      text: String(best.translation || best.text || '').slice(0, 80),
+    });
   }
   // 注意：不再"提前抢播"远处的未来段。原视频停顿/间隙时若提前播下一句，
   // 音频会越跑越前、与视频时间线累积漂移（差距越来越大）。这里只播当前时间窗内或
@@ -6155,10 +6216,10 @@ async function hydrateLocalCacheWindow(sess, centerTime, beforeSec = 12, afterSe
     const key = _segKey(seg);
     const existing = map.get(key);
     if (existing) {
-      Object.assign(existing, seg);
-      delete existing._skippedStale;
+      restorePlayableFlagsAfterCacheHydrate(Object.assign(existing, seg), centerTime, sess);
     }
     else {
+      restorePlayableFlagsAfterCacheHydrate(seg, centerTime, sess);
       sess.dubSegments.push(seg);
       map.set(key, seg);
     }
