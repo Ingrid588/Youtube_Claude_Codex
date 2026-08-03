@@ -502,6 +502,58 @@ app.add_middleware(PrivateNetworkMiddleware)
 app.mount("/audio", StaticFiles(directory=LIVE_TEMP_DIR), name="audio")
 
 
+def _safe_diagnostic_filename(requested, payload=None):
+    payload = payload or {}
+    safe_name = os.path.basename(str(requested or '').strip())
+    safe_name = re.sub(r'[\\/:*?"<>|]+', '_', safe_name).strip(' ._')
+    if not safe_name:
+        client = ((payload.get('client') or {}).get('shortClientId')
+                  or (payload.get('client') or {}).get('clientId') or 'unknown')
+        safe_name = f"{payload.get('videoId') or 'video'}_{client}_{int(time.time())}_diaglog.json"
+    if not safe_name.lower().endswith('.json'):
+        safe_name += '.json'
+    return safe_name[:180]
+
+
+def _diagnostic_log_path(filename):
+    safe_name = _safe_diagnostic_filename(filename)
+    path = os.path.abspath(os.path.join(DIAGNOSTIC_LOG_DIR, safe_name))
+    root = os.path.abspath(DIAGNOSTIC_LOG_DIR)
+    if not path.startswith(root + os.sep) and path != root:
+        raise ValueError('无效日志文件名')
+    return safe_name, path
+
+
+def _diagnostic_summary_from_file(path):
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as exc:
+        return {'filename': os.path.basename(path), 'error': str(exc)}
+    client = data.get('client') or {}
+    stat = data.get('subtitleStats') or {}
+    return {
+        'filename': os.path.basename(path),
+        'size': os.path.getsize(path),
+        'mtime': os.path.getmtime(path),
+        'savedAt': data.get('savedAt'),
+        'savedReason': data.get('savedReason'),
+        'videoId': data.get('videoId'),
+        'title': data.get('title'),
+        'videoUrl': data.get('videoUrl'),
+        'clientLabel': client.get('label'),
+        'clientId': client.get('clientId'),
+        'shortClientId': client.get('shortClientId'),
+        'browser': client.get('browser'),
+        'platform': client.get('platform'),
+        'server': client.get('server'),
+        'entryCount': len(data.get('entries') or []),
+        'missedCount': len(data.get('missedRealtimeRows') or []),
+        'counts': data.get('counts') or {},
+        'subtitleStats': stat,
+    }
+
+
 @app.post("/save_diagnostic_log")
 async def save_diagnostic_log(request: Request):
     """接收插件当前播放轮次的诊断账本，固定写到插件目录，便于长视频复盘。"""
@@ -511,19 +563,14 @@ async def save_diagnostic_log(request: Request):
         if not isinstance(payload, dict):
             return JSONResponse(status_code=400, content={'ok': False, 'error': 'payload 必须是对象'})
 
-        requested = str(data.get('filename') or '').strip()
-        safe_name = os.path.basename(requested)
-        safe_name = re.sub(r'[\\/:*?"<>|]+', '_', safe_name).strip(' ._')
-        if not safe_name:
-            safe_name = f"{payload.get('videoId') or 'video'}_{int(time.time())}_diaglog.json"
-        if not safe_name.lower().endswith('.json'):
-            safe_name += '.json'
-        safe_name = safe_name[:180]
+        safe_name = _safe_diagnostic_filename(data.get('filename'), payload)
 
         os.makedirs(DIAGNOSTIC_LOG_DIR, exist_ok=True)
         path = os.path.join(DIAGNOSTIC_LOG_DIR, safe_name)
         payload['savedAt'] = datetime.now(timezone.utc).isoformat()
         payload['savedReason'] = str(data.get('reason') or 'session')[:80]
+        if isinstance(data.get('client'), dict):
+            payload['client'] = {**(payload.get('client') or {}), **data.get('client')}
         temp_path = path + '.tmp'
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -533,6 +580,37 @@ async def save_diagnostic_log(request: Request):
     except Exception as e:
         log.exception('[诊断日志] 保存失败')
         return JSONResponse(status_code=500, content={'ok': False, 'error': str(e)})
+
+
+@app.get("/diagnostic_log_list")
+async def diagnostic_log_list(limit: int = 80):
+    try:
+        os.makedirs(DIAGNOSTIC_LOG_DIR, exist_ok=True)
+        files = [
+            os.path.join(DIAGNOSTIC_LOG_DIR, name)
+            for name in os.listdir(DIAGNOSTIC_LOG_DIR)
+            if name.lower().endswith('.json')
+        ]
+        files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        items = [_diagnostic_summary_from_file(path) for path in files[:max(1, min(limit, 300))]]
+        return {'ok': True, 'count': len(items), 'dir': DIAGNOSTIC_LOG_DIR, 'items': items}
+    except Exception as e:
+        log.exception('[诊断日志] 列表失败')
+        return JSONResponse(status_code=500, content={'ok': False, 'error': str(e)})
+
+
+@app.get("/diagnostic_log/{filename}")
+async def diagnostic_log(filename: str):
+    try:
+        safe_name, path = _diagnostic_log_path(filename)
+        if not os.path.exists(path):
+            return JSONResponse(status_code=404, content={'ok': False, 'error': '日志不存在'})
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        data.setdefault('filename', safe_name)
+        return JSONResponse(content=data)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={'ok': False, 'error': str(e)})
 
 
 class RawSeg(BaseModel):

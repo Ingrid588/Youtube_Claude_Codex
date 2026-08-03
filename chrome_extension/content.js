@@ -28,12 +28,33 @@ function serverDownMessage() {
 
 // 客户端身份ID保留给未来商业版授权使用；当前Gemini翻译不设额度限制。
 let _clientId = '';
-chrome.storage.local.get({ ytdClientId: '' }, (cfg) => {
-  if (cfg.ytdClientId) { _clientId = cfg.ytdClientId; return; }
-  const id = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID()
-    : `c-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+let _clientLabel = '';
+function shortClientId(id = _clientId) {
+  return String(id || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 8) || 'unknown';
+}
+function detectBrowserName() {
+  const ua = navigator.userAgent || '';
+  if (/Edg\//.test(ua)) return 'Edge';
+  if (/OPR\//.test(ua)) return 'Opera';
+  if (/Chrome\//.test(ua)) return 'Chrome';
+  if (/Firefox\//.test(ua)) return 'Firefox';
+  if (/Safari\//.test(ua)) return 'Safari';
+  return 'Browser';
+}
+function defaultClientLabel(id = _clientId) {
+  const platform = navigator.platform || 'unknown';
+  return `${detectBrowserName()}-${platform}-${shortClientId(id)}`;
+}
+chrome.storage.local.get({ ytdClientId: '', ytdClientLabel: '' }, (cfg) => {
+  let id = cfg.ytdClientId;
+  if (!id) {
+    id = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID()
+      : `c-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    chrome.storage.local.set({ ytdClientId: id });
+  }
   _clientId = id;
-  chrome.storage.local.set({ ytdClientId: id });
+  _clientLabel = cfg.ytdClientLabel || defaultClientLabel(id);
+  if (!cfg.ytdClientLabel) chrome.storage.local.set({ ytdClientLabel: _clientLabel });
 });
 
 // ===== 朗读模式专用：云端 TTS =====
@@ -518,11 +539,53 @@ function recordDiagnostic(sess, type, detail = {}) {
   if (!sess._diagnosticLog) sess._diagnosticLog = [];
   if (!sess._diagnosticCounts) sess._diagnosticCounts = {};
   sess._diagnosticCounts[type] = (sess._diagnosticCounts[type] || 0) + 1;
+  let snapshot = {};
+  try {
+    const current = Number(sess.video?.currentTime || 0);
+    const frontier = typeof getLoadedDubQueueFrontier === 'function'
+      ? getLoadedDubQueueFrontier(sess, current) : 0;
+    const currentExpected = Array.isArray(sess._allSegments)
+      ? sess._allSegments.find((s) => {
+        const end = typeof segmentTimelineEnd === 'function'
+          ? segmentTimelineEnd(s) : Number(s.end || s.start || 0);
+        return s.start <= current + 0.5 && end >= current - 0.5;
+      }) : null;
+    const currentReady = currentExpected && Array.isArray(sess.dubSegments)
+      ? sess.dubSegments.some((s) => {
+        const end = typeof segmentTimelineEnd === 'function'
+          ? segmentTimelineEnd(s) : Number(s.end || s.start || 0);
+        return (s.audio_url || s.web_speech) && !s._invalidAudio && !s._skippedStale
+          && end >= current - 0.5 && s.start <= current + 0.5
+          && (typeof isSameLogicalSourceEvent !== 'function' || isSameLogicalSourceEvent(s, currentExpected));
+      }) : null;
+    snapshot = {
+      phase: sess._phase || '',
+      paused: !!sess.video?.paused,
+      buffering: !!sess._buffering,
+      weArePausing: !!sess.weArePausing,
+      userPaused: !!sess._userPaused,
+      audioLoading: !!sess._audioLoading,
+      hasCurAudio: !!sess.curAudio,
+      synthInFlight: sess._synthInFlight?.size || 0,
+      dubQueue: sess.dubSegments?.length || 0,
+      allSegments: sess._allSegments?.length || 0,
+      maxSynthedTime: +(Number(sess._maxSynthedTime || 0)).toFixed(3),
+      playableFrontier: +frontier.toFixed(3),
+      continuousLead: +Math.max(0, frontier - current).toFixed(3),
+      currentExpectedStart: currentExpected ? +(Number(currentExpected.start || 0)).toFixed(3) : null,
+      currentExpectedEnd: currentExpected && typeof segmentTimelineEnd === 'function'
+        ? +segmentTimelineEnd(currentExpected).toFixed(3) : null,
+      currentExpectedReady: currentReady,
+      client: shortClientId(),
+      server: SERVER,
+    };
+  } catch (_) {}
   const entry = {
     at: new Date().toISOString(),
     videoTime: +(sess.video?.currentTime || 0).toFixed(3),
     type,
     count: sess._diagnosticCounts[type],
+    ...snapshot,
     ...detail,
   };
   sess._diagnosticLog.push(entry);
@@ -2301,6 +2364,7 @@ function buildDiagnosticLogPayload(sess) {
     title: sess.title,
     videoUrl: location.href,
     generatedAt: new Date().toISOString(),
+    client: getDiagnosticClientMeta(),
     counts: sess._diagnosticCounts || {},
     entries: sess._diagnosticLog || [],
     playedSourceEvents: sess._playedSourceEvents || [],
@@ -2315,38 +2379,100 @@ function buildDiagnosticLogPayload(sess) {
   };
 }
 
+function getDiagnosticClientMeta() {
+  const manifest = (() => {
+    try { return chrome.runtime.getManifest?.() || {}; } catch (_) { return {}; }
+  })();
+  return {
+    clientId: _clientId || '',
+    shortClientId: shortClientId(),
+    label: _clientLabel || defaultClientLabel(_clientId),
+    browser: detectBrowserName(),
+    userAgent: navigator.userAgent || '',
+    platform: navigator.platform || '',
+    language: navigator.language || '',
+    languages: Array.from(navigator.languages || []),
+    timezone: Intl.DateTimeFormat?.().resolvedOptions?.().timeZone || '',
+    hardwareConcurrency: navigator.hardwareConcurrency || null,
+    deviceMemory: navigator.deviceMemory || null,
+    server: SERVER,
+    extensionName: manifest.name || '',
+    extensionVersion: manifest.version || '',
+    extensionVersionName: manifest.version_name || '',
+  };
+}
+
 function getDiagnosticLogFilename(sess) {
   if (sess._diagnosticLogFilename) return sess._diagnosticLogFilename;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const prefix = buildExportFilenamePrefix(sess).replace(/[\\/:*?"<>|]/g, '_');
-  sess._diagnosticLogFilename = `${prefix.slice(0, 80) || sess.videoId || 'video'}_${stamp}_diaglog.json`;
+  sess._diagnosticLogFilename = `${prefix.slice(0, 70) || sess.videoId || 'video'}_${shortClientId()}_${stamp}_diaglog.json`;
   return sess._diagnosticLogFilename;
+}
+
+function postDiagnosticLogViaBackground(endpoint, body, timeoutMs = 4500) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+    try {
+      chrome.runtime.sendMessage({
+        type: 'fetch',
+        url: `${normalizeServerUrl(endpoint)}/save_diagnostic_log`,
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+      }, (resp) => {
+        clearTimeout(timer);
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message || 'runtime error'));
+          return;
+        }
+        if (!resp?.ok) {
+          reject(new Error(resp?.error || 'save failed'));
+          return;
+        }
+        resolve(resp.data || {});
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      reject(e);
+    }
+  });
 }
 
 async function persistDiagnosticLogToLocalPluginFolder(sess, reason = 'session') {
   if (!sess || sess._diagnosticLogSaving) return;
   sess._diagnosticLogSaving = true;
-  const controller = typeof AbortController === 'function' ? new AbortController() : null;
-  const timer = controller ? setTimeout(() => controller.abort(), 4000) : null;
+  const body = {
+    filename: getDiagnosticLogFilename(sess),
+    reason,
+    client: getDiagnosticClientMeta(),
+    payload: buildDiagnosticLogPayload(sess),
+  };
   try {
-    const resp = await fetch('http://127.0.0.1:8765/save_diagnostic_log', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        filename: getDiagnosticLogFilename(sess),
-        reason,
-        payload: buildDiagnosticLogPayload(sess),
-      }),
-      signal: controller?.signal,
-    });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const result = await resp.json();
-    console.log('[配音插件] 诊断日志已保存到插件目录：', result.path || result.filename || 'diagnostic_logs');
+    const endpoints = [];
+    const addEndpoint = (url) => {
+      const normalized = normalizeServerUrl(url);
+      if (normalized && !endpoints.includes(normalized)) endpoints.push(normalized);
+    };
+    addEndpoint('http://127.0.0.1:8765');
+    addEndpoint(SERVER);
+    const results = await Promise.allSettled(endpoints.map((endpoint) =>
+      postDiagnosticLogViaBackground(endpoint, body)));
+    const ok = results
+      .map((result, index) => ({ result, endpoint: endpoints[index] }))
+      .filter(({ result }) => result.status === 'fulfilled');
+    if (ok.length) {
+      console.log('[配音插件] 诊断日志已保存：',
+        ok.map(({ endpoint, result }) => `${endpoint} → ${result.value?.path || result.value?.filename || 'ok'}`).join('；'));
+    } else {
+      throw new Error(results.map((r, i) => `${endpoints[i]}: ${r.reason?.message || r.reason || '失败'}`).join('；'));
+    }
   } catch (e) {
-    // 本地服务不是实时配音的必要条件；保存失败不能影响正在播放的视频。
-    console.warn('[配音插件] 未能保存本地诊断日志（不影响配音）', e?.message || e);
+    // 诊断保存不是实时配音的必要条件；保存失败不能影响正在播放的视频。
+    console.warn('[配音插件] 未能保存诊断日志（不影响配音）', e?.message || e);
   } finally {
-    if (timer) clearTimeout(timer);
     sess._diagnosticLogSaving = false;
   }
 }
@@ -2758,6 +2884,7 @@ function stopTabAudioRecordingAndDownload(sess, keepStream = false) {
 // 非常短暂的缺口（≈1秒内）能自己缓过来，不必停；连续没就绪才真暂停缓冲。
 const SYNTH_GRACE_TICKS = 4;
 const REALTIME_START_CRITICAL_SECONDS = 2 * 60;
+const REALTIME_EARLY_STRICT_CURRENT_SECONDS = 5 * 60;
 const REALTIME_MIN_READY_SECONDS = 15 * 60;
 const REALTIME_NORMAL_AHEAD_SECONDS = REALTIME_MIN_READY_SECONDS;
 const REALTIME_START_AHEAD_SECONDS = 15 * 60;
@@ -3525,6 +3652,7 @@ function releaseBriefCurrentCueHoldIfReady(sess, t, reason = 'current_audio_read
   if (!hold || !_currentSegReadyAt(sess, t == null ? sess.video?.currentTime || 0 : t)) return false;
   clearTimeout(hold.timer);
   sess._briefCurrentCueHold = null;
+  sess._briefHoldAttemptCounts?.delete?.(hold.sourceKey);
   sess._briefCurrentCueLastAt = Date.now();
   sess._buffering = false;
   sess.weArePausing = false;
@@ -3545,6 +3673,8 @@ function releaseBriefCurrentCueHoldIfReady(sess, t, reason = 'current_audio_read
 function brieflyHoldForCurrentCue(sess, expected, t) {
   if (!sess || !expected || sess._startupGatePending || sess._phase === 'preparing' || sess._readMode) return false;
   const now = Date.now();
+  const currentTime = Number(t || 0);
+  const earlyStrict = currentTime < REALTIME_EARLY_STRICT_CURRENT_SECONDS;
   const sourceKey = _segKey(expected);
   const active = sess._briefCurrentCueHold;
   if (active?.sourceKey === sourceKey) return true;
@@ -3552,12 +3682,17 @@ function brieflyHoldForCurrentCue(sess, expected, t) {
     clearTimeout(active.timer);
     sess._briefCurrentCueHold = null;
   }
-  if (now - (sess._briefCurrentCueLastAt || 0) < BRIEF_CURRENT_CUE_HOLD_COOLDOWN_MS) return false;
+  if (!earlyStrict && now - (sess._briefCurrentCueLastAt || 0) < BRIEF_CURRENT_CUE_HOLD_COOLDOWN_MS) return false;
+  sess._briefHoldAttemptCounts = sess._briefHoldAttemptCounts || new Map();
+  const attempt = (sess._briefHoldAttemptCounts.get(sourceKey) || 0) + 1;
+  sess._briefHoldAttemptCounts.set(sourceKey, attempt);
 
   const hold = {
     sourceKey,
     start: +(Number(expected.start || 0)).toFixed(3),
     at: now,
+    earlyStrict,
+    attempt,
     timer: null,
   };
   sess._briefCurrentCueHold = hold;
@@ -3565,14 +3700,31 @@ function brieflyHoldForCurrentCue(sess, expected, t) {
   sess._bufferingSince = now;
   sess.weArePausing = true;
   try { sess.video?.pause?.(); } catch (_) {}
-  showBufferIndicator('🎧 当前句无连续库存，优先恢复本地配音…', sess.video);
+  showBufferIndicator(earlyStrict
+    ? `🎧 开头当前句无连续库存，正在第${attempt}/2轮优先恢复…`
+    : '🎧 当前句无连续库存，优先恢复本地配音…', sess.video);
   recordDiagnostic(sess, 'brief_current_cue_hold_started', {
     currentTime: +(Number(t || 0)).toFixed(3),
     start: hold.start,
+    earlyStrict,
+    attempt,
   });
   hold.timer = setTimeout(() => {
     if (sess?._briefCurrentCueHold !== hold) return;
     sess._briefCurrentCueHold = null;
+    if (earlyStrict && attempt < 2 && sess.started && !_currentSegReadyAt(sess, sess.video?.currentTime || t)) {
+      recordDiagnostic(sess, 'early_current_cue_hold_retry', {
+        currentTime: +(Number(sess.video?.currentTime || t || 0)).toFixed(3),
+        start: hold.start,
+        attempt,
+      });
+      requestRealtimeCurrentSentenceRepair(sess, expected, sess.video?.currentTime || t);
+      ensurePlaybackWindowFromLocalCache(sess, sess.video?.currentTime || t,
+        'early_current_cue_hold_retry', 2, REALTIME_START_AHEAD_SECONDS);
+      brieflyHoldForCurrentCue(sess, expected, sess.video?.currentTime || t);
+      return;
+    }
+    sess._briefHoldAttemptCounts?.delete?.(sourceKey);
     sess._briefCurrentCueLastAt = Date.now();
     sess._buffering = false;
     sess.weArePausing = false;
@@ -3581,6 +3733,8 @@ function brieflyHoldForCurrentCue(sess, expected, t) {
     recordDiagnostic(sess, 'brief_current_cue_hold_expired_keep_video_moving', {
       currentTime: +(Number(sess.video?.currentTime || t || 0)).toFixed(3),
       start: hold.start,
+      earlyStrict,
+      attempt,
     });
     hideBufferIndicator();
     try { sess.video?.play?.().catch(() => {}); } catch (_) {}
@@ -4236,7 +4390,8 @@ function maybeBufferForSynthesis(sess, t) {
   // 如果当前位置这一句暂时没拿到，但前方已经有可用缓存，继续往前走。
   // 这比把整条视频暂停住更安全：缺句会继续被 requestSynthAround 补救，而录屏
   // 不会因为一个短暂缺口直接废掉。真正没有缓存可用时，下面才进入暂停等待。
-  if (!sess._buffering && _hasForwardDubCache(sess, t, 45)) {
+  if (!sess._buffering && Number(t || 0) >= REALTIME_EARLY_STRICT_CURRENT_SECONDS
+      && _hasForwardDubCache(sess, t, 45)) {
     sess._synthMiss = 0;
     if (Date.now() - (sess._lastForwardCacheSkipLogAt || 0) > 10000) {
       sess._lastForwardCacheSkipLogAt = Date.now();
@@ -6997,6 +7152,12 @@ function stopDubbing(sess, btn, keepRecordingForNextVideo = false) {
   if (sess._endFinalizeTimer) {
     clearTimeout(sess._endFinalizeTimer);
     sess._endFinalizeTimer = null;
+  }
+  try {
+    void persistDiagnosticLogToLocalPluginFolder(
+      sess, keepRecordingForNextVideo ? 'switch_video_stop' : 'stop_dubbing');
+  } catch (e) {
+    console.warn('[配音插件] 停止时保存诊断日志异常', e);
   }
   sess.started = false;
   if (sess._recordingStatusTimer) {
