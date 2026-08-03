@@ -3603,6 +3603,7 @@ function pushRealtimeMonitorEvent(sess, kind, seg = null, extra = {}) {
   const event = {
     at: now,
     kind,
+    dedupeKey: key,
     line: getRealtimeMonitorLine(sess, seg),
     start,
     time: formatHMS(start),
@@ -3610,7 +3611,33 @@ function pushRealtimeMonitorEvent(sess, kind, seg = null, extra = {}) {
     reason: extra.reason || '',
     detail: extra.detail || '',
     count: Number.isFinite(Number(extra.count)) ? Number(extra.count) : null,
+    repeats: 1,
   };
+  const recent = sess._realtimeMonitorEvents[sess._realtimeMonitorEvents.length - 1];
+  if (recent?.dedupeKey === key) {
+    recent.at = now;
+    recent.repeats = (recent.repeats || 1) + 1;
+    recent.reason = event.reason || recent.reason;
+    recent.detail = event.detail || recent.detail;
+    updateRealtimeMonitor(sess, kind);
+    return;
+  }
+  let previousSame = null;
+  if (kind === 'inventory') {
+    for (let i = sess._realtimeMonitorEvents.length - 1; i >= 0; i--) {
+      if (sess._realtimeMonitorEvents[i]?.dedupeKey === key) {
+        previousSame = sess._realtimeMonitorEvents[i];
+        break;
+      }
+    }
+  }
+  if (previousSame) {
+    previousSame.at = now;
+    previousSame.repeats = (previousSame.repeats || 1) + 1;
+    previousSame.reason = event.reason || previousSame.reason;
+    updateRealtimeMonitor(sess, kind);
+    return;
+  }
   sess._realtimeMonitorEvents.push(event);
   if (sess._realtimeMonitorEvents.length > 160) sess._realtimeMonitorEvents.splice(0, sess._realtimeMonitorEvents.length - 160);
   updateRealtimeMonitor(sess, kind);
@@ -3635,6 +3662,9 @@ function updateRealtimeMonitor(sess, reason = 'refresh') {
     repair_failed: '补句失败',
     inventory: '库存',
     cache_done: '已入库',
+    pipeline_repaired: '时间轴补回',
+    pipeline_missing: '时间轴漏句',
+    duplicate_suppressed: '重复跳过',
   }[kind] || kind);
   panel.replaceChildren();
 
@@ -3663,6 +3693,7 @@ function updateRealtimeMonitor(sess, reason = 'refresh') {
     stat('累计漏句', String(stats.missedTotal)),
     stat('累计补全', String(stats.repairedTotal)),
     stat('剩余漏句', String(stats.remaining)),
+    stat('时间轴补回', String(sess?._subtitlePipelineRepairTotal || 0)),
   );
 
   const repairingText = stats.repairing.length
@@ -3686,11 +3717,79 @@ function updateRealtimeMonitor(sess, reason = 'refresh') {
       const meta = `${eventLabel(ev.kind)} · ${line}${ev.time}`;
       const body = ev.text ? `：${ev.text}` : (ev.detail ? `：${ev.detail}` : '');
       const tail = ev.reason ? `（${ev.reason}）` : '';
-      row.textContent = `${meta}${body}${tail}`;
+      const repeats = ev.repeats > 1 ? ` ×${ev.repeats}` : '';
+      row.textContent = `${meta}${body}${tail}${repeats}`;
       list.append(row);
     }
   }
   panel.append(top, grid, repairing, hint, list);
+}
+
+function subtitleTextCoveredByProcessedTimeline(sourceSeg, processedSegments) {
+  const sourceNorm = normalizeCaptionCompareText(sourceSeg?.text || '');
+  if (!sourceNorm || sourceNorm.length < 4) return true;
+  const start = Number(sourceSeg.start || 0);
+  const end = Number(sourceSeg.end || sourceSeg.start || 0);
+  const nearby = (processedSegments || [])
+    .filter((seg) => Number(seg.end || seg.start || 0) >= start - 3
+      && Number(seg.start || 0) <= end + 6)
+    .sort(compareDubSegments);
+  if (!nearby.length) return false;
+  const joined = normalizeCaptionCompareText(nearby.map((seg) => seg.text || '').join(''));
+  if (joined.includes(sourceNorm)) return true;
+  return nearby.some((seg) => {
+    const norm = normalizeCaptionCompareText(seg.text || '');
+    return norm.includes(sourceNorm) || (sourceNorm.includes(norm) && norm.length >= Math.min(8, sourceNorm.length));
+  });
+}
+
+function repairProcessedTimelineCoverage(sess, sourceSegments, processedSegments, label = '配音时间轴') {
+  if (!Array.isArray(sourceSegments) || !sourceSegments.length
+      || !Array.isArray(processedSegments) || !processedSegments.length) {
+    return processedSegments || [];
+  }
+  const repaired = processedSegments.slice();
+  const existingKeys = new Set(repaired.map((seg) => `${Math.round((seg.start || 0) * 1000)}|${normalizeCaptionCompareText(seg.text || '')}`));
+  const missing = [];
+  for (const source of sourceSegments) {
+    const text = String(source.text || '').trim();
+    const norm = normalizeCaptionCompareText(text);
+    if (!text || norm.length < 4) continue;
+    if (subtitleTextCoveredByProcessedTimeline(source, repaired)) continue;
+    const key = `${Math.round((source.start || 0) * 1000)}|${norm}`;
+    if (existingKeys.has(key)) continue;
+    existingKeys.add(key);
+    const restored = {
+      start: Number(source.start || 0),
+      end: Math.max(Number(source.end || source.start || 0), Number(source.start || 0) + 0.05),
+      text,
+      _sourceStart: Number(source.start || 0),
+      _sourceEnd: Math.max(Number(source.end || source.start || 0), Number(source.start || 0) + 0.05),
+      _sourceText: text,
+      _coverageRestored: true,
+    };
+    if (Number.isFinite(Number(source._sourceIndex))) restored._sourceIndex = Number(source._sourceIndex);
+    repaired.push(restored);
+    missing.push(restored);
+  }
+  if (!missing.length) return processedSegments;
+  repaired.sort(compareDubSegments);
+  sess._subtitlePipelineRepairTotal = (sess._subtitlePipelineRepairTotal || 0) + missing.length;
+  recordDiagnostic(sess, 'subtitle_processing_coverage_repaired', {
+    label,
+    count: missing.length,
+    samples: missing.slice(0, 20).map((seg) => ({
+      line: getRealtimeMonitorLine(sess, seg),
+      start: +(Number(seg.start || 0)).toFixed(3),
+      end: +(Number(seg.end || seg.start || 0)).toFixed(3),
+      text: seg.text,
+    })),
+  });
+  missing.slice(0, 20).forEach((seg) => pushRealtimeMonitorEvent(sess, 'pipeline_repaired', seg, {
+    reason: `${label}处理时曾丢失，已补回配音队列`,
+  }));
+  console.warn(`[配音插件] ${label}覆盖审计补回 ${missing.length} 条原字幕，避免处理阶段漏句`, missing.slice(0, 5));
+  return repaired;
 }
 
 function isRealtimeSubtitleSuppressed(sess, seg) {
@@ -4748,9 +4847,12 @@ function playNextDue(sess, t) {
   // 就绝不再占一次播放位置；真正重复的台词因时间窗不同不会命中。
   const completedLogicalDuplicate = (sess._completedSourceEvents || []).find((event) =>
     event?.seekEpoch === (sess._seekEpoch || 0) && isSameLogicalSourceEvent(event, best));
-  if (completedLogicalDuplicate) {
+  if (completedLogicalDuplicate && !best._coverageRestored) {
     best.played = true;
     best._logicalDuplicateSuppressed = true;
+    pushRealtimeMonitorEvent(sess, 'duplicate_suppressed', best, {
+      reason: '同一原字幕事件已实际播放过，本次不重复出声',
+    });
     recordDiagnostic(sess, 'completed_logical_source_event_duplicate_suppressed', {
       start: +(best.start || 0).toFixed(3),
       end: +segmentTimelineEnd(best).toFixed(3),
@@ -4777,12 +4879,15 @@ function playNextDue(sess, t) {
       // can represent the same source event with different keys.
       return isSameLogicalSourceEvent(r, best);
     });
-    if (sameEventDup) {
+    if (sameEventDup && !best._coverageRestored) {
       console.warn('[配音插件] 检测到同一原字幕事件重复调度，跳过朗读：', {
         start: best.start.toFixed(1),
         text: String(best.text || '').slice(0, 40),
         previousKey: sameEventDup.key || '',
         candidateKey: _segKey(best),
+      });
+      if (!best._coverageRestored) pushRealtimeMonitorEvent(sess, 'duplicate_suppressed', best, {
+        reason: '同一原字幕事件近期已播，防止重复配音',
       });
       recordDiagnostic(sess, 'logical_source_event_duplicate_suppressed', {
         start: +(best.start || 0).toFixed(3),
@@ -4795,7 +4900,7 @@ function playNextDue(sess, t) {
       return playNextDue(sess, t);
     }
   }
-  if (best.text.length >= 6 && sess._recentSpoken) {
+  if (!best._coverageRestored && best.text.length >= 6 && sess._recentSpoken) {
     const dup = sess._recentSpoken.find((r) => {
       if (!r) return false;
       if (r.videoId && sess.videoId && r.videoId !== sess.videoId) return false;
@@ -4808,6 +4913,9 @@ function playNextDue(sess, t) {
     });
     if (dup) {
       console.warn('[配音插件] 检测到近期重复段，跳过朗读：', best.start.toFixed(1) + 's', best.text.slice(0, 20));
+      pushRealtimeMonitorEvent(sess, 'duplicate_suppressed', best, {
+        reason: '近期相同文本已播，防止滚动字幕重复',
+      });
       best.played = true;
       return playNextDue(sess, t);   // 跳过后立即看看还有没有下一句该播
     }
@@ -8176,6 +8284,14 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     // 才有用，不是代码这边重试能解决的，所以直接提示用户刷新，而不是自己死磕重试。
     return fail('未获取到字幕，请打开“自动翻译→配音指定字幕”后重试');
   }
+  if (btn) {
+    btn.textContent = sess._readMode ? '🔊准备表…' : '🎧准备表…';
+    btn.title = '正在准备配音跟踪表与字幕时间轴';
+  }
+  showBufferIndicator(sess._readMode
+    ? '🔊 正在准备朗读跟踪表与字幕时间轴…'
+    : '🎧 正在准备配音跟踪表与字幕时间轴…', sess.video);
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   // 完整保留平台返回的原始字幕事件，供排查“字幕源本来重复”还是“脚本重复播放”。
   // 这份账本必须早于音效过滤、滚动去重和合句；后续任何处理都不能覆盖它。
@@ -8197,6 +8313,13 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     console.log(`[配音插件] 合句前已删除 ${beforeNonSpeechFilter - rawSegments.length} 条纯音乐/音效标记`);
   }
   if (!rawSegments.length) return fail('字幕全部是音乐/音效标记，无可配音正文');
+  const coverageReferenceSegments = rawSegments.map((s, i) => ({
+    ...s,
+    _sourceIndex: Number.isFinite(Number(s._sourceIndex)) ? Number(s._sourceIndex) : i,
+    _sourceStart: Number(s._sourceStart ?? s.start ?? 0),
+    _sourceEnd: Number(s._sourceEnd ?? s.end ?? s.start ?? 0),
+    _sourceText: s._sourceText || s.text,
+  }));
 
   // 留存字幕源开头事件，作为“第一、二句到底是不是实际字幕”的可核查证据。
   // 后续去滚动、合句和送配音都不能覆盖这份原始时间轴记录。
@@ -8307,6 +8430,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     // 只压缩同一原字幕事件在多个缓存/补救来源留下的副本。这里不按文本相似度、
     // 不跨时间窗去重，真实重复的台词仍按原字幕分别配音。
     rawSegments = dedupLogicalSourceEvents(rawSegments, '配音字幕时间轴');
+    rawSegments = repairProcessedTimelineCoverage(sess, coverageReferenceSegments, rawSegments, '配音字幕时间轴');
     if (!rawSegments.length) return fail('字幕清理后无可配音正文');
     sess._hasMerged = before > rawSegments.length;
     console.log(`[配音插件] 按句合并：${before} 行 → ${rawSegments.length} 句`);
