@@ -1588,7 +1588,28 @@ function groupChineseSentences(segments) {
     }
   }
 
-  return out.length ? out : segments;
+  if (!out.length) return segments;
+  // 多行滚动字幕会把“第一行后半句”和“第二行新句”放在同一屏里显示。
+  // 第一行内部按字符插值后，后半句的 start 可能晚于第二行新句的 start；
+  // 后续队列若再按 start 排序，就会把第二行提前朗读。这里按文本产生顺序
+  // 做最小单调修正：只在时间戳倒挂时把后一条抬到前一条 start 之后一点点，
+  // 不改文本、不按相似度删句。
+  let lastStart = -Infinity;
+  return out.map((seg, i) => {
+    const next = { ...seg };
+    let start = Number(next.start || 0);
+    let end = Number(next.end || next.start || 0);
+    if (Number.isFinite(lastStart) && start <= lastStart) {
+      start = lastStart + 0.01;
+    }
+    if (!Number.isFinite(end) || end < start + 0.05) end = start + 0.05;
+    next.start = start;
+    next.end = end;
+    next._sourceIndex = Number.isFinite(Number(next._sourceIndex)) ? Number(next._sourceIndex) : i;
+    next._sentenceOrder = i;
+    lastStart = start;
+    return next;
+  });
 }
 
 function prepareSegmentsForBackgroundDub(segments) {
