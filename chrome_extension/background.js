@@ -199,6 +199,124 @@ async function _missingLocalAudioSegments(videoId, segments) {
   }
 }
 
+async function _clearBackgroundLocalDubVideo(videoId) {
+  const result = {
+    backgroundAudioDeleted: 0,
+    backgroundAudioRemaining: null,
+    backgroundTaskCancelled: false,
+    errors: [],
+  };
+  if (!videoId) {
+    result.errors.push('缺少视频ID');
+    return result;
+  }
+  try {
+    _activeDubControllers.get(videoId)?.abort();
+    _activeDubControllers.delete(videoId);
+  } catch (_) {}
+  try {
+    const job = await loadJob();
+    if (job?.videoIds?.includes(videoId)) {
+      job.states = job.states || {};
+      job.states[videoId] = 'cancelled';
+      job.cacheVerified = job.cacheVerified || {};
+      job.cacheVerified[videoId] = false;
+      if (job.progress) delete job.progress[videoId];
+      if (job.errors) delete job.errors[videoId];
+      if (job.options?.[videoId]) delete job.options[videoId].captionSegments;
+      const hasActive = (job.videoIds || []).some((id) =>
+        id !== videoId && (job.states?.[id] === 'pending' || job.states?.[id] === 'processing'));
+      if (!hasActive) job.running = false;
+      await saveJob(job);
+      result.backgroundTaskCancelled = true;
+    }
+  } catch (e) {
+    result.errors.push(`取消后台任务失败：${e?.message || e}`);
+  }
+  try {
+    const data = await chrome.storage.local.get({ dubReadyNotices: [] });
+    const notices = (data.dubReadyNotices || []).filter((n) => n.videoId !== videoId);
+    if (notices.length !== (data.dubReadyNotices || []).length) {
+      await chrome.storage.local.set({ dubReadyNotices: notices });
+      await chrome.action.setBadgeText({ text: notices.length ? String(Math.min(notices.length, 99)) : '' });
+    }
+  } catch (_) {}
+  try {
+    await updateSharedBackgroundJob(videoId, {
+      status: 'cancelled', done: 0, total: 0, verified: false,
+      title: videoId, error: '',
+    });
+  } catch (_) {}
+  try {
+    const db = await _openLocalDubDB();
+    const tx = db.transaction('segments', 'readwrite');
+    const store = tx.objectStore('segments');
+    await new Promise((resolve) => {
+      const range = IDBKeyRange.bound(`${videoId}|`, `${videoId}|\uffff`);
+      const req = store.openCursor(range);
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(); return; }
+        cursor.delete();
+        result.backgroundAudioDeleted++;
+        cursor.continue();
+      };
+      req.onerror = () => {
+        result.errors.push('读取后台音频缓存时出错');
+        resolve();
+      };
+    });
+    await new Promise((resolve) => {
+      tx.oncomplete = resolve;
+      tx.onerror = () => {
+        result.errors.push('删除后台音频缓存时出错');
+        resolve();
+      };
+      tx.onabort = () => {
+        result.errors.push('后台音频缓存删除事务被中止');
+        resolve();
+      };
+    });
+    db.close();
+  } catch (e) {
+    result.errors.push(`清除后台音频缓存失败：${e?.message || e}`);
+  }
+  try {
+    const db = await _openLocalDubDB();
+    const tx = db.transaction('segments', 'readonly');
+    const store = tx.objectStore('segments');
+    let remaining = 0;
+    await new Promise((resolve) => {
+      const range = IDBKeyRange.bound(`${videoId}|`, `${videoId}|\uffff`);
+      const req = store.openCursor(range);
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(); return; }
+        remaining++;
+        cursor.continue();
+      };
+      req.onerror = resolve;
+    });
+    db.close();
+    result.backgroundAudioRemaining = remaining;
+  } catch (_) {}
+  result.ok = result.backgroundAudioRemaining === 0;
+  return result;
+}
+
+async function _clearServerDubCache(videoId) {
+  try {
+    const response = await fetch(`${SERVER}/clear_cache`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ video_id: videoId }),
+    });
+    return { ok: response.ok, status: response.status };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
 async function _serverHasEnoughDubSegments(videoId, expectedTotal) {
   if (!expectedTotal) return false;
   try {
@@ -772,6 +890,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         voices: job.options?.[videoId]?.voices || [], error: '',
       });
       sendResponse({ ok: true, message: '后台配音已停止；已完成缓存保留，可稍后继续' });
+    })();
+    return true;
+
+  } else if (message.action === 'clearBackgroundVideoDubCache') {
+    (async () => {
+      const videoId = String(message.videoId || '').trim();
+      if (!videoId) {
+        sendResponse({ ok: false, error: '缺少视频ID' });
+        return;
+      }
+      const result = await _clearBackgroundLocalDubVideo(videoId);
+      if (message.clearServer !== false) {
+        const server = await _clearServerDubCache(videoId);
+        result.serverCleared = !!server.ok;
+        if (!server.ok) result.errors.push(server.status
+          ? `服务器缓存清除失败（HTTP ${server.status}）`
+          : `服务器缓存清除失败：${server.error || '未知错误'}`);
+      }
+      result.ok = result.backgroundAudioRemaining === 0;
+      sendResponse(result);
     })();
     return true;
 

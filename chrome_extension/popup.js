@@ -512,20 +512,37 @@ document.getElementById('clearCache').addEventListener('click', async () => {
     // IndexedDB 音频缓存只能由内容脚本所在页面访问。旧实现只清字幕和服务器，
     // 因而“清除后仍显示多个缓存”。交给内容脚本一次性删字幕、IndexedDB、内存
     // 索引和服务器缓存，并以删除后的再次扫描结果作为唯一成功依据。
-    const result = await new Promise((resolve) => {
+    let usedBackgroundFallback = false;
+    let result = await new Promise((resolve) => {
       chrome.tabs.sendMessage(tab.id, { action: 'clearCurrentVideoDubCache', videoId }, (resp) => {
         const err = chrome.runtime.lastError;
         resolve(err ? { ok: false, error: err.message } : (resp || { ok: false, error: '当前页面未返回清除结果' }));
       });
     });
+    if (!result.ok && /receiving end|could not establish connection|未返回|Receiving end/i.test(result.error || '')) {
+      usedBackgroundFallback = true;
+      result = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: 'clearBackgroundVideoDubCache', videoId, clearServer: true }, (resp) => {
+          const err = chrome.runtime.lastError;
+          resolve(err ? { ok: false, error: err.message } : (resp || { ok: false, error: '后台未返回清除结果' }));
+        });
+      });
+    }
     if (!result.ok) {
-      msg.textContent = result.audioRemaining != null
-        ? `未完全清除：本地仍有 ${result.audioRemaining} 条音频缓存。请刷新视频页后重试。`
+      const remain = [
+        result.audioRemaining != null ? `页面本地 ${result.audioRemaining}` : '',
+        result.backgroundAudioRemaining != null ? `后台 ${result.backgroundAudioRemaining}` : '',
+      ].filter(Boolean).join('，');
+      msg.textContent = remain
+        ? `未完全清除：仍有 ${remain} 条音频缓存。请刷新视频页后重试。`
         : `未确认本地音频缓存已清除：${result.error || '请刷新视频页后重试'}`;
       return;
     }
     const serverNote = result.serverCleared ? '' : '（本地已清除；服务器缓存未能确认删除）';
-    msg.textContent = `已清除：本地音频 ${result.audioDeleted || 0} 条、字幕缓存 ${result.subtitleKeysDeleted || 0} 项；复核剩余 0 条。${serverNote}`;
+    const bgNote = `后台音频 ${result.backgroundAudioDeleted || 0} 条`
+      + (result.backgroundTaskCancelled ? '、已停止后台任务' : '');
+    const fallbackNote = usedBackgroundFallback ? '（当前页面未响应，已用后台兜底；请刷新视频页清空页面内存）' : '';
+    msg.textContent = `已清除：页面音频 ${result.audioDeleted || 0} 条、${bgNote}、字幕缓存 ${result.subtitleKeysDeleted || 0} 项；复核剩余 0 条。${serverNote}${fallbackNote}`;
   } catch (e) {
     msg.textContent = '清除失败：' + e.message;
   }

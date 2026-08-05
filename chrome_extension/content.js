@@ -6261,6 +6261,9 @@ async function clearLocalDubVideo(videoId) {
     videoId,
     audioDeleted: 0,
     audioRemaining: null,
+    backgroundAudioDeleted: 0,
+    backgroundAudioRemaining: null,
+    backgroundTaskCancelled: false,
     subtitleKeysDeleted: 0,
     serverCleared: false,
     errors: [],
@@ -6356,6 +6359,28 @@ async function clearLocalDubVideo(videoId) {
     result.errors.push(`清除字幕缓存失败：${e?.message || e}`);
   }
   try {
+    const bg = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        action: 'clearBackgroundVideoDubCache',
+        videoId,
+        clearServer: false,
+      }, (resp) => {
+        const err = chrome.runtime.lastError;
+        resolve(err ? { ok: false, error: err.message } : (resp || { ok: false, error: '后台未返回清除结果' }));
+      });
+    });
+    result.backgroundAudioDeleted = Number(bg.backgroundAudioDeleted || 0);
+    result.backgroundAudioRemaining = Number.isFinite(Number(bg.backgroundAudioRemaining))
+      ? Number(bg.backgroundAudioRemaining) : null;
+    result.backgroundTaskCancelled = !!bg.backgroundTaskCancelled;
+    if (!bg.ok) result.errors.push(bg.error || (result.backgroundAudioRemaining != null
+      ? `后台仍有 ${result.backgroundAudioRemaining} 条音频缓存`
+      : '后台音频缓存未确认清除'));
+    if (Array.isArray(bg.errors) && bg.errors.length) result.errors.push(...bg.errors);
+  } catch (e) {
+    result.errors.push(`清除后台音频缓存失败：${e?.message || e}`);
+  }
+  try {
     const response = await fetch(`${SERVER}/clear_cache`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -6371,7 +6396,8 @@ async function clearLocalDubVideo(videoId) {
   // to be shown only from a fresh IndexedDB scan after clearing has completed.
   const remainingRows = await collectLocalDubRows(videoId);
   result.audioRemaining = Array.isArray(remainingRows) ? remainingRows.length : null;
-  result.ok = result.audioRemaining === 0;
+  result.ok = result.audioRemaining === 0
+    && (result.backgroundAudioRemaining == null || result.backgroundAudioRemaining === 0);
   if (!result.ok && result.audioRemaining != null) {
     result.errors.push(`本地仍有 ${result.audioRemaining} 条音频缓存，未显示缓存选择弹窗`);
   }
