@@ -29,9 +29,13 @@ ENV PORT=8080
 # 云端没有本地代理，明确清空（dub9.py 的 PROXY 默认值是本机专用代理，必须显式覆盖，
 # 否则 edge-tts 会尝试连一个容器里根本不存在的本机代理，导致每一句配音都失败）。
 ENV EDGE_TTS_PROXY=""
-# 缓存/临时文件目录，容器内可写位置（dub9.py 的 BASE_TEMP_DIR 默认是Windows路径，
-# 必须用这个环境变量覆盖，否则在Linux容器里会出问题）。
-ENV DUB_TEMP_DIR=/tmp/dub_temp
+# 持久缓存目录：翻译 translations.json + TTS mp3。
+# Cloud Run / HF 请把卷挂载到此路径（不要用 /tmp，容器重启会丢）。
+# 例：gcloud run services update ... --add-volume=name=dub-cache,type=cloud-storage,bucket=你的桶 \
+#     --add-volume-mount=volume=dub-cache,mount-path=/data/dub_cache
+ENV DUB_TEMP_DIR=/data/dub_cache
+# 缓存总容量上限（默认 6GB）；超限先删较旧视频目录，仍超则按最旧继续删。
+ENV DUB_CACHE_MAX_BYTES=6442450944
 
 EXPOSE 8080
 

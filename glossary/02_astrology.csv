@@ -71,3 +71,12 @@
 技术,行运,Transit,行运盘|过境,トランジット,트랜짓,транзит,Transit,tránsito,गोचर
 技术,太阳回归,Solar return,太阳返照|太阳回归盘,ソーラーリターン,태양회귀,солнечное возвращение,Solar Return,retorno solar,सूर्य वापसी
 技术,月亮回归,Lunar return,,ルナーリターン,달 회귀,лунное возвращение,Lunar Return,retorno lunar,चंद्र वापसी
+概念,能量,Energy,,エネルギー,에너지,энергия,Energie,energía,ऊर्जा
+概念,火象的能量,Fire energy / Fire-sign energy,火象的配置|火象配置|火象之配置,火のエネルギー,불의 에너지,огненная энергия,Feuerenergie,energía de fuego,अग्नि ऊर्जा,是
+概念,土象的能量,Earth energy / Earth-sign energy,土象的配置|土象配置|土象之配置,地のエネルギー,땅의 에너지,земная энергия,Erdenergie,energía de tierra,पृथ्वी ऊर्जा,是
+概念,风象的能量,Air energy / Air-sign energy,风象的配置|风象配置|风象之配置,風のエネルギー,바람의 에너지,воздушная энергия,Luftenergie,energía de aire,वायु ऊर्जा,是
+概念,水象的能量,Water energy / Water-sign energy,水象的配置|水象配置|水象之配置,水のエネルギー,물의 에너지,водная энергия,Wasserenergie,energía de agua,जल ऊर्जा,是
+元素,火象,Fire signs / Fire element,火元素|火象星座,火のサイン,불의 별자리,огненные знаки,Feuerzeichen,signos de fuego,अग्नि राशि
+元素,土象,Earth signs / Earth element,土元素|土象星座,地のサイン,땅의 별자리,земные знаки,Erdzeichen,signos de tierra,पृथ्वी राशि
+元素,风象,Air signs / Air element,风元素|风象星座,風のサイン,바람의 별자리,воздушные знаки,Luftzeichen,signos de aire,वायु राशि
+元素,水象,Water signs / Water element,水元素|水象星座,水のサイン,물의 별자리,водные знаки,Wasserzeichen,signos de agua,जल राशि

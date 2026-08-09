@@ -27,7 +27,8 @@ ENV PORT=7860
 # 云端没有本地代理，明确清空（dub9.py 的 PROXY 默认值是本机专用代理，必须显式覆盖）
 ENV EDGE_TTS_PROXY=""
 # 缓存/临时文件目录，容器内可写位置
-ENV DUB_TEMP_DIR=/tmp/dub_temp
+ENV DUB_TEMP_DIR=/data/dub_cache
+ENV DUB_CACHE_MAX_BYTES=6442450944
 
 EXPOSE 7860
 

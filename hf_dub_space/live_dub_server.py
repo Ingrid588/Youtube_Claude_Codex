@@ -227,6 +227,7 @@ os.makedirs(LIVE_TEMP_DIR, exist_ok=True)
 DIAGNOSTIC_LOG_DIR = os.path.join(LIVE_TEMP_DIR, '_diagnostic_logs')
 
 CACHE_MAX_BYTES = int(os.getenv('DUB_CACHE_MAX_BYTES', str(6 * 1024 ** 3)))
+CACHE_MIN_FREE_BYTES = int(os.getenv('DUB_CACHE_MIN_FREE_BYTES', str(2 * 1024 ** 3)))
 _last_cache_cleanup = 0.0
 
 
@@ -237,32 +238,81 @@ def _maybe_cleanup_server_cache(force=False):
         return
     _last_cache_cleanup = now
     rows, total = [], 0
-    for name in os.listdir(LIVE_TEMP_DIR):
+    try:
+        names = os.listdir(LIVE_TEMP_DIR)
+    except OSError:
+        return
+    for name in names:
+        # 跳过系统/配额文件目录，只清各 video_id 缓存
+        if name.startswith('_') or name in {'gemini_quota.json', 'licenses.json'}:
+            continue
         path = os.path.join(LIVE_TEMP_DIR, name)
         if not os.path.isdir(path):
             continue
         size = 0
         for root, _dirs, files in os.walk(path):
             for filename in files:
-                try: size += os.path.getsize(os.path.join(root, filename))
-                except OSError: pass
+                try:
+                    size += os.path.getsize(os.path.join(root, filename))
+                except OSError:
+                    pass
         total += size
         active = False
         try:
             with open(os.path.join(path, 'background_job.json'), encoding='utf-8') as handle:
                 active = json.load(handle).get('status') in {'pending', 'processing'}
-        except (OSError, ValueError, json.JSONDecodeError): pass
-        rows.append((os.path.getmtime(path), size, path, active))
-    if total <= CACHE_MAX_BYTES: return
-    rows.sort()
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        rows.append((os.path.getmtime(path), size, path, active, name))
+    try:
+        free_bytes = shutil.disk_usage(LIVE_TEMP_DIR).free
+    except OSError:
+        free_bytes = CACHE_MIN_FREE_BYTES
+    cache_target = max(0, min(CACHE_MAX_BYTES, total + free_bytes - CACHE_MIN_FREE_BYTES))
+    if total <= cache_target:
+        return
+    log.info(f'[缓存清理] 当前占用 {total / 1024**3:.2f}GB，缓存预算 {CACHE_MAX_BYTES / 1024**3:.2f}GB，'
+             f'磁盘可用 {free_bytes / 1024**3:.2f}GB（保留 {CACHE_MIN_FREE_BYTES / 1024**3:.2f}GB），开始淘汰早期缓存')
+
+    def _evict(mtime, size, path, active, name, reason):
+        nonlocal total
+        if active:
+            return False
+        try:
+            shutil.rmtree(path)
+            total -= size
+            log.info(f'[缓存清理] {reason} 删除 {name}（{size / 1024**2:.1f}MB），剩余 {total / 1024**3:.2f}GB')
+            return True
+        except OSError as exc:
+            log.warning(f'[缓存清理] 删除失败 {path}: {exc}')
+            return False
+
+    # 1) 先按年龄阶梯删（72h→6h）
+    rows.sort()  # 最旧在前
     for keep_hours in (72, 48, 24, 6):
         cutoff = now - keep_hours * 3600
-        for mtime, size, path, active in list(rows):
-            if total <= CACHE_MAX_BYTES or active or mtime > cutoff: continue
-            try:
-                shutil.rmtree(path); total -= size; rows.remove((mtime, size, path, active))
-                log.info(f'[缓存清理] 删除 {keep_hours} 小时前缓存 {path}')
-            except OSError as exc: log.warning(f'[缓存清理] 删除失败 {path}: {exc}')
+        kept = []
+        for row in rows:
+            mtime, size, path, active, name = row
+            if total <= cache_target:
+                kept.append(row)
+                continue
+            if active or mtime > cutoff:
+                kept.append(row)
+                continue
+            if not _evict(mtime, size, path, active, name, f'{keep_hours}h前'):
+                kept.append(row)
+        rows = kept
+        if total <= cache_target:
+            return
+
+    # 2) 仍超限：按最旧优先继续删，直到低于上限（正在跑的任务除外）
+    rows.sort()
+    for mtime, size, path, active, name in list(rows):
+        if total <= cache_target:
+            break
+        _evict(mtime, size, path, active, name, '超限淘汰最旧')
+
 
 
 def _save_video_cache_meta(video_id, title):
@@ -955,6 +1005,8 @@ def apply_glossary(text, context_text=None):
         return text
     text = collapse_repeated_yes(text)
     text = re.sub(r'(?:鸡巴|鸡吧|屌|吊|阴茎|老二|生殖器)', '下体', text, flags=re.I)
+    # Gemini 偶发把占星语境的 energy 译成“配置”；只改正“X象的配置”，不动普通“系统配置”。
+    text = re.sub(r'([火水土风]象(?:星座)?的?)配置', r'\1能量', text)
     keys, mapping = load_glossary()
     if not keys:
         return text
@@ -1419,7 +1471,8 @@ async def dub(req: DubRequest):
 
                 try:
                     await dub9.translate_segments_streaming(
-                        segments, title=req.title, on_segment_ready=_on_segment_ready)
+                        segments, title=req.title, on_segment_ready=_on_segment_ready,
+                        temp_dir=video_dir)
                     if synth_tasks:
                         await asyncio.gather(*synth_tasks)
                     log.info(f"Gemini流式翻译+合成完成，{len(segments)} 段")

@@ -8,7 +8,10 @@ const TEST_SERVER_CONTROL = 'http://127.0.0.1:8766';
 let SERVER = DEFAULT_SERVER;
 try {
   const versionEl = document.getElementById('extensionVersion');
-  if (versionEl) versionEl.textContent = `v${chrome.runtime.getManifest().version_name || chrome.runtime.getManifest().version}`;
+  if (versionEl) {
+    const m = chrome.runtime.getManifest();
+    versionEl.textContent = `v${m.version_name || m.version}`;
+  }
 } catch (_) {}
 chrome.storage.local.get({ serverUrl: '' }, (cfg) => {
   if (cfg.serverUrl) SERVER = cfg.serverUrl.trim().replace(/\/+$/, '');
@@ -463,9 +466,17 @@ const subs = document.getElementById('subs');
 chrome.storage.local.get({ showSubs: true }, (cfg) => { subs.checked = cfg.showSubs; });
 subs.addEventListener('change', () => chrome.storage.local.set({ showSubs: subs.checked }));
 
-// ===== Gemini翻译（配音模式专用，YouTube自动翻译质量差时勾选）=====
+// ===== Gemini翻译（配音模式默认开启；可手动关闭以省 API）=====
 const useGeminiTranslateEl = document.getElementById('useGeminiTranslate');
-chrome.storage.local.get({ useGeminiTranslate: false }, (cfg) => { useGeminiTranslateEl.checked = cfg.useGeminiTranslate; });
+chrome.storage.local.get({ useGeminiTranslate: true, _geminiDefaultOn_v01: false }, (cfg) => {
+  // 一次性迁移：旧版默认是关，storage 里可能仍是 false；改为默认开一次。
+  if (!cfg._geminiDefaultOn_v01) {
+    useGeminiTranslateEl.checked = true;
+    chrome.storage.local.set({ useGeminiTranslate: true, _geminiDefaultOn_v01: true });
+  } else {
+    useGeminiTranslateEl.checked = !!cfg.useGeminiTranslate;
+  }
+});
 useGeminiTranslateEl.addEventListener('change', () =>
   chrome.storage.local.set({ useGeminiTranslate: useGeminiTranslateEl.checked }));
 

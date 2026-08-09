@@ -1246,7 +1246,18 @@ def glossary_block_for_text(source_text, limit=30):
     return '\n'.join(lines)
 
 
-def _apply_translated_line(line, idx_map, seen_idx, on_segment_ready):
+def _translation_length_implausible(source_text, translation):
+    """译文长度荒唐到不可能属于这条原文——多半是序号串位，或缓存里存了串位的旧结果。
+
+    判据用"原文长度"而不是时间窗字数上限：语速快、窗口紧的密集字幕本来就会超出窗口
+    容量好几倍，拿窗口当判据会把正常句子误删成漏句。中译一般不会超过原文字符数，
+    3 倍已经远在正常范围之外；再加 24 字地板，避免极短原文误伤。
+    """
+    src_len = len((source_text or '').strip())
+    return bool(src_len) and len(translation) > max(3 * src_len, 24)
+
+
+def _apply_translated_line(line, idx_map, seen_idx, on_segment_ready, stats=None):
     parts = line.split('|', 2)
     if len(parts) < 3:
         return
@@ -1257,9 +1268,26 @@ def _apply_translated_line(line, idx_map, seen_idx, on_segment_ready):
         return
     seg = idx_map.get(idx)
     if not seg or idx in seen_idx:
+        if stats is not None and seg is None:
+            stats['out_of_range'] += 1
+        return
+    # 模型偶尔会跳号/错位。流式路径必须按序号回填（不能像批处理那样按行序，
+    # 否则模型少输出一行会把这一行之后的整段译文全部串位），但序号一旦不连续
+    # 就说明这一批的对齐已经不可信，记下来供收尾时补翻和告警。
+    if stats is not None:
+        if idx != stats['expect']:
+            stats['misordered'] += 1
+        stats['expect'] = idx + 1
+    text = clean_translation(translation.strip())
+    # 串位时这一句会拿到另一条（长度完全不同的）字幕的译文。只拦截明显对不上的，
+    # 交给收尾补翻按小批重译，比顶着错内容播出去好。
+    if _translation_length_implausible(seg.get('text'), text):
+        if stats is not None:
+            stats['implausible'] += 1
         return
     seen_idx.add(idx)
-    seg['translation'] = clean_translation(translation.strip())
+    seg['translation'] = text
+    seg.pop('_translate_failed', None)
     if on_segment_ready:
         try:
             on_segment_ready(seg)
@@ -1308,12 +1336,14 @@ async def _translate_one_big_batch(client, batch, target_lang, source_lang, char
 
     idx_map = {i: s for i, s in enumerate(batch)}
     seen_idx = set()
+    stats = {'expect': 0, 'misordered': 0, 'implausible': 0, 'out_of_range': 0}
     # Gemini偶尔返回"503 UNAVAILABLE...currently experiencing high demand"——这是
     # Google那边模型临时过载，跟API key/账号配置完全无关（key/权限真出问题是401/403，
     # 不是503），官方原话就是"Spikes in demand are usually temporary. Please try
     # again later"，值得自动重试几次，不该第一次撞上就直接判失败。
     for attempt in range(3):
         buffer = ''
+        stats['expect'] = 0
         try:
             # 这个SDK版本的 generate_content_stream 本身是个协程，要先 await 一次才能拿到
             # 真正的异步流对象，不能直接 async for（会报"got coroutine"，今天踩过这个坑）。
@@ -1327,9 +1357,9 @@ async def _translate_one_big_batch(client, batch, target_lang, source_lang, char
                     line, buffer = buffer.split('\n', 1)
                     line = line.strip()
                     if line:
-                        _apply_translated_line(line, idx_map, seen_idx, on_segment_ready)
+                        _apply_translated_line(line, idx_map, seen_idx, on_segment_ready, stats)
             if buffer.strip():
-                _apply_translated_line(buffer.strip(), idx_map, seen_idx, on_segment_ready)
+                _apply_translated_line(buffer.strip(), idx_map, seen_idx, on_segment_ready, stats)
             break
         except Exception as e:
             is_transient = '503' in str(e) or 'UNAVAILABLE' in str(e) or 'high demand' in str(e)
@@ -1346,46 +1376,139 @@ async def _translate_one_big_batch(client, batch, target_lang, source_lang, char
     # 喂中文TTS音色念出来声音会很怪但不报错，很难第一时间察觉，尤其录屏场景要等录完、
     # 逐句听才发现，代价太大。改成直接标记失败、不产出这一句的语音，交给上层（服务器/
     # 插件）发现"这句没有翻译"就暂停+明显提示，而不是悄悄用坏内容把这句话蒙混过去。
+    missing = 0
     for i, s in idx_map.items():
         if i not in seen_idx and 'translation' not in s:
             s['_translate_failed'] = True
+            missing += 1
+    if missing or stats['misordered'] or stats['implausible'] or stats['out_of_range']:
+        print(f"  [流式翻译] 本批{len(batch)}句：漏{missing}、序号错位{stats['misordered']}、"
+              f"疑似串位{stats['implausible']}、越界{stats['out_of_range']}")
+    return missing
+
+
+async def _retranslate_missing_segments(client, todo, target_lang, source_lang, chars_per_sec,
+                                        title, on_segment_ready, rounds=2, batch_size=5):
+    """整批流式翻译漏掉的句子按小批重发。
+
+    大批一次翻上千句时，模型少输出一行就会让那一句永远没有译文——上层看到的就是
+    "这句被跳过了"。小批里序号几乎不会错，补一轮基本都能补回来。批处理路径
+    （translate_segments）本来就有这个兜底，流式路径之前漏了。
+    """
+    for _ in range(rounds):
+        missing = [s for s in todo if not s.get('translation')]
+        if not missing:
+            return
+        log_event(f"流式翻译漏 {len(missing)} 句，按{batch_size}句一批补翻", title)
+        for i in range(0, len(missing), batch_size):
+            await _translate_one_big_batch(client, missing[i:i + batch_size], target_lang,
+                                           source_lang, chars_per_sec, title, on_segment_ready)
 
 
 async def translate_segments_streaming(segments, target_lang=TARGET_LANG, title=None,
-                                        source_lang='原语言', on_segment_ready=None):
+                                        source_lang='原语言', on_segment_ready=None, temp_dir=None):
     """整批原文一次性发送翻译（不再像旧版客户端分块那样切成2/6/10句的小碎片各发各的），
     用Gemini流式API消费——边生成边解析，每凑齐一行"序号|实际字数|译文"就立刻通过
     on_segment_ready 回调交给调用方（用于立刻送去TTS合成，不必等这一整批翻译完）。
     这样同时拿到"一次性看到全部上下文、术语参考只注入一次"和"尽快出第一句配音"
     两个好处。超长视频一次发不完时（预估输出超过模型单次输出上限的安全余量），
     自动分成几个大块依次调用，每块仍各自走一次流式消费，不退回小碎片切法。
+
+    temp_dir：与 translate_segments 相同，用于读写该视频目录下的 translations.json。
+    命中缓存的句子直接回调送 TTS，不再调用 Gemini；新译文写回持久缓存。
     """
+    effective_dir = temp_dir or TEMP_DIR
     client = genai.Client(api_key=GEMINI_API_KEY)
     valid = [s for s in segments if (s.get('text') or '').strip()]
     if not valid:
         return segments
 
-    total_speech_sec = sum(estimate_speech_duration(s['text']) for s in valid)
-    total_duration = sum(max(s['duration'], 0.1) for s in valid)
+    cache_path = os.path.join(effective_dir, 'translations.json')
+    cache = {}
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                cache = json.load(f)
+            if not isinstance(cache, dict):
+                cache = {}
+        except Exception:
+            cache = {}
+
+    def _persist_translation_cache():
+        try:
+            os.makedirs(effective_dir, exist_ok=True)
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"  [流式翻译] 写入 translations.json 失败: {e}")
+
+    def _wrapped_ready(seg):
+        if on_segment_ready:
+            try:
+                on_segment_ready(seg)
+            except Exception as e:
+                print(f"  [流式翻译] on_segment_ready 回调出错: {e}")
+        # 在术语校正等后处理之后再写入，避免缓存未校正文本
+        text = (seg.get('text') or '').strip()
+        tr = seg.get('translation')
+        if text and tr:
+            cache[text] = tr
+
+    todo = []
+    cached_count = 0
+    poisoned = 0
+    for seg in valid:
+        text = (seg.get('text') or '').strip()
+        cached = cache.get(text)
+        usable = cached and not re.match(r'^\d+(\.\d+)?s\|', str(cached))
+        # 修复序号串位之前留下的缓存是按原文做键写脏的，命中后会一直重现同一处错位。
+        # 长度明显对不上的缓存直接作废、重翻，否则用户重看同一个视频还是老样子。
+        if usable and _translation_length_implausible(text, clean_translation(str(cached))):
+            cache.pop(text, None)
+            usable = False
+            poisoned += 1
+        if usable:
+            seg['translation'] = clean_translation(str(cached))
+            cached_count += 1
+            _wrapped_ready(seg)
+        else:
+            todo.append(seg)
+    if poisoned:
+        log_event(f"丢弃 {poisoned} 条长度明显对不上的旧译文缓存，重新翻译", title)
+
+    if cached_count:
+        log_event(f"流式翻译缓存命中 {cached_count}/{len(valid)} 条", title)
+    if not todo:
+        log_event("全部命中翻译缓存，跳过 Gemini", title)
+        _persist_translation_cache()
+        return segments
+
+    total_speech_sec = sum(estimate_speech_duration(s['text']) for s in todo)
+    total_duration = sum(max(s['duration'], 0.1) for s in todo)
     speech_ratio = total_speech_sec / total_duration if total_duration else 1.0
     chars_per_sec = max(3.0, min(speech_ratio * 5.5, 6.0))
 
     # gemini-2.5-flash-lite 单次输出上限约6万多token，这里按约2万汉字（留足安全余量，
     # 字数*2估算prompt+输出的token开销）做分块阈值，超过才分成几个大块依次发送。
     MAX_CHARS_PER_CALL = 20000
-    est_total_chars = sum(max(round(s['duration'] * chars_per_sec), 1) for s in valid) * 2
-    if est_total_chars <= MAX_CHARS_PER_CALL:
-        await _translate_one_big_batch(client, valid, target_lang, source_lang, chars_per_sec, title, on_segment_ready)
-        return segments
-
-    n_parts = (est_total_chars + MAX_CHARS_PER_CALL - 1) // MAX_CHARS_PER_CALL
-    part_size = (len(valid) + n_parts - 1) // n_parts
-    log_event(f"原文较长（预估输出约{est_total_chars}字符），分成{n_parts}个大块依次翻译"
-              f"（不是切成2/6/10这种小碎片）", title)
-    for i in range(0, len(valid), part_size):
-        await _translate_one_big_batch(client, valid[i:i + part_size], target_lang, source_lang,
-                                        chars_per_sec, title, on_segment_ready)
+    est_total_chars = sum(max(round(s['duration'] * chars_per_sec), 1) for s in todo) * 2
+    try:
+        if est_total_chars <= MAX_CHARS_PER_CALL:
+            await _translate_one_big_batch(client, todo, target_lang, source_lang, chars_per_sec, title, _wrapped_ready)
+        else:
+            n_parts = (est_total_chars + MAX_CHARS_PER_CALL - 1) // MAX_CHARS_PER_CALL
+            part_size = (len(todo) + n_parts - 1) // n_parts
+            log_event(f"原文较长（预估输出约{est_total_chars}字符），分成{n_parts}个大块依次翻译"
+                      f"（不是切成2/6/10这种小碎片）", title)
+            for i in range(0, len(todo), part_size):
+                await _translate_one_big_batch(client, todo[i:i + part_size], target_lang, source_lang,
+                                                chars_per_sec, title, _wrapped_ready)
+        await _retranslate_missing_segments(client, todo, target_lang, source_lang,
+                                            chars_per_sec, title, _wrapped_ready)
+    finally:
+        _persist_translation_cache()
     return segments
+
 
 
 def seconds_to_srt_time(seconds):

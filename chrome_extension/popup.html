@@ -14,7 +14,10 @@
     .val { color: #c00; font-weight: bold; }
     input[type=range] { width: 100%; }
     .hint { font-size: 11px; color: #888; margin-top: 4px; line-height: 1.4; }
-    .version-badge { float: right; color: #999; font-size: 11px; font-weight: normal; }
+    .version-badge { color: #999; font-size: 11px; font-weight: normal; margin-left: 6px; }
+    .brand-header { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 14px; }
+    .brand-header img.cursor-logo { width: 20px; height: 20px; border-radius: 4px; flex-shrink: 0; }
+    .brand-header .brand-title { flex: 1; min-width: 0; }
     .row { margin-bottom: 12px; }
     hr { border: none; border-top: 1px solid #e0e0e0; margin: 10px 0; }
     select, input[type=text], textarea { font-size: 12px; padding: 4px; width: 100%; margin-top: 3px; box-sizing: border-box; }
@@ -51,7 +54,7 @@
 </head>
 <body>
   <div class="tabs">
-    <button class="tab-btn active" data-tab="realtime">⚡ 实时配音 Codex</button>
+    <button class="tab-btn active" data-tab="realtime">⚡ 实时配音 Cursor</button>
     <button class="tab-btn" data-tab="collect">📺 内容收集</button>
     <button class="tab-btn" data-tab="search">🔍 搜索视频</button>
     <button class="tab-btn" data-tab="cache">💾 缓存管理</button>
@@ -60,7 +63,11 @@
 
   <!-- 实时配音标签页 -->
   <div id="realtime" class="tab-content active">
-    <h3>🎧 实时配音 Codex 设置 <span id="extensionVersion" class="version-badge"></span></h3>
+    <h3 class="brand-header">
+      <img class="cursor-logo" src="icons/icon48.png" alt="Cursor" width="20" height="20" />
+      <span class="brand-title">实时配音 Cursor</span>
+      <span id="extensionVersion" class="version-badge"></span>
+    </h3>
 
     <div class="row">
       <label>功能模式：</label>
@@ -127,9 +134,9 @@
     <hr>
 
     <div class="row">
-      <label><input type="checkbox" id="useGeminiTranslate" /> Gemini翻译（仅配音模式）</label>
-      <div class="hint">YouTube自动翻译质量太差时勾选——改用原文（不是YT已经翻译过的二手中文）
-        交给Gemini重新翻译，更贴近原意，但会产生少量API费用。不勾选则照常用YouTube自动翻译，不耗API。</div>
+      <label><input type="checkbox" id="useGeminiTranslate" checked /> Gemini翻译（仅配音模式，默认开启）</label>
+      <div class="hint">默认已勾选：取原文字幕交给 Gemini 翻译后再配音（有 API 费用，质量更好）。
+        取消勾选则改用 YouTube 自动翻译中文，不耗 Gemini API。</div>
     </div>
 
     <hr>

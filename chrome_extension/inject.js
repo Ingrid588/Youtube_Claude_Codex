@@ -115,7 +115,14 @@
       // SPA 切到后续视频后，只传 languageCode 会被播放器静默忽略。必须保留
       // 当前基础字幕轨的完整字段，再叠加目标翻译语言。
       var opt = base ? Object.assign({}, base) : {};
-      opt.translationLanguage = { languageCode: msg.targetLang || 'zh-Hans' };
+      // targetLang 传空 = 还原到原文轨。YouTube 会跨视频记住"自动翻译→中文"这个
+      // 偏好，取完中文兜底不还原的话，下一轮主路径开 CC 只会等到 tlang=zh 的请求，
+      // 原文轨永远拦不到，用户就会看到"未拦到原文字幕，请手动选 en"。
+      if (msg.targetLang) {
+        opt.translationLanguage = { languageCode: msg.targetLang };
+      } else {
+        delete opt.translationLanguage;
+      }
       player.setOption('captions', 'track', opt);
       result.ok = true;
     } catch (e) {
