@@ -51,6 +51,7 @@ def stamp_segments(segments, schema=CAPTION_SCHEMA):
 def parse_json3_file(path):
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     cues, previous_start, monotonic = [], float("-inf"), True
+    expected_chars, word_timing_count, word_timing_monotonic = 0, 0, True
     for event_index, event in enumerate(data.get("events") or []):
         parts = event.get("segs") or []
         if event.get("tStartMs") is None or event.get("dDurationMs") is None or not parts:
@@ -66,13 +67,28 @@ def parse_json3_file(path):
         end = (float(event["tStartMs"]) + max(50.0, float(event["dDurationMs"]))) / 1000
         monotonic = monotonic and start >= previous_start
         previous_start = start
+        previous_word = float("-inf")
+        for part in parts:
+            if part.get("tOffsetMs") is None or not str(part.get("utf8") or "").strip():
+                continue
+            absolute = start + float(part["tOffsetMs"]) / 1000
+            word_timing_count += 1
+            word_timing_monotonic = (
+                word_timing_monotonic and previous_word <= absolute <= end + 0.001
+            )
+            previous_word = absolute
+        expected_chars += len(text)
         cues.append({"start": start, "end": end, "text": text, "lines": lines,
                      "_json3EventIndex": event_index})
     cues = stamp_segments(cues)
     keys = {cue["_sourceKey"] for cue in cues}
-    audit = {"ok": monotonic and len(keys) == len(cues), "schema": CAPTION_SCHEMA,
+    emitted_chars = sum(len(cue["text"]) for cue in cues)
+    audit = {"ok": monotonic and word_timing_monotonic and len(keys) == len(cues)
+             and expected_chars == emitted_chars, "schema": CAPTION_SCHEMA,
              "sourceEventCount": len(data.get("events") or []), "emittedCueCount": len(cues),
-             "startsMonotonic": monotonic, "uniqueSourceKeys": len(keys)}
+             "expectedCharCount": expected_chars, "emittedCharCount": emitted_chars,
+             "startsMonotonic": monotonic, "wordTimingCount": word_timing_count,
+             "wordTimingMonotonic": word_timing_monotonic, "uniqueSourceKeys": len(keys)}
     return (cues if audit["ok"] else []), audit
 
 
