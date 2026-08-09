@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "YouTube实时中文配音 Cursor",
-  "version": "0.0.10",
-  "version_name": "0.010",
+  "version": "0.0.1",
+  "version_name": "0.001",
   "description": "读取YouTube字幕，调用翻译与配音服务，实现实时中文配音。",
   "icons": {
     "16": "icons/icon16.png",
