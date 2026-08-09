@@ -13,6 +13,10 @@
 import argparse
 import json
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from canonical_captions import parse_json3_data
 
 
 def strip_nonspeech(line):
@@ -25,24 +29,10 @@ def strip_nonspeech(line):
 
 
 def parse_events(data):
-    """确定性重建：每个有文本的事件 -> 一条 cue。返回 [{start,end,text}]。"""
-    cues = []
-    for ev in data.get('events') or []:
-        if not ev or not ev.get('segs') or ev.get('dDurationMs') is None:
-            continue
-        raw = ''.join((s.get('utf8') or '') for s in ev['segs'])
-        if not raw.replace('\n', '').strip():
-            continue  # 纯换行/空白：滚动分隔符
-        lines = [strip_nonspeech(x) for x in raw.split('\n')]
-        lines = [x for x in lines if x]
-        if not lines:
-            continue
-        text = ' '.join(lines).strip()
-        if not text:
-            continue
-        start = ev['tStartMs'] / 1000.0
-        end = (ev['tStartMs'] + ev['dDurationMs']) / 1000.0
-        cues.append({'start': start, 'end': end, 'text': text})
+    """调用生产环境同一 canonical 构建器，防止验证工具与浏览器各写一套规则。"""
+    cues, audit = parse_json3_data(data)
+    if not audit.get('ok'):
+        raise ValueError(f'canonical timeline 对账失败: {audit}')
     return cues
 
 
@@ -81,6 +71,11 @@ def reconcile(data, cues):
     src_words = sum(len(''.join((s.get('utf8') or '') for s in e['segs']).split())
                     for e in src_events if not is_nonspeech_only(e))
     out_words = sum(len(c['text'].split()) for c in cues)
+    src_chars = sum(len(' '.join(
+        strip_nonspeech(x) for x in ''.join(
+            (s.get('utf8') or '') for s in e['segs']).split('\n')
+        if strip_nonspeech(x)).strip()) for e in src_events if not is_nonspeech_only(e))
+    out_chars = sum(len(c['text']) for c in cues)
 
     starts = [c['start'] for c in cues]
     monotonic = all(a <= b for a, b in zip(starts, starts[1:]))
@@ -92,6 +87,7 @@ def reconcile(data, cues):
             overlaps += 1
     # 完全相同的相邻重复
     dup_adjacent = sum(1 for a, b in zip(cues, cues[1:]) if a['text'] == b['text'])
+    unique_source_keys = len({c.get('_sourceKey') for c in cues}) == len(cues)
 
     print('=== 对账结果 ===')
     print(f'原始有文本事件数 : {len(src_events)}')
@@ -100,10 +96,13 @@ def reconcile(data, cues):
     print(f'重建 cue 数      : {len(cues)}  (期望 == 预期，零漏零重)')
     print(f'原始语音词数     : {src_words}')
     print(f'重建词数         : {out_words}  (期望完全相等)')
+    print(f'原始/重建字符数  : {src_chars}/{out_chars}')
     print(f'时间戳单调       : {monotonic}')
+    print(f'sourceKey 唯一   : {unique_source_keys}')
     print(f'相邻文本重叠数   : {overlaps}  (期望 0，越小越好)')
     print(f'相邻完全重复数   : {dup_adjacent}  (期望 0)')
-    ok = (expected_events == len(cues)) and (src_words == out_words) and monotonic
+    ok = (expected_events == len(cues)) and (src_words == out_words) \
+        and (src_chars == out_chars) and monotonic and unique_source_keys
     print('结论             :', 'OK 无损' if ok else '需检查')
     return ok
 
