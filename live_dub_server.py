@@ -220,6 +220,9 @@ LIVE_TEMP_DIR = dub9.BASE_TEMP_DIR
 os.makedirs(LIVE_TEMP_DIR, exist_ok=True)
 
 CACHE_MAX_BYTES = int(os.getenv('DUB_CACHE_MAX_BYTES', str(6 * 1024 ** 3)))
+# 6GB 是缓存预算，不是磁盘可用空间的上限。无论缓存预算多大，都给操作系统、
+# 日志和正在写入的音频保留空间，避免商业服务在满盘时整体异常。
+CACHE_MIN_FREE_BYTES = int(os.getenv('DUB_CACHE_MIN_FREE_BYTES', str(2 * 1024 ** 3)))
 _last_cache_cleanup = 0.0
 
 
@@ -230,31 +233,82 @@ def _maybe_cleanup_server_cache(force=False):
         return
     _last_cache_cleanup = now
     rows, total = [], 0
-    for name in os.listdir(LIVE_TEMP_DIR):
+    try:
+        names = os.listdir(LIVE_TEMP_DIR)
+    except OSError:
+        return
+    for name in names:
+        # 跳过系统/配额文件目录，只清各 video_id 缓存
+        if name.startswith('_') or name in {'gemini_quota.json', 'licenses.json'}:
+            continue
         path = os.path.join(LIVE_TEMP_DIR, name)
-        if not os.path.isdir(path): continue
+        if not os.path.isdir(path):
+            continue
         size = 0
         for root, _dirs, files in os.walk(path):
             for filename in files:
-                try: size += os.path.getsize(os.path.join(root, filename))
-                except OSError: pass
+                try:
+                    size += os.path.getsize(os.path.join(root, filename))
+                except OSError:
+                    pass
         total += size
         active = False
         try:
             with open(os.path.join(path, 'background_job.json'), encoding='utf-8') as handle:
                 active = json.load(handle).get('status') in {'pending', 'processing'}
-        except (OSError, ValueError, json.JSONDecodeError): pass
-        rows.append((os.path.getmtime(path), size, path, active))
-    if total <= CACHE_MAX_BYTES: return
-    rows.sort()
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        rows.append((os.path.getmtime(path), size, path, active, name))
+    try:
+        free_bytes = shutil.disk_usage(LIVE_TEMP_DIR).free
+    except OSError:
+        free_bytes = CACHE_MIN_FREE_BYTES
+    # 删除后可释放的是本缓存自身：当磁盘余量不足安全线时，目标缩至
+    # total + free - reserve；否则仍遵守6GB缓存预算。
+    cache_target = max(0, min(CACHE_MAX_BYTES, total + free_bytes - CACHE_MIN_FREE_BYTES))
+    if total <= cache_target:
+        return
+    log.info(f'[缓存清理] 当前占用 {total / 1024**3:.2f}GB，缓存预算 {CACHE_MAX_BYTES / 1024**3:.2f}GB，'
+             f'磁盘可用 {free_bytes / 1024**3:.2f}GB（保留 {CACHE_MIN_FREE_BYTES / 1024**3:.2f}GB），开始淘汰早期缓存')
+
+    def _evict(mtime, size, path, active, name, reason):
+        nonlocal total
+        if active:
+            return False
+        try:
+            shutil.rmtree(path)
+            total -= size
+            log.info(f'[缓存清理] {reason} 删除 {name}（{size / 1024**2:.1f}MB），剩余 {total / 1024**3:.2f}GB')
+            return True
+        except OSError as exc:
+            log.warning(f'[缓存清理] 删除失败 {path}: {exc}')
+            return False
+
+    # 1) 先按年龄阶梯删（72h→6h）
+    rows.sort()  # 最旧在前
     for keep_hours in (72, 48, 24, 6):
         cutoff = now - keep_hours * 3600
-        for mtime, size, path, active in list(rows):
-            if total <= CACHE_MAX_BYTES or active or mtime > cutoff: continue
-            try:
-                shutil.rmtree(path); total -= size; rows.remove((mtime, size, path, active))
-                log.info(f'[缓存清理] 删除 {keep_hours} 小时前缓存 {path}')
-            except OSError as exc: log.warning(f'[缓存清理] 删除失败 {path}: {exc}')
+        kept = []
+        for row in rows:
+            mtime, size, path, active, name = row
+            if total <= cache_target:
+                kept.append(row)
+                continue
+            if active or mtime > cutoff:
+                kept.append(row)
+                continue
+            if not _evict(mtime, size, path, active, name, f'{keep_hours}h前'):
+                kept.append(row)
+        rows = kept
+        if total <= cache_target:
+            return
+
+    # 2) 仍超限：按最旧优先继续删，直到低于上限（正在跑的任务除外）
+    rows.sort()
+    for mtime, size, path, active, name in list(rows):
+        if total <= cache_target:
+            break
+        _evict(mtime, size, path, active, name, '超限淘汰最旧')
 
 
 def _save_video_cache_meta(video_id, title):
@@ -623,6 +677,8 @@ class RawSeg(BaseModel):
     source_end: float | None = Field(default=None, alias='_sourceEnd')
     source_text: str | None = Field(default=None, alias='_sourceText')
     source_index: int | None = Field(default=None, alias='_sourceIndex')
+    caption_schema: str | None = Field(default=None, alias='_captionSchema')
+    canonical_caption: bool = Field(default=False, alias='_canonicalCaption')
 
 
 class DubRequest(BaseModel):
@@ -938,6 +994,8 @@ def apply_glossary(text, context_text=None):
     if not text:
         return text
     text = re.sub(r'(?:鸡巴|鸡吧|屌|吊|阴茎|老二|生殖器)', '下体', text, flags=re.I)
+    # Gemini 偶发把占星语境的 energy 译成“配置”；只改正“X象的配置”，不动普通“系统配置”。
+    text = re.sub(r'([火水土风]象(?:星座)?的?)配置', r'\1能量', text)
     if not keys:
         return text
     ctx = context_text or text
@@ -1008,9 +1066,10 @@ def _prepare_dub_segments(req: 'DubRequest'):
         '_sourceEnd': s.source_end if s.source_end is not None else s.end,
         '_sourceText': s.source_text or s.text,
         '_sourceIndex': s.source_index,
+        '_captionSchema': s.caption_schema,
+        '_canonicalCaption': s.canonical_caption,
         **(({'voice': s.voice}) if s.voice else {}),
     } for s in req.segments]
-    segments = dub9.dedupe_rolling_overlap(segments)
     segments = dub9.estimate_durations(segments)
 
     req_lang_full = (req.lang or 'en').lower()
@@ -1179,12 +1238,30 @@ async def dub(req: DubRequest):
             '_sourceEnd': s.source_end if s.source_end is not None else s.end,
             '_sourceText': s.source_text or s.text,
             '_sourceIndex': s.source_index,
+            '_captionSchema': s.caption_schema,
+            '_canonicalCaption': s.canonical_caption,
             **(({'voice': s.voice}) if s.voice else {}),
         } for s in req.segments]
         voiced = [(s.start, s.voice) for s in req.segments if s.voice]
         if voiced:
             log.info(f"收到 per-segment voice 分配 {len(voiced)} 条: {voiced[:4]}...")
-        segments = dub9.dedupe_rolling_overlap(segments)
+        if req.use_gemini_translate:
+            keys = [s.get('_sourceKey') for s in segments]
+            indices = [s.get('_sourceIndex') for s in segments]
+            canonical_ok = bool(segments) and all(
+                s.get('_canonicalCaption') is True
+                and s.get('_captionSchema') == 'canonical-json3-v1'
+                and s.get('_sourceKey')
+                and s.get('_sourceText') == s.get('text')
+                for s in segments
+            ) and len(set(keys)) == len(keys) and all(
+                isinstance(index, int) for index in indices
+            ) and indices == sorted(indices)
+            if not canonical_ok:
+                log.error('[配音] Gemini 请求字幕未通过 canonical cue 身份校验，拒绝处理')
+                return JSONResponse(status_code=422, content={
+                    'error': '字幕源不是已对账的 canonical JSON3 时间轴，已停止 Gemini',
+                })
         segments = dub9.estimate_durations(segments)
 
         # 检测语言（CJK字符占比>30% 视为中文）。勾了"Gemini翻译"时这个检测不作数——
@@ -1416,7 +1493,8 @@ async def dub(req: DubRequest):
 
                 try:
                     await dub9.translate_segments_streaming(
-                        segments, title=req.title, on_segment_ready=_on_segment_ready)
+                        segments, title=req.title, on_segment_ready=_on_segment_ready,
+                        temp_dir=video_dir)
                     if synth_tasks:
                         await asyncio.gather(*synth_tasks)
                     log.info(f"Gemini流式翻译+合成完成，{len(segments)} 段")
@@ -1767,6 +1845,21 @@ def _sub_lang_variants(lang):
     return ','.join(variants)
 
 
+def _parse_json3_cues(sub_path):
+    """Read and audit the immutable native JSON3 event timeline."""
+    try:
+        from canonical_captions import parse_json3_file
+        cues, audit = parse_json3_file(sub_path)
+        if not audit.get('ok'):
+            log.error(f'[后台预取] JSON3 规范时间轴对账失败: {audit}')
+            return []
+        log.info(f'[后台预取] JSON3 规范时间轴对账通过: {audit}')
+        return cues
+    except Exception as e:
+        log.warning(f'[后台预取] json3 字幕解析失败 {os.path.basename(sub_path)}: {e}')
+        return []
+
+
 @app.post("/prefetch_captions")
 async def prefetch_captions(req: Request):
     """获取指定视频"用户选的目标语言"的字幕（通过 yt-dlp 的手动字幕 + 自动翻译字幕），
@@ -1799,7 +1892,7 @@ async def prefetch_captions(req: Request):
                 '--write-sub',
                 '--write-auto-subs',   # 自动字幕（含 YouTube 自动翻译/转录），必须带
                 '--sub-langs', sub_langs,
-                '--sub-format', 'vtt',
+                '--sub-format', 'json3/vtt/best',
                 '--skip-download',
                 '--impersonate', 'chrome',   # 模拟真实浏览器 TLS 指纹（curl_cffi），减少 429/反爬
                 # 缓解 YouTube 429 限流：重试 + 退避 + 请求间隔
@@ -1858,7 +1951,10 @@ async def prefetch_captions(req: Request):
                                      creationflags=_NO_WINDOW)
 
             # 扫描实际生成的字幕文件，按请求的语言变体顺序挑选（前面的变体更精确）
-            candidates = _glob.glob(os.path.join(tmp_dir, f'{video_id}.*.vtt'))
+            candidates = (
+                _glob.glob(os.path.join(tmp_dir, f'{video_id}.*.json3'))
+                + _glob.glob(os.path.join(tmp_dir, f'{video_id}.*.vtt'))
+            )
             sub_path = None
             detected_lang = None
             if candidates:
@@ -1874,20 +1970,15 @@ async def prefetch_captions(req: Request):
                         if lang_of_p == want.lower():
                             return i
                     return len(priority)
-                candidates.sort(key=_rank)
+                candidates.sort(key=lambda p: (_rank(p), 0 if p.endswith('.json3') else 1))
                 sub_path = candidates[0]
                 detected_lang = _lang_of(sub_path)
 
             if sub_path and os.path.exists(sub_path):
-                segments = dub9.parse_vtt(sub_path) if hasattr(dub9, 'parse_vtt') else _parse_vtt_fallback(sub_path)
-                # 按句合并：把上千条逐行字幕重组成完整句子（约 1/10 段数），
-                # 避免每行一次 TTS 导致配音极慢、霸占本地代理（曾出现 1997 段的情况）。
-                # group_cn_sentences 是按中文标点/连词设计的，非中文字幕不调用，原样按 cue 分段。
-                _before = len(segments)
-                is_chinese_sub = detected_lang and detected_lang.lower().startswith('zh')
-                if is_chinese_sub and hasattr(dub9, 'group_cn_sentences'):
-                    segments = dub9.group_cn_sentences(segments)
-                log.info(f'[后台预取] ✓ {video_id}: {_before} 行 → {len(segments)} 句'
+                segments = (_parse_json3_cues(sub_path) if sub_path.endswith('.json3')
+                            else (dub9.parse_vtt(sub_path) if hasattr(dub9, 'parse_vtt')
+                                  else _parse_vtt_fallback(sub_path)))
+                log.info(f'[后台预取] ✓ {video_id}: 返回 {len(segments)} 个原始字幕事件'
                          f'（来源 {os.path.basename(sub_path)}，语言={detected_lang}）')
                 # 清理临时 vtt，避免堆积
                 for p in candidates:
@@ -1910,6 +2001,8 @@ async def prefetch_captions(req: Request):
                     'ok': True,
                     'segments': segments,
                     'matched_lang': detected_lang,
+                    'caption_schema': segments[0].get('_captionSchema') if segments else None,
+                    'canonical': bool(segments and segments[0].get('_canonicalCaption')),
                     'complete': complete,
                     'last_end': last_end,
                 }

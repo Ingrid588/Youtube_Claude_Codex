@@ -1,0 +1,44 @@
+---
+description: Chrome 扩展命名与版本号约定（每次改动必须升版本）
+alwaysApply: true
+---
+
+# 扩展命名与版本号
+
+适用于 `chrome_extension/manifest.json` 及 `popup.html` 里的标题文案。
+
+## 命名
+
+产品名一律用 **Cursor**，不要出现 Codex：
+
+- `"name": "YouTube实时中文配音 Cursor"`
+- `"default_title": "实时配音 Cursor 设置"`
+- popup 的标签页/标题同样用「实时配音 Cursor」
+
+## 版本号
+
+显示出来的版本是 **0.001** 这种三位小数形式，**永远不超过 1**。
+每次改动扩展文件后都要 +0.001，不要跳号，也不要忘记。
+
+Chrome 的 `version` 字段只接受 1~4 段点分整数，且非零段不能有前导零，
+所以 `"version": "0.001"` 会导致扩展加载失败。用两个字段配合：
+
+- `version` —— 机器用，写 `0.0.N`（合法且单调递增）
+- `version_name` —— 显示用，写 `0.00N`
+
+popup 显示的是 `version_name || version`（见 `popup.js`），所以用户看到的是后者。
+
+```json
+// 第 N 次改动
+"version": "0.0.1",
+"version_name": "0.001"
+
+// 下一次
+"version": "0.0.2",
+"version_name": "0.002"
+```
+
+到 `0.0.999 / 0.999` 为止，不要进位到 1。
+
+两个扩展（`Youtube_Claude_Codex_cursor0805`、`Youtube_Claude_Codex_gemini`）
+各自独立计数，改了哪个就升哪个。

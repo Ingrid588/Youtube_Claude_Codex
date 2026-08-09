@@ -18,9 +18,10 @@ function extractCurrentF0(data, sampleRate) {
     if (corr > best) { best = corr; bestPeriod = p; }
   }
   let f0 = bestPeriod > 0 ? sampleRate / bestPeriod : 0;
-  while (f0 > 280) f0 /= 2;
+  // 384Hz 这类常是二次谐波，但 280~320Hz 对女声并不离谱，不能直接折半成男声。
+  while (f0 > 330) f0 /= 2;
   while (f0 && f0 < 75) f0 *= 2;
-  return f0 >= 75 && f0 <= 280 ? f0 : null;
+  return f0 >= 75 && f0 <= 330 ? f0 : null;
 }
 
 async function sampleCurrentTabVoice(tabId) {

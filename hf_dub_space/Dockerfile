@@ -17,7 +17,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY dub9.py live_dub_server.py ./
+COPY dub9.py live_dub_server.py canonical_captions.py ./
 # 术语表：apply_glossary（事后纠错，如"癌症"→"巨蟹座"）和翻译前的术语提示注入都靠
 # 这个文件夹，之前这里漏拷了，容器里压根没有这个目录，导致术语替换一直是空跑。
 COPY glossary ./glossary
@@ -27,7 +27,8 @@ ENV PORT=7860
 # 云端没有本地代理，明确清空（dub9.py 的 PROXY 默认值是本机专用代理，必须显式覆盖）
 ENV EDGE_TTS_PROXY=""
 # 缓存/临时文件目录，容器内可写位置
-ENV DUB_TEMP_DIR=/tmp/dub_temp
+ENV DUB_TEMP_DIR=/data/dub_cache
+ENV DUB_CACHE_MAX_BYTES=6442450944
 
 EXPOSE 7860
 
