@@ -4,6 +4,8 @@
 // 即使弹窗关闭、Service Worker 被 Chrome 杀掉，任务也能由看门狗 alarm 重新拉起继续。
 // 弹窗只是打开时读取状态显示，不参与实际配音。
 
+importScripts('canonical_captions.js');
+
 // 跟 content.js 共用同一个 popup 设置（serverUrl）：默认本机，可改成局域网内
 // 另一台跑服务的主机地址（比如这台电脑自己跑不了 Python 服务）。
 const DEFAULT_SERVER = 'https://dub-server-921963653375.us-central1.run.app';
@@ -123,7 +125,10 @@ function _localDubHash(text) {
 }
 
 function _localDubKey(videoId, seg) {
-  return `${videoId}|${Math.round((seg.start || 0) * 1000)}|`
+  const sourceKey = seg?._sourceKey
+    || globalThis.DubCanonicalCaptions.sourceKey(
+      Number(seg?.start || 0), Number(seg?.end || seg?.start || 0), seg?.text || '');
+  return `${videoId}|${sourceKey}|`
     + `${seg.voice || ''}|${_localDubHash(seg.text || '')}`;
 }
 
@@ -147,9 +152,20 @@ async function _saveBackgroundAudioBatch(videoId, requested, returned) {
     if (!item?.audio_b64) continue;
     const source = byStart.get(Math.round((item.start || 0) * 1000));
     if (!source) continue;
-    store.put(
-      { ...item, audio_url: item.audio_url || `local://${videoId}/${item.start}` },
-      _localDubKey(videoId, source));
+    const sourceKey = source._sourceKey
+      || globalThis.DubCanonicalCaptions.sourceKey(
+        Number(source.start || 0), Number(source.end || source.start || 0), source.text || '');
+    store.put({
+      ...item,
+      _sourceKey: sourceKey,
+      _sourceIndex: source._sourceIndex,
+      _sourceStart: source._sourceStart ?? source.start,
+      _sourceEnd: source._sourceEnd ?? source.end,
+      _sourceText: source._sourceText || source.text,
+      _captionSchema: source._captionSchema || '',
+      _canonicalCaption: source._canonicalCaption === true,
+      audio_url: item.audio_url || `local://${videoId}/${item.start}`,
+    }, _localDubKey(videoId, source));
   }
   await new Promise((resolve) => {
     tx.oncomplete = resolve;
@@ -464,18 +480,16 @@ async function dubChunk(videoId, segments, options = {}) {
   }
 }
 
-// 从 YouTube 拦截获取字幕的逻辑（保留，供其它地方用）
-function parseTimedText(xml) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(xml, 'text/xml');
-  const segs = [];
-  doc.querySelectorAll('text').forEach((el) => {
-    const start = parseFloat(el.getAttribute('start')) || 0;
-    const dur = parseFloat(el.getAttribute('dur')) || 0;
-    const text = (el.textContent || '').trim();
-    if (text) segs.push({ start, end: start + dur, text });
-  });
-  return segs;
+// Service Worker 与页面共用同一个 JSON3 规范解析器；SW 没有 DOMParser，旧 XML
+// 路径不再被允许伪装成可供 Gemini 使用的完整字幕。
+function parseTimedText(body) {
+  if (!body || !String(body).trim().startsWith('{')) return [];
+  const parsed = globalThis.DubCanonicalCaptions.parseJson3Text(String(body));
+  if (!parsed.audit.ok) {
+    console.error('[后台配音] JSON3 字幕对账失败，拒绝进入队列', parsed.audit);
+    return [];
+  }
+  return parsed.segments;
 }
 
 // 处理单个视频：取字幕 + 分批配音。返回 'done' | 'skipped' | 'failed'；失败原因写入 errObj.msg
@@ -519,6 +533,10 @@ async function processOne(videoId, errObj, onProgress) {
       throw new Error(options.useGemini === true
         ? '未获取到原语言字幕，请打开“自动翻译→配音指定字幕”后重试'
         : '未获取到字幕，请打开“自动翻译→配音指定字幕”后重试（未调用Gemini）');
+    }
+    if (options.useGemini === true
+        && !globalThis.DubCanonicalCaptions.isCanonicalTimeline(cap.segments)) {
+      throw new Error('原文字幕未通过 JSON3 零漏零重对账，已阻止后台 Gemini（未消耗 token）');
     }
     const totalSegs = cap.segments.length;
     console.log('[后台配音] ✓ ' + videoId + ': 字幕 ' + totalSegs + ' 条');

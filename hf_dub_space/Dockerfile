@@ -17,7 +17,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY dub9.py live_dub_server.py ./
+COPY dub9.py live_dub_server.py canonical_captions.py ./
 # 术语表：apply_glossary（事后纠错，如"癌症"→"巨蟹座"）和翻译前的术语提示注入都靠
 # 这个文件夹，之前这里漏拷了，容器里压根没有这个目录，导致术语替换一直是空跑。
 COPY glossary ./glossary

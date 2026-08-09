@@ -372,72 +372,9 @@ def get_subtitles(url_or_file):
 
 
 def parse_vtt(vtt_path):
-    """解析 YouTube 字幕 VTT。
-
-    关键：YouTube 自动字幕（含自动翻译）是"滚动字幕"格式——每个带内联时间标签
-    (<00:00:01.234>) 的 cue 里，上面几行是上一句的残留(carry-over)，
-    只有【最后一行】才是这个时间段新出现的台词；两者之间还夹着 10ms 的"快照"cue。
-
-    旧逻辑用"文本包含关系"去重，对英文有效（文字逐字累加），但对中文无效
-    （相邻两句中文没有包含关系），导致每句话被保留两遍、配音重复。
-
-    正确做法（与 TubeGet 一致）：只取每个带时间标签 cue 的最后一行，时间用 cue 起止，
-    得到无重叠的标准字幕。
-    """
-    with open(vtt_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-
-    pattern = r'(\d{1,2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}\.\d{3})[^\n]*\n([\s\S]*?)(?=\n\n|\Z)'
-    matches = re.findall(pattern, content)
-
-    inline_ts = re.compile(r'<\d{2}:\d{2}:\d{2}\.\d{3}>')
-    is_rolling = any(inline_ts.search(block) for _, _, block in matches)
-
-    raw = []
-    for start, end, block in matches:
-        if is_rolling:
-            # 滚动字幕：只处理带内联时间标签的 cue（跳过 10ms 快照 cue），
-            # 去标签后只取最后一行（新台词），丢掉上面的残留行。
-            if not inline_ts.search(block):
-                continue
-            clean = re.sub(r'<[^>]+>', '', block)
-            lines = [ln.strip() for ln in clean.split('\n') if ln.strip()]
-            if not lines:
-                continue
-            text = lines[-1]
-        else:
-            # 普通非滚动字幕（如人工上传的轨道）：整块作为一条
-            text = re.sub(r'<[^>]+>', '', block).replace('\n', ' ')
-        # 去掉[music]/[applause]等音效标注，它们不是台词
-        text = re.sub(r'[\[(（【][^\])）】]*[\])）】]', '', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        if not text:
-            continue
-        raw.append({
-            'start': timestamp_to_seconds(start),
-            'end': timestamp_to_seconds(end),
-            'text': text
-        })
-
-    # 合并相邻【完全相同】的文本（保险：偶有重复快照），延长结束时间而非重复说
-    segments = []
-    for seg in raw:
-        if segments and segments[-1]['text'] == seg['text']:
-            segments[-1]['end'] = seg['end']
-            continue
-        segments.append(seg)
-
-    # YouTube自动字幕的第一条往往滞后于视频实际开始说话的时间（通常2~4秒），
-    # 导致配音也跟着晚开始，造成"原音已经在说、配音还没出声"的体感。
-    # 把所有时间戳整体前移第一条字幕的起始时间，让配音从视频开头就开始。
-    if segments:
-        offset = segments[0]['start']
-        if 0 < offset <= 6:
-            for seg in segments:
-                seg['start'] = max(seg['start'] - offset, 0.0)
-                seg['end'] = max(seg['end'] - offset, 0.0)
-
-    return segments
+    """Faithful legacy fallback. Never shift timestamps or fuzzy-delete text."""
+    from canonical_captions import parse_vtt_file
+    return parse_vtt_file(vtt_path)
 
 
 # 连词分级（与前端 content.js 一致）：strong 强断 / medium 中断(≥MED_DUR) / weak 弱断(≥SOFT_DUR)

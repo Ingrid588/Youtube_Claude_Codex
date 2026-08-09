@@ -677,6 +677,8 @@ class RawSeg(BaseModel):
     source_end: float | None = Field(default=None, alias='_sourceEnd')
     source_text: str | None = Field(default=None, alias='_sourceText')
     source_index: int | None = Field(default=None, alias='_sourceIndex')
+    caption_schema: str | None = Field(default=None, alias='_captionSchema')
+    canonical_caption: bool = Field(default=False, alias='_canonicalCaption')
 
 
 class DubRequest(BaseModel):
@@ -1064,9 +1066,10 @@ def _prepare_dub_segments(req: 'DubRequest'):
         '_sourceEnd': s.source_end if s.source_end is not None else s.end,
         '_sourceText': s.source_text or s.text,
         '_sourceIndex': s.source_index,
+        '_captionSchema': s.caption_schema,
+        '_canonicalCaption': s.canonical_caption,
         **(({'voice': s.voice}) if s.voice else {}),
     } for s in req.segments]
-    segments = dub9.dedupe_rolling_overlap(segments)
     segments = dub9.estimate_durations(segments)
 
     req_lang_full = (req.lang or 'en').lower()
@@ -1235,12 +1238,30 @@ async def dub(req: DubRequest):
             '_sourceEnd': s.source_end if s.source_end is not None else s.end,
             '_sourceText': s.source_text or s.text,
             '_sourceIndex': s.source_index,
+            '_captionSchema': s.caption_schema,
+            '_canonicalCaption': s.canonical_caption,
             **(({'voice': s.voice}) if s.voice else {}),
         } for s in req.segments]
         voiced = [(s.start, s.voice) for s in req.segments if s.voice]
         if voiced:
             log.info(f"收到 per-segment voice 分配 {len(voiced)} 条: {voiced[:4]}...")
-        segments = dub9.dedupe_rolling_overlap(segments)
+        if req.use_gemini_translate:
+            keys = [s.get('_sourceKey') for s in segments]
+            indices = [s.get('_sourceIndex') for s in segments]
+            canonical_ok = bool(segments) and all(
+                s.get('_canonicalCaption') is True
+                and s.get('_captionSchema') == 'canonical-json3-v1'
+                and s.get('_sourceKey')
+                and s.get('_sourceText') == s.get('text')
+                for s in segments
+            ) and len(set(keys)) == len(keys) and all(
+                isinstance(index, int) for index in indices
+            ) and indices == sorted(indices)
+            if not canonical_ok:
+                log.error('[配音] Gemini 请求字幕未通过 canonical cue 身份校验，拒绝处理')
+                return JSONResponse(status_code=422, content={
+                    'error': '字幕源不是已对账的 canonical JSON3 时间轴，已停止 Gemini',
+                })
         segments = dub9.estimate_durations(segments)
 
         # 检测语言（CJK字符占比>30% 视为中文）。勾了"Gemini翻译"时这个检测不作数——
@@ -1824,6 +1845,21 @@ def _sub_lang_variants(lang):
     return ','.join(variants)
 
 
+def _parse_json3_cues(sub_path):
+    """Read and audit the immutable native JSON3 event timeline."""
+    try:
+        from canonical_captions import parse_json3_file
+        cues, audit = parse_json3_file(sub_path)
+        if not audit.get('ok'):
+            log.error(f'[后台预取] JSON3 规范时间轴对账失败: {audit}')
+            return []
+        log.info(f'[后台预取] JSON3 规范时间轴对账通过: {audit}')
+        return cues
+    except Exception as e:
+        log.warning(f'[后台预取] json3 字幕解析失败 {os.path.basename(sub_path)}: {e}')
+        return []
+
+
 @app.post("/prefetch_captions")
 async def prefetch_captions(req: Request):
     """获取指定视频"用户选的目标语言"的字幕（通过 yt-dlp 的手动字幕 + 自动翻译字幕），
@@ -1856,7 +1892,7 @@ async def prefetch_captions(req: Request):
                 '--write-sub',
                 '--write-auto-subs',   # 自动字幕（含 YouTube 自动翻译/转录），必须带
                 '--sub-langs', sub_langs,
-                '--sub-format', 'vtt',
+                '--sub-format', 'json3/vtt/best',
                 '--skip-download',
                 '--impersonate', 'chrome',   # 模拟真实浏览器 TLS 指纹（curl_cffi），减少 429/反爬
                 # 缓解 YouTube 429 限流：重试 + 退避 + 请求间隔
@@ -1915,7 +1951,10 @@ async def prefetch_captions(req: Request):
                                      creationflags=_NO_WINDOW)
 
             # 扫描实际生成的字幕文件，按请求的语言变体顺序挑选（前面的变体更精确）
-            candidates = _glob.glob(os.path.join(tmp_dir, f'{video_id}.*.vtt'))
+            candidates = (
+                _glob.glob(os.path.join(tmp_dir, f'{video_id}.*.json3'))
+                + _glob.glob(os.path.join(tmp_dir, f'{video_id}.*.vtt'))
+            )
             sub_path = None
             detected_lang = None
             if candidates:
@@ -1931,20 +1970,15 @@ async def prefetch_captions(req: Request):
                         if lang_of_p == want.lower():
                             return i
                     return len(priority)
-                candidates.sort(key=_rank)
+                candidates.sort(key=lambda p: (_rank(p), 0 if p.endswith('.json3') else 1))
                 sub_path = candidates[0]
                 detected_lang = _lang_of(sub_path)
 
             if sub_path and os.path.exists(sub_path):
-                segments = dub9.parse_vtt(sub_path) if hasattr(dub9, 'parse_vtt') else _parse_vtt_fallback(sub_path)
-                # 按句合并：把上千条逐行字幕重组成完整句子（约 1/10 段数），
-                # 避免每行一次 TTS 导致配音极慢、霸占本地代理（曾出现 1997 段的情况）。
-                # group_cn_sentences 是按中文标点/连词设计的，非中文字幕不调用，原样按 cue 分段。
-                _before = len(segments)
-                is_chinese_sub = detected_lang and detected_lang.lower().startswith('zh')
-                if is_chinese_sub and hasattr(dub9, 'group_cn_sentences'):
-                    segments = dub9.group_cn_sentences(segments)
-                log.info(f'[后台预取] ✓ {video_id}: {_before} 行 → {len(segments)} 句'
+                segments = (_parse_json3_cues(sub_path) if sub_path.endswith('.json3')
+                            else (dub9.parse_vtt(sub_path) if hasattr(dub9, 'parse_vtt')
+                                  else _parse_vtt_fallback(sub_path)))
+                log.info(f'[后台预取] ✓ {video_id}: 返回 {len(segments)} 个原始字幕事件'
                          f'（来源 {os.path.basename(sub_path)}，语言={detected_lang}）')
                 # 清理临时 vtt，避免堆积
                 for p in candidates:
@@ -1967,6 +2001,8 @@ async def prefetch_captions(req: Request):
                     'ok': True,
                     'segments': segments,
                     'matched_lang': detected_lang,
+                    'caption_schema': segments[0].get('_captionSchema') if segments else None,
+                    'canonical': bool(segments and segments[0].get('_canonicalCaption')),
                     'complete': complete,
                     'last_end': last_end,
                 }

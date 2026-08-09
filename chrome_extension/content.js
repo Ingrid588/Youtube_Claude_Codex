@@ -1178,100 +1178,28 @@ function dedupPreparedSentenceSegments(segments) {
   return out;
 }
 
+let _lastCaptionParseAudit = null;
 function parseTimedText(body) {
   if (!body || !body.trim()) return [];
   const t = body.trim();
   const segs = [];
   if (t[0] === '{') {
-    try {
-      const data = JSON.parse(t);
-      const rowLimits = new Map();
-      const windowState = new Map();
-      const normalizeLines = (raw) => String(raw || '')
-        .split(/\n+/)
-        .map((x) => stripNonSpeechMarker(x.trim()))
-        .filter(Boolean);
-      const getState = (winId) => {
-        if (!windowState.has(winId)) {
-          windowState.set(winId, { visibleLines: [], pendingLineBreak: false });
-        }
-        return windowState.get(winId);
-      };
-      const overlapLines = (prevLines, curLines) => {
-        if (!prevLines.length || !curLines.length) return 0;
-        const max = Math.min(prevLines.length, curLines.length);
-        for (let k = max; k > 0; k--) {
-          let ok = true;
-          for (let i = 0; i < k; i++) {
-            const prevLine = prevLines[prevLines.length - k + i];
-            const curLine = curLines[i];
-            if (prevLine === curLine) continue;
-            const last = i === k - 1;
-            if (last && curLine.startsWith(prevLine) && curLine.length > prevLine.length) continue;
-            ok = false;
-            break;
-          }
-          if (ok) return k;
-        }
-        return 0;
-      };
-      const emitSeg = (start, end, lines) => {
-        const filtered = (lines || []).map((x) => String(x || '').trim()).filter(Boolean);
-        if (!filtered.length) return;
-        const text = filtered.join(' ').trim();
-        if (!text) return;
-        segs.push({ start, end, text, lines: filtered });
-      };
-      for (const ev of data.events || []) {
-        if (ev?.wpWinPosId != null) {
-          const winPos = data.wpWinPositions?.[ev.wpWinPosId];
-          if (winPos?.rcRows) rowLimits.set(ev.wWinId ?? ev.id ?? 0, Math.max(1, Number(winPos.rcRows) || 2));
-        }
-      }
-      for (const ev of data.events || []) {
-        if (!ev.segs || ev.dDurationMs == null) continue;
-        const winId = ev.wWinId ?? 0;
-        const state = getState(winId);
-        const rowLimit = rowLimits.get(winId) || 2;
-        const rawText = ev.segs.map((s) => s.utf8 || '').join('');
-        const newlineOnly = rawText.replace(/\s/g, '') === '';
-        if (newlineOnly && rawText.includes('\n')) {
-          state.pendingLineBreak = true;
-          continue;
-        }
-        const start = ev.tStartMs / 1000;
-        const end = (ev.tStartMs + ev.dDurationMs) / 1000;
-        const lines = normalizeLines(rawText);
-        if (!lines.length) continue;
-        if (state.pendingLineBreak && lines.length === 1) {
-          state.pendingLineBreak = false;
-          state.visibleLines = [...state.visibleLines, lines[0]].slice(-rowLimit);
-          emitSeg(start, end, [lines[0]]);
-          continue;
-        }
-        state.pendingLineBreak = false;
-        const prevLines = state.visibleLines;
-        const overlap = overlapLines(prevLines, lines);
-        if (overlap > 0) {
-          const delta = lines.slice(overlap);
-          if (delta.length) emitSeg(start, end, delta);
-          else if (lines.length && prevLines.length) {
-            const prevLast = prevLines[prevLines.length - 1];
-            const curLast = lines[Math.min(overlap - 1, lines.length - 1)];
-            if (curLast && prevLast && curLast.startsWith(prevLast) && curLast.length > prevLast.length) {
-              emitSeg(start, end, [curLast.slice(prevLast.length).trim()]);
-            }
-          }
-        } else {
-          emitSeg(start, end, lines);
-        }
-        state.visibleLines = lines.slice(-rowLimit);
-      }
-      return segs;
-    } catch (e) { return []; }
+    const parsed = globalThis.DubCanonicalCaptions?.parseJson3Text?.(t);
+    _lastCaptionParseAudit = parsed?.audit || {
+      ok: false,
+      reason: 'canonical_parser_unavailable',
+    };
+    if (!_lastCaptionParseAudit.ok) {
+      console.error('[配音插件] JSON3 规范字幕对账失败，拒绝使用并停止后续 Gemini：',
+        _lastCaptionParseAudit);
+      return [];
+    }
+    console.log('[配音插件] JSON3 已重建为规范字幕时间轴：', _lastCaptionParseAudit);
+    return parsed.segments;
   }
   try {
     const doc = new DOMParser().parseFromString(t, 'text/xml');
+    let sourceIndex = 0;
     for (const node of doc.querySelectorAll('text')) {
       const start = parseFloat(node.getAttribute('start'));
       const dur = parseFloat(node.getAttribute('dur') || '0');
@@ -1279,9 +1207,28 @@ function parseTimedText(body) {
         .replace(/&amp;/g,'&').trim();
       const lines = rawText.split(/\n+/).map((x) => stripNonSpeechMarker(x.trim())).filter(Boolean);
       const text = stripNonSpeechMarker(rawText.replace(/\n/g, ' ').trim());
-      if (text && !isNaN(start)) segs.push({ start, end: start + dur, text, lines });
+      if (text && !isNaN(start)) {
+        const end = start + Math.max(0.05, dur);
+        segs.push({
+          start, end, text, lines,
+          _sourceIndex: sourceIndex++,
+          _sourceStart: start,
+          _sourceEnd: end,
+          _sourceText: text,
+          _captionSchema: 'legacy-xml-v1',
+          _canonicalCaption: false,
+        });
+      }
     }
-  } catch (e) {}
+    _lastCaptionParseAudit = {
+      ok: segs.length > 0,
+      schema: 'legacy-xml-v1',
+      canonical: false,
+      emittedCueCount: segs.length,
+    };
+  } catch (e) {
+    _lastCaptionParseAudit = { ok: false, schema: 'legacy-xml-v1', error: e?.message || String(e) };
+  }
   return segs;
 }
 
@@ -1508,14 +1455,21 @@ function groupChineseSentences(segments) {
   return out.length ? out : segments;
 }
 
-function prepareSegmentsForBackgroundDub(segments) {
+function prepareSegmentsForBackgroundDub(segments, useGemini = false) {
+  const canonical = globalThis.DubCanonicalCaptions?.isCanonicalTimeline?.(segments) === true;
+  if (canonical && useGemini) {
+    return segments.map((segment) => ({
+      ...segment,
+      text: String(segment._sourceText || segment.text || '').trim(),
+    })).filter((segment) => segment.text);
+  }
   let prepared = (segments || [])
     .map((s) => ({
       ...s,
       text: sanitizeDubbingText(stripNonSpeechMarker(String(s.text || ''))),
     }))
     .filter((s) => s.text);
-  prepared = dedupRollingCaptions(prepared);
+  if (!canonical) prepared = dedupRollingCaptions(prepared);
   prepared = prepared
     .map((s) => ({
       ...s,
@@ -1526,30 +1480,14 @@ function prepareSegmentsForBackgroundDub(segments) {
   prepared = prepared
     .map((s) => ({ ...s, text: s.text.replace(fillerRe, '').trim() }))
     .filter((s) => s.text);
-  prepared = groupChineseSentences(prepared);
-  prepared = dedupPreparedSentenceSegments(prepared);
+  if (!useGemini) prepared = groupChineseSentences(prepared);
+  if (!canonical) prepared = dedupPreparedSentenceSegments(prepared);
   return prepared;
 }
 
 // 解析 WebVTT 文本（<track> 用）
 function parseVTT(vtt) {
-  const segs = [];
-  const blocks = vtt.replace(/\r\n/g, '\n').split(/\n\n+/);
-  for (const block of blocks) {
-    const lines = block.trim().split('\n');
-    const timeLine = lines.find((l) => l.includes('-->'));
-    if (!timeLine) continue;
-    const [s, e] = timeLine.split('-->').map((p) => {
-      const parts = p.trim().split(':');
-      let sec = 0;
-      for (const part of parts) sec = sec * 60 + parseFloat(part);
-      return sec;
-    });
-    const text = stripNonSpeechMarker(lines.slice(lines.indexOf(timeLine) + 1).join(' ')
-      .replace(/<[^>]+>/g, '').replace(/\n/g, ' ').trim());
-    if (text && !isNaN(s)) segs.push({ start: s, end: e || s + 2, text });
-  }
-  return segs;
+  return globalThis.DubCanonicalCaptions?.parseVttText?.(vtt) || [];
 }
 
 // ===== 字幕显示（position:fixed，贴视频底部，不超出视频框）=====
@@ -3562,8 +3500,8 @@ function pushRealtimeMonitorEvent(sess, kind, seg = null, extra = {}) {
   sess._realtimeMonitorEvents.push(event);
   if (sess._realtimeMonitorEvents.length > 160) sess._realtimeMonitorEvents.splice(0, sess._realtimeMonitorEvents.length - 160);
   updateRealtimeMonitor(sess, kind);
-  if (['missed', 'repairing', 'repaired', 'repair_failed', 'pipeline_missing', 'cache_done',
-    'rearmed', 'rearm_dropped'].includes(kind)) {
+  if (['missed', 'repairing', 'repaired', 'repair_failed', 'pipeline_missing',
+    'caption_source_failed', 'cache_done', 'rearmed', 'rearm_dropped'].includes(kind)) {
     scheduleDiagnosticLogPersist(sess, `realtime_${kind}`);
   }
 }
@@ -3589,6 +3527,7 @@ function updateRealtimeMonitor(sess, reason = 'refresh') {
     cache_done: '已入库',
     pipeline_repaired: '时间轴补回',
     pipeline_missing: '时间轴漏句',
+    caption_source_failed: '字幕源对账失败',
     duplicate_suppressed: '重复跳过',
     rearmed: '重排重播',
     rearm_dropped: '放弃补播',
@@ -5493,21 +5432,6 @@ function normalizeLocalDubMatchText(text) {
     .replace(/[\[\]【】()（）<>《》]/g, '');
 }
 
-function localDubTextLooksCompatible(rowText, targetText) {
-  const a = normalizeLocalDubMatchText(rowText);
-  const b = normalizeLocalDubMatchText(targetText);
-  if (!a || !b) return true;
-  if (a === b || a.includes(b) || b.includes(a)) return true;
-  const minLen = Math.min(a.length, b.length);
-  const maxLen = Math.max(a.length, b.length);
-  if (minLen < 6 || maxLen <= 0 || minLen / maxLen < 0.72) return false;
-  let samePos = 0;
-  for (let i = 0; i < minLen; i++) {
-    if (a[i] === b[i]) samePos++;
-  }
-  return samePos / minLen >= 0.78;
-}
-
 // 2026-07 的旧服务曾把“我操纵”错误清洗为“哎呀纵”。本地 IndexedDB 的 key 以
 // 原字幕时间轴为准，旧音频会因此继续命中。仅对含正常“操”复合词的旧条目做一次
 // 策略迁移：重新请求后会写入版本 2，以后仍正常复用缓存，不影响其它数千句库存。
@@ -5547,31 +5471,18 @@ function localDubRowMatchesSegment(row, key, seg, requireAudio = true) {
   const rowEnd = Number(row._sourceEnd ?? row.end);
   const normalizedTargetText = normalizeLocalDubMatchText(seg?._sourceText || seg?.text || '');
   const normalizedRowText = normalizeLocalDubMatchText(row?._sourceText || row?.text || '');
-  const sameStart = Math.abs(rowStart - targetStart) <= 150;
+  const sameStart = Math.abs(rowStart - targetStart) <= 1;
   const sameEnd = Number.isFinite(targetEnd) && Number.isFinite(rowEnd)
-    && Math.abs(rowEnd - targetEnd) <= 0.8;
+    && Math.abs(rowEnd - targetEnd) <= 0.001;
   if (rowSourceKey || keySourceKey) {
-    // A source key is the cue identity, not merely a timestamp. Never allow a
-    // former VTT mega-cue to impersonate one of the new json3 source events.
-    if ((rowSourceKey || keySourceKey) === sourceKey) return true;
-
-    // YouTube may refresh the same subtitle cue with a slightly different
-    // source key after a player refresh (for example a tiny end-time change).
-    // A strict key-only check then makes already-persisted local audio look
-    // absent and unnecessarily falls through to the network.  Permit a
-    // fallback only when start, end, and the *raw source text* are all exact
-    // enough.  This deliberately does not use contains()/fuzzy text matching,
-    // so an old VTT mega-cue still cannot impersonate a json3 cue.
-    return sameStart && sameEnd && !!normalizedTargetText
+    // 规范缓存复用必须同时满足 sourceKey、原始时间窗和原文完全一致。
+    // 任何一项不一致都可能是旧 VTT 合并块或旧滚动去重结果，不能复活。
+    return (rowSourceKey || keySourceKey) === sourceKey
+      && sameStart && sameEnd && !!normalizedTargetText
       && normalizedTargetText === normalizedRowText;
   }
-  if (!sameStart) return false;
-  const targetText = String(seg?.text || '').trim();
-  const rowText = String(row._sourceText || row.text || '').trim();
-  if (localDubTextLooksCompatible(rowText, targetText)) return true;
-  // Only truly legacy rows without source identities may use this timestamp
-  // fallback. New rows must match the exact source event above.
-  return sameEnd;
+  // 没有 source identity 的旧行可保留在数据库中，但不得参与新时间轴或播放。
+  return false;
 }
 
 function mergeLocalDubRow(seg, row, key) {
@@ -5622,40 +5533,6 @@ async function collectLocalDubRows(videoId) {
     console.warn('[配音插件] 扫描本地配音缓存失败', e?.message || e);
     return null;
   }
-}
-
-function buildSegmentsFromLocalDubRows(rows) {
-  if (!Array.isArray(rows) || !rows.length) return [];
-  const byKey = new Map();
-  for (const row of rows) {
-    const value = row?.value || {};
-    const start = Number(value._sourceStart ?? value.start);
-    if (!Number.isFinite(start)) continue;
-    const endValue = Number(value._sourceEnd ?? value.end);
-    const duration = Number(value.tts_duration || value.duration || 0);
-    const end = Number.isFinite(endValue) && endValue > start
-      ? endValue : start + Math.max(0.5, duration || 0.5);
-    const text = String(value._sourceText || value.text || value.translation || '').trim();
-    if (!text) continue;
-    const sourceKey = value._sourceKey || String(row.key || '').split('|')[1]
-      || `${Math.round(start * 1000)}:${Math.round(end * 1000)}:${localDubHash(text)}`;
-    if (byKey.has(sourceKey)) continue;
-    byKey.set(sourceKey, {
-      start,
-      end,
-      text,
-      _sourceKey: sourceKey,
-      _sourceStart: start,
-      _sourceEnd: end,
-      _sourceText: text,
-      _sourceIndex: Number.isFinite(Number(value._sourceIndex)) ? Number(value._sourceIndex) : byKey.size,
-    });
-  }
-  // A video may have audio written by different extension revisions.  Those
-  // revisions can assign different cache keys to the same source cue; collapse
-  // only the same timestamp+source-text event before it becomes a subtitle
-  // timeline, otherwise it will be spoken twice after a cache-first start.
-  return dedupLogicalSourceEvents([...byKey.values()], '本地缓存时间轴');
 }
 
 async function inferCachedVoiceForVideo(videoId, segments = null, centerTime = 0) {
@@ -8579,6 +8456,20 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     : '🎧 正在准备配音跟踪表与字幕时间轴…', sess.video);
   await new Promise((resolve) => setTimeout(resolve, 0));
 
+  const canonicalInput = globalThis.DubCanonicalCaptions?.isCanonicalTimeline?.(rawSegments) === true;
+  if (!sess._readMode && useGeminiTranslate && !canonicalInput) {
+    const detail = '原文字幕不是已对账的 JSON3 规范时间轴；为避免重复、漏句和无效 token 消耗，已停止 Gemini';
+    pushRealtimeMonitorEvent(sess, 'caption_source_failed', null, { detail });
+    recordDiagnostic(sess, 'canonical_caption_gate_rejected', {
+      detail,
+      count: rawSegments.length,
+      schemas: [...new Set(rawSegments.map((seg) => seg?._captionSchema || 'missing'))].slice(0, 8),
+      parseAudit: _lastCaptionParseAudit,
+    });
+    return fail(`${detail}。请刷新页面重新获取原文 JSON3 字幕。`);
+  }
+  const preserveCanonicalSourceText = !sess._readMode && useGeminiTranslate && canonicalInput;
+
   // 完整保留平台返回的原始字幕事件，供排查“字幕源本来重复”还是“脚本重复播放”。
   // 这份账本必须早于音效过滤、滚动去重和合句；后续任何处理都不能覆盖它。
   sess._sourceRawSubtitles = buildSourceSubtitleLedger(rawSegments, 'platform_raw');
@@ -8592,7 +8483,9 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
   rawSegments = rawSegments
     .map((s) => ({
       ...s,
-      text: sanitizeDubbingText(stripNonSpeechMarker(String(s.text || ''))),
+      text: preserveCanonicalSourceText
+        ? String(s._sourceText || s.text || '').trim()
+        : sanitizeDubbingText(stripNonSpeechMarker(String(s.text || ''))),
     }))
     .filter((s) => s.text);
   if (rawSegments.length !== beforeNonSpeechFilter) {
@@ -8619,9 +8512,9 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
   });
   console.log('[配音插件] 字幕源开头事件（配音前，不做文字去重）：', sess._sourceOpeningSegments);
 
-  // 去掉滚动字幕的渐进重复 cue（见 dedupRollingCaptions 注释），两种模式都要做——
-  // 配音模式即使后面会合并整句，重叠的重复 cue 也会让合并逻辑产生错误的时间窗。
-  rawSegments = dedupRollingCaptions(rawSegments);
+  // canonical JSON3 已按原始有文本 event 完成零漏零重对账，后续严禁再按文本
+  // 前缀/相似度删除。旧 dedupRollingCaptions 会在已对账 fixture 上额外删真实事件。
+  if (!canonicalInput) rawSegments = dedupRollingCaptions(rawSegments);
 
   // 诊断：输出原始字幕的时间戳
   console.log('[配音插件] 原始字幕时间戳（前10条）：');
@@ -8632,13 +8525,15 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
   // 过滤音效注释：[音乐]【掌声】(Music) 等。整条只是注释 → 丢弃；
   // 行内夹带 → 去掉注释保留正文。
   const annOnly = /^[\s\[\]【】()（）]*[\[【(（][^\]】)）]*[\]】)）][\s\[\]【】()（）]*$/;
-  rawSegments = rawSegments
-    .map((s) => ({ ...s, text: s.text.replace(/[\[【(（][^\]】)）]{0,12}[\]】)）]/g, '').trim() }))
-    .filter((s) => s.text && !annOnly.test(s.text));
+  if (!preserveCanonicalSourceText) {
+    rawSegments = rawSegments
+      .map((s) => ({ ...s, text: s.text.replace(/[\[【(（][^\]】)）]{0,12}[\]】)）]/g, '').trim() }))
+      .filter((s) => s.text && !annOnly.test(s.text));
+  }
   if (!rawSegments.length) return fail('字幕全是音效注释，无可朗读内容');
 
   // 配音模式才去口头填充词（嗯/呃/唔/诶 等）；朗读模式原文照读，不动文本。
-  if (!sess._readMode) {
+  if (!sess._readMode && !preserveCanonicalSourceText) {
     const FILLER = '嗯呃唔诶呣';
     const fillerRe = new RegExp(`[${FILLER}]+[，、。．.…!！?？~～\\s]*`, 'g');
     rawSegments = rawSegments
@@ -8730,7 +8625,10 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
     // 只压缩同一原字幕事件在多个缓存/补救来源留下的副本。这里不按文本相似度、
     // 不跨时间窗去重，真实重复的台词仍按原字幕分别配音。
     rawSegments = dedupLogicalSourceEvents(rawSegments, '配音字幕时间轴');
-    rawSegments = repairProcessedTimelineCoverage(sess, coverageReferenceSegments, rawSegments, '配音字幕时间轴');
+    if (!(canonicalInput && sess._subtitleMode === 'gemini')) {
+      rawSegments = repairProcessedTimelineCoverage(
+        sess, coverageReferenceSegments, rawSegments, '配音字幕时间轴');
+    }
     if (!rawSegments.length) return fail('字幕清理后无可配音正文');
     sess._hasMerged = before > rawSegments.length;
     console.log(`[配音插件] 按句合并：${before} 行 → ${rawSegments.length} 句`);
@@ -10376,17 +10274,21 @@ if (IS_YOUTUBE) {
   //     textBoundaryOverlapLen 合并，bump 版本失效旧缓存。
   // v5：开头二十秒不再按文字相似度删事件，旧缓存可能已误删第一、二句，必须重取。
   // v6：恢复滚动 cue 的时间轴去重；第一、二句依靠会话重置和可播放门槛保障，不靠取消去重。
-  // v8：服务端改用 json3 原始时间事件；v7 的 VTT 时间窗可能稀疏，不能再复用。
-  // v9：回退 json3 逐事件直出（会把「方法」等词拆成两句配音）；恢复可见窗口差量解析。
-  // v10：再回退收紧版滚动去重（隔条回填合并），恢复只处理紧邻 cue。
-  // v11：去掉边界叠字合并、字中硬切与密度削平，避免字幕时间轴与配音错位。
-  const SUBS_CACHE_PREFIX = 'subs_v11_';
+  // v12：只缓存通过 JSON3 event 数/正文总量/时间单调/唯一 sourceKey 对账的
+  // canonical timeline。旧 v11 及更早版本可能经过窗口差量或文本去重，必须失效。
+  const SUBS_CACHE_PREFIX = 'subs_canonical_v12_';
   function getCachedSubs(vid) {
     return new Promise((resolve) => {
       try {
         chrome.storage.local.get([SUBS_CACHE_PREFIX + vid], (r) => {
           const segs = r && r[SUBS_CACHE_PREFIX + vid];
           if (!Array.isArray(segs) || !segs.length) { resolve(null); return; }
+          if (!globalThis.DubCanonicalCaptions?.isCanonicalTimeline?.(segs)) {
+            console.warn('[配音插件] 字幕缓存不是 canonical JSON3，自动废弃');
+            try { chrome.storage.local.remove(SUBS_CACHE_PREFIX + vid); } catch (_) {}
+            resolve(null);
+            return;
+          }
           const info = captionTimelineInfo(segs);
           if (hasUnexpectedCaptionTailGap(info)) {
             console.warn('[配音插件] 本地字幕缓存尾部异常截断，自动废弃：', {
@@ -10404,8 +10306,10 @@ if (IS_YOUTUBE) {
   }
   function setCachedSubs(vid, segs) {
     try {
-      if (Array.isArray(segs) && segs.length)
+      if (globalThis.DubCanonicalCaptions?.isCanonicalTimeline?.(segs))
         chrome.storage.local.set({ [SUBS_CACHE_PREFIX + vid]: segs });
+      else if (Array.isArray(segs) && segs.length)
+        console.warn('[配音插件] 非 canonical 字幕只供当前会话使用，不写入规范字幕缓存');
     } catch (_) {}
   }
   function removeCachedSubs(vid) {
@@ -10414,20 +10318,20 @@ if (IS_YOUTUBE) {
 
   // Gemini 原文轨和 YouTube 自动中文轨必须分开缓存：前者是 Gemini 输入，
   // 后者仅作不中断播放的兜底。复用同一 subs_* 键会让两条时间轴互相覆盖。
-  const YT_CHINESE_FALLBACK_CACHE_PREFIX = 'yt_zh_fallback_v1_';
+  const YT_CHINESE_FALLBACK_CACHE_PREFIX = 'yt_zh_fallback_v2_';
   function getCachedYoutubeChineseFallback(vid) {
     return new Promise((resolve) => {
       try {
         chrome.storage.local.get([YT_CHINESE_FALLBACK_CACHE_PREFIX + vid], (r) => {
           const segs = r?.[YT_CHINESE_FALLBACK_CACHE_PREFIX + vid];
-          resolve(Array.isArray(segs) && segs.length ? segs : null);
+          resolve(globalThis.DubCanonicalCaptions?.isCanonicalTimeline?.(segs) ? segs : null);
         });
       } catch (_) { resolve(null); }
     });
   }
   function setCachedYoutubeChineseFallback(vid, segs) {
     try {
-      if (Array.isArray(segs) && segs.length) {
+      if (globalThis.DubCanonicalCaptions?.isCanonicalTimeline?.(segs)) {
         chrome.storage.local.set({ [YT_CHINESE_FALLBACK_CACHE_PREFIX + vid]: segs });
       }
     } catch (_) {}
@@ -11268,13 +11172,9 @@ if (IS_YOUTUBE) {
           } else {
             console.log('[配音插件] 本地音频缓存实扫为 0，跳过缓存配音员选择；按常规字幕流程启动');
           }
-          if (!cachedSubs?.length && localRows?.length) {
-            cachedSubs = buildSegmentsFromLocalDubRows(localRows);
-            if (cachedSubs.length) {
-              console.log(`[配音插件] 字幕缓存缺失，但命中本地音频缓存，已从缓存重建字幕时间轴：${cachedSubs.length}条`);
-              setCachedSubs(fastVideoId, cachedSubs);
-            }
-          }
+          // 音频缓存是派生物，绝不能反向充当字幕真相源。旧版本的合并/重复 cue
+          // 正是通过这条快启路径复活。没有 canonical 字幕时必须重新取 JSON3；
+          // 取得后仍可按严格 sourceKey 复用匹配的旧音频。
           if (cachedSubs?.length && localRows?.length) {
             const title = document.title.replace(/ - YouTube$/, '');
             sess._startFromLocalCacheFast = true;
@@ -11564,7 +11464,15 @@ if (IS_YOUTUBE) {
             // Use exactly the same cleanup/dedup/sentence grouping as realtime
             // playback. Otherwise "100% background ready" can still miss at a
             // late playhead because the two paths generated different keys.
-            captionSegments = prepareSegmentsForBackgroundDub(captionSegments);
+            if (useGeminiTranslate
+                && !globalThis.DubCanonicalCaptions?.isCanonicalTimeline?.(captionSegments)) {
+              showBufferIndicator(
+                '⚠ 原文字幕未通过 JSON3 零漏零重对账，已阻止后台 Gemini，未消耗 token。',
+                video);
+              return;
+            }
+            captionSegments = prepareSegmentsForBackgroundDub(
+              captionSegments, useGeminiTranslate === true);
             // Lock the voice selected at queue time into every cache key.
             captionSegments = applySessionVoice(sess, captionSegments);
             const voices = [...new Set(

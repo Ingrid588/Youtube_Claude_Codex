@@ -466,7 +466,7 @@ _asr_results_cache = {}  # {video_id: [(seg_idx, asr_segments), ...]}
 _CAPTION_CACHE_PATH = os.path.join(tempfile.gettempdir(), 'shared_caption_cache.json')
 # v3 stores YouTube json3 events, which retain the native fine-grained timing.
 # VTT may merge rolling captions into long windows and leave apparent playback gaps.
-_CAPTION_CACHE_SCHEMA = 'raw-json3-cue-v3'
+_CAPTION_CACHE_SCHEMA = 'canonical-json3-v5'
 _caption_cache = {}
 def _load_caption_cache():
     global _caption_cache
@@ -712,6 +712,8 @@ class RawSeg(BaseModel):
     source_end: float | None = Field(default=None, alias='_sourceEnd')
     source_text: str | None = Field(default=None, alias='_sourceText')
     source_index: int | None = Field(default=None, alias='_sourceIndex')
+    caption_schema: str | None = Field(default=None, alias='_captionSchema')
+    canonical_caption: bool = Field(default=False, alias='_canonicalCaption')
 
 
 class DubRequest(BaseModel):
@@ -1078,9 +1080,10 @@ def _prepare_dub_segments(req: 'DubRequest'):
         '_sourceEnd': s.source_end if s.source_end is not None else s.end,
         '_sourceText': s.source_text or s.text,
         '_sourceIndex': s.source_index,
+        '_captionSchema': s.caption_schema,
+        '_canonicalCaption': s.canonical_caption,
         **(({'voice': s.voice}) if s.voice else {}),
     } for s in req.segments]
-    segments = dub9.dedupe_rolling_overlap(segments)
     segments = dub9.estimate_durations(segments)
 
     req_lang_full = (req.lang or 'en').lower()
@@ -1236,12 +1239,30 @@ async def dub(req: DubRequest):
             '_sourceEnd': s.source_end if s.source_end is not None else s.end,
             '_sourceText': s.source_text or s.text,
             '_sourceIndex': s.source_index,
+            '_captionSchema': s.caption_schema,
+            '_canonicalCaption': s.canonical_caption,
             **(({'voice': s.voice}) if s.voice else {}),
         } for s in req.segments]
         voiced = [(s.start, s.voice) for s in req.segments if s.voice]
         if voiced:
             log.info(f"收到 per-segment voice 分配 {len(voiced)} 条: {voiced[:4]}...")
-        segments = dub9.dedupe_rolling_overlap(segments)
+        if req.use_gemini_translate:
+            keys = [s.get('_sourceKey') for s in segments]
+            indices = [s.get('_sourceIndex') for s in segments]
+            canonical_ok = bool(segments) and all(
+                s.get('_canonicalCaption') is True
+                and s.get('_captionSchema') == 'canonical-json3-v1'
+                and s.get('_sourceKey')
+                and s.get('_sourceText') == s.get('text')
+                for s in segments
+            ) and len(set(keys)) == len(keys) and all(
+                isinstance(index, int) for index in indices
+            ) and indices == sorted(indices)
+            if not canonical_ok:
+                log.error('[配音] Gemini 请求字幕未通过 canonical cue 身份校验，拒绝处理')
+                return JSONResponse(status_code=422, content={
+                    'error': '字幕源不是已对账的 canonical JSON3 时间轴，已停止 Gemini',
+                })
         segments = dub9.estimate_durations(segments)
 
         # 检测语言（CJK字符占比>30% 视为中文）。勾了"Gemini翻译"时这个检测不作数——
@@ -1812,26 +1833,14 @@ def _sub_lang_variants(lang):
 
 
 def _parse_json3_cues(sub_path):
-    """Read native YouTube json3 events without VTT's rolling-caption merge."""
+    """Read and audit the immutable native JSON3 event timeline."""
     try:
-        with open(sub_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        cues = []
-        for event in data.get('events') or []:
-            start_ms = event.get('tStartMs')
-            duration_ms = event.get('dDurationMs')
-            parts = event.get('segs') or []
-            if start_ms is None or duration_ms is None or not parts:
-                continue
-            text = ''.join(str(part.get('utf8') or '') for part in parts).strip()
-            if not text:
-                continue
-            start = float(start_ms) / 1000
-            cues.append({
-                'start': start,
-                'end': start + max(0.05, float(duration_ms) / 1000),
-                'text': text,
-            })
+        from canonical_captions import parse_json3_file
+        cues, audit = parse_json3_file(sub_path)
+        if not audit.get('ok'):
+            log.error(f'[后台预取] JSON3 规范时间轴对账失败: {audit}')
+            return []
+        log.info(f'[后台预取] JSON3 规范时间轴对账通过: {audit}')
         return cues
     except Exception as e:
         log.warning(f'[后台预取] json3 字幕解析失败 {os.path.basename(sub_path)}: {e}')
@@ -1939,7 +1948,12 @@ async def _do_fetch_captions_ytdlp(video_id, lang):
                         os.remove(p)
                     except OSError:
                         pass
-                return {'ok': True, 'segments': segments, 'matched_lang': detected_lang}
+                schema = (segments[0].get('_captionSchema') if segments else None)
+                return {
+                    'ok': True, 'segments': segments, 'matched_lang': detected_lang,
+                    'caption_schema': schema,
+                    'canonical': schema == 'canonical-json3-v1',
+                }
 
             _stderr_tail = (out.stderr or "")[-1500:] if out else "(无 out)"
             log.warning(f'[后台预取] {video_id}: 未找到 {lang} 语言的字幕文件，yt-dlp stderr: {_stderr_tail}')
