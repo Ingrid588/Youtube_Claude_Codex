@@ -877,9 +877,22 @@ def prune_excess_yes_fillers(segments, field='text', label='字幕'):
 _CANCER_MEDICAL_RE = re.compile(
     r'(?:'
     r'患(?:上|有)?癌症|得(?:了)?癌症|罹患癌症|患癌|得癌|抗癌|防癌|治癌|'
+    r'(?:与|和|同|跟)?癌症(?:的)?(?:长期|漫长的?|艰苦的?)?(?:抗争|斗争|搏斗)|'
+    r'(?:因|因为|由于).{0,12}癌症(?:去世|离世|死亡|病逝)|'
     r'癌症(?:患者|病人|治疗|诊断|筛查|检查|风险|晚期|早期|扩散|复发|转移|死亡|研究|疫苗|药物|病灶|细胞|基因|中心|医院)|'
     r'(?:乳腺|乳房|肺|胃|肝|胰腺|肠|结直肠|前列腺|宫颈|卵巢|皮肤|血液|淋巴|甲状腺|食道|食管|膀胱|脑|骨|口腔)癌'
     r')'
+)
+
+_CANCER_MEDICAL_SOURCE_RE = re.compile(
+    r'(?:'
+    r'\b(?:battle|fight|struggle)(?:d|s|ing)?\s+(?:against|with)\s+cancer\b|'
+    r'\b(?:die|dies|died|dying|pass(?:ed|es|ing)?\s+away).{0,40}\b(?:from|of|after|with)\s+cancer\b|'
+    r'\b(?:diagnos(?:e|ed|is)|treat(?:ed|ment)?|surviv(?:e|ed|or)|patient|suffer(?:ed|ing)?)'
+    r'.{0,30}\bcancer\b|'
+    r'\bcancer\b.{0,30}\b(?:diagnosis|treatment|patient|survivor|battle|death)\b'
+    r')',
+    re.I,
 )
 
 _CANCER_ZODIAC_TEXT_RE = re.compile(
@@ -913,6 +926,15 @@ def should_replace_cancer_with_zodiac(text, context_text=None):
     if _CANCER_MEDICAL_RE.search(ctx) and not any(term in ctx for term in _CANCER_ZODIAC_CONTEXT_TERMS):
         return False
     return any(term in ctx for term in _CANCER_ZODIAC_CONTEXT_TERMS)
+
+
+def preserve_medical_cancer_translation(source_text, translated_text):
+    """源句明确谈论疾病时，禁止把译文中的“巨蟹座”保留下来。"""
+    if not source_text or not translated_text or '巨蟹座' not in translated_text:
+        return translated_text
+    if _CANCER_MEDICAL_SOURCE_RE.search(source_text):
+        return translated_text.replace('巨蟹座', '癌症')
+    return translated_text
 
 
 def apply_glossary(text, context_text=None):
@@ -1401,6 +1423,10 @@ async def dub(req: DubRequest):
                 def _on_segment_ready(seg):
                     nonlocal gemini_seen, gemini_yes, gemini_yes_segments
                     seg['translation'] = apply_glossary(seg.get('translation', '') or seg['text'])
+                    seg['translation'] = preserve_medical_cancer_translation(
+                        seg.get('_sourceText') or seg.get('text', ''),
+                        seg['translation'],
+                    )
                     gemini_seen += 1
                     yc = count_standalone_yes(seg.get('translation') or '')
                     gemini_yes += yc
