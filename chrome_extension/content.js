@@ -1800,76 +1800,60 @@ function renderReadHighlight(sess) {
   renderHighlightSubtitle(sess, sess.curSegment.text || '');
 }
 
-// 字幕显示：跟随视频时间轴，实现"严格对齐"：原字幕窗 ← 配音 → 配音字幕。
-// 视频恒定 1.0x，原始时间窗不变；每句配音被压缩进自己的窗口（见 playNextDue），
-// 字幕窗与配音、画面逐句严格对齐——画面里"蹦出来"的内容仍在原时刻出现。
+function hideDubSubtitle(sess) {
+  if (!sess) return;
+  sess.lastSubText = null;
+  if (!sess.subtitleEl) return;
+  sess.subtitleEl.textContent = '';
+  sess.subtitleEl.style.display = 'none';
+}
+
+function renderStaticDubSubtitle(sess, text) {
+  if (!text) { hideDubSubtitle(sess); return; }
+  const cacheKey = `static|${text}`;
+  if (cacheKey === sess.lastSubText) return;
+  sess.lastSubText = cacheKey;
+  const el = ensureSubtitleEl(sess);
+  const span = document.createElement('span');
+  span.style.cssText =
+    'display:block;width:100%;color:#fff;line-height:1.5;' +
+    "font-family:'Microsoft YaHei',sans-serif;white-space:normal;word-break:break-all;";
+  const inner = document.createElement('span');
+  inner.textContent = text;
+  inner.style.cssText =
+    `display:inline;background:rgba(8,8,8,${subBgOpacity});padding:3px 12px;border-radius:4px;` +
+    'box-decoration-break:clone;-webkit-box-decoration-break:clone;';
+  span.appendChild(inner);
+  el.innerHTML = '';
+  el.appendChild(span);
+  positionSubtitleEl(sess);
+  el.style.display = 'block';
+}
+
+// 配音字幕只跟随“实际正在发声”的配音段。缓存中有音频、视频时间进入原字幕窗、
+// 或下一段仍在异步加载，都不代表用户已经听到该句；这些状态一律不提前显示字幕。
 function updateSubtitle(sess) {
   // 朗读模式：用逐词高亮进度条核对朗读完整性（见 renderReadHighlight），
   // 与下面配音模式的整句字幕逻辑分开，原生 CC 继续显示选中字幕不受影响。
   if (sess._readMode) { renderReadHighlight(sess); return; }
-  if (!showSubs || sess._userPaused) { if (sess.subtitleEl) sess.subtitleEl.style.display = 'none'; return; }
+  if (!showSubs || sess._userPaused) { hideDubSubtitle(sess); return; }
 
-  // 配音正在播放 → 跟朗读模式一样逐字高亮（用译文），念过的变绿，方便核对有没有漏字/抢拍。
-  // 不再像之前那样把整句切成一句一句轮流显示——高亮本身就能体现进度，没必要再分句隐藏全文。
-  if (sess.curSegment && sess.curAudio) {
+  // HTMLAudioElement 必须已经真正进入播放态；仅仅完成加载、赋给 curAudio 时仍是 paused，
+  // 若此时显示会让字幕抢在声音前面出现。
+  if (sess.curSegment && sess.curAudio && !sess.curAudio.paused && !sess.curAudio.ended) {
     const text = sess.curSegment.translation || sess.curSegment.text || '';
     renderHighlightSubtitle(sess, text);
     return;
   }
 
-  let cur = '';
-  // 还没有配音音频在播（合成中/段间空隙）时没法按音频进度高亮，退回旧的整句/原始字幕展示。
-  if (sess.curSegment) {
-    cur = sess.curSegment.translation || sess.curSegment.text || '';
-  } else if (sess._displaySegments) {
-    const t = sess.video.currentTime;
-    const seg = sess._displaySegments.find((s) => t >= s.start && t < s.end);
-    // 这个兜底分支是纯按视频时间戳找字幕，跟 playNextDue 里"最近重复段跳过不发声"
-    // 是两套独立判断——之前没同步：配音那边判定重复跳过了（没声音），但这个兜底
-    // 不知道，等视频时间走到那条重复段自己的时间窗，照样把它的文字显示出来，
-    // 表现就是"刚配完音的那句又显示了一遍，但没声音"。这里也查一下最近播过的记录，
-    // 命中就当没有这一条，跟音频那边的判断保持一致。
-    const suppressed = seg && isRealtimeSubtitleSuppressed(sess, seg);
-    const isDup = seg && sess._recentSpoken && sess._recentSpoken.some(
-      (r) => r.text === seg.text && (seg.start - r.end) < 12
-    );
-    const playableDub = seg ? findPlayableDubForDisplaySegment(sess, seg, t) : null;
-    // 实时配音里，自绘字幕不能单独往前跑：只要当前时间窗没有可播放配音，
-    // 就宁可隐藏自绘字幕，避免用户看到“有字幕但没有配音”的断裂感。
-    if (seg && !isDup && !suppressed && playableDub) {
-      // _displaySegments 存的是原始（外语）字幕，不是译文——之前这里直接显示
-      // seg.text，配音真正播放时显示的是中文译文（绿色高亮），两者一对比就像
-      // "突然冒出一句不相关的黑色字幕"。这里按时间戳去 dubSegments 里找同一句，
-      // 有译文就显示译文，跟"刚配完音"那句保持同一种语言，不会显得像两句话。
-      const text = (playableDub && (playableDub.translation || playableDub.text)) || seg.text;
-      cur = getSubtitleLine(text, t - seg.start, seg.end - seg.start);
-    } else {
-      cur = '';
-    }
+  // 浏览器 Web Speech 兜底没有 Audio 对象，只在 utterance 已触发 onstart 后显示整句；
+  // speak() 排队期间仍保持隐藏，避免把“已提交朗读”误当成“正在发声”。
+  if (sess.curSegment && sess._webSpeechActive && sess._webSpeechStarted) {
+    renderStaticDubSubtitle(sess, sess.curSegment.translation || sess.curSegment.text || '');
+    return;
   }
-  if (cur === sess.lastSubText) return;
-  sess.lastSubText = cur;
-  const el = ensureSubtitleEl(sess);
-  if (cur) {
-    const span = document.createElement('span');
-    span.style.cssText =
-      'display:block;width:100%;color:#fff;line-height:1.5;' +
-      "font-family:'Microsoft YaHei',sans-serif;white-space:normal;word-break:break-all;";
-    // 背景只包裹文字本身（内层 span），换行时每行都有背景
-    const inner = document.createElement('span');
-    inner.textContent = cur;
-    inner.style.cssText =
-      `display:inline;background:rgba(8,8,8,${subBgOpacity});padding:3px 12px;border-radius:4px;` +
-      'box-decoration-break:clone;-webkit-box-decoration-break:clone;';
-    span.appendChild(inner);
-    el.innerHTML = '';
-    el.appendChild(span);
-    positionSubtitleEl(sess);
-    el.style.display = 'block';
-  } else {
-    el.textContent = '';
-    el.style.display = 'none';
-  }
+
+  hideDubSubtitle(sess);
 }
 
 function removeSubtitleEl(sess) {
@@ -5075,11 +5059,19 @@ function playNextDue(sess, t) {
       if (localVoice) { utter.voice = localVoice; utter.lang = localVoice.lang; }
       else utter.lang = 'zh-CN';
       sess._webSpeechActive = true;
+      sess._webSpeechStarted = false;
       sess.curSegment = best;
+      utter.onstart = () => {
+        if (sess._webSpeechToken !== webSpeechToken) return;
+        sess._webSpeechStarted = true;
+        updateSubtitle(sess);
+      };
       utter.onend = () => {
         if (sess._webSpeechToken !== webSpeechToken) return;
         sess._webSpeechActive = false;
+        sess._webSpeechStarted = false;
         if (sess.curSegment === best) sess.curSegment = null;
+        updateSubtitle(sess);
         rememberCompletedSpoken(sess, best);
         rememberPlayedSourceEvent(sess, best, 'web_speech');
         if (sess.started) playNextDue(sess, sess.video.currentTime);
@@ -5087,8 +5079,10 @@ function playNextDue(sess, t) {
       utter.onerror = () => {
         if (sess._webSpeechToken !== webSpeechToken) return;
         sess._webSpeechActive = false;
+        sess._webSpeechStarted = false;
         best.played = false;
         if (sess.curSegment === best) sess.curSegment = null;
+        updateSubtitle(sess);
         if (sess.started) playNextDue(sess, sess.video.currentTime);
       };
       window.speechSynthesis.cancel();
@@ -5098,7 +5092,9 @@ function playNextDue(sess, t) {
       return;
     } catch (e) {
       sess._webSpeechActive = false;
+      sess._webSpeechStarted = false;
       best.played = false;
+      updateSubtitle(sess);
       console.warn('[配音插件] 默认配音员启动失败', e?.message || e);
       return;
     }
@@ -5133,7 +5129,8 @@ function playNextDue(sess, t) {
     sess.curSegment = best;
     // 跟随音频进度逐句刷新字幕（视频放慢时 video 的 timeupdate 较稀疏，靠音频自身的更稳）
     audio.addEventListener('timeupdate', () => { if (sess.curAudio === audio) updateSubtitle(sess); });
-    updateSubtitle(sess);   // 立即把字幕切到这一段，与配音同步
+    audio.addEventListener('playing', () => { if (sess.curAudio === audio) updateSubtitle(sess); });
+    updateSubtitle(sess);   // 音频尚未真正播放时先确保旧字幕隐藏
     audio.currentTime = 0;
 
     // 内容对齐：窗口 budget = 到下一句开始前的间隔。原则（用户要求）：
@@ -5213,7 +5210,7 @@ function playNextDue(sess, t) {
       delete sess.audioCache[best.audio_url];
       if (!stillCurrent) return;
       if (stillCurrent) { sess.curAudio = null; sess.curSegment = null; }
-      sess.lastSubText = null;
+      updateSubtitle(sess);
       rememberCompletedSpoken(sess, best);
       // 句末恢复默认速率：配音档3慢放只作用于这一句，读完即恢复1.0x；
       // 朗读恢复到整体调过的 sess._readVideoRate，不是1.0x。
@@ -5230,6 +5227,7 @@ function playNextDue(sess, t) {
       delete sess.audioCache[best.audio_url];
       if (!stillCurrent) return;
       if (stillCurrent) { sess.curAudio = null; sess.curSegment = null; }
+      updateSubtitle(sess);
       setVideoRate(sess, defaultVideoRate(sess));
       recoverFailedPlaybackAudio(sess, best, 'media_element_error', audio.error?.message || audio.error?.code || 'audio error');
     };
@@ -5246,6 +5244,7 @@ function playNextDue(sess, t) {
       best._loadRetryCount = 0;
       best._playRetryCount = 0;
       rememberPlayedSourceEvent(sess, best, 'audio');
+      updateSubtitle(sess);
       console.log('[配音插件] ▶ 播放音频段', best.start.toFixed(1) + 's');
       // 朗读模式：第一段真正出声 → 结束"初始化"倒计时，按钮转为"朗读中"
       if (sess._readMode && !sess._reading) {
@@ -5263,6 +5262,7 @@ function playNextDue(sess, t) {
         if (sess.curAudio === audio && audio._dubPlayToken === playToken) {
           sess.curAudio = null; sess.curSegment = null;
         }
+        updateSubtitle(sess);
         best.played = false;
         setVideoRate(sess, defaultVideoRate(sess));
         if (sess.started && !sess._userPaused && !sess.video.paused) {
@@ -5284,6 +5284,7 @@ function playNextDue(sess, t) {
       if (sess.curAudio === audio && audio._dubPlayToken === playToken) {
         sess.curAudio = null; sess.curSegment = null;
       }
+      updateSubtitle(sess);
       setVideoRate(sess, defaultVideoRate(sess));
       if (e?.name !== 'NotAllowedError') {
         recoverFailedPlaybackAudio(sess, best, 'audio_play_rejected', e?.message || e?.name || 'play rejected');
@@ -7735,7 +7736,10 @@ function pauseDubbing(sess, btn) {
   stopOtherDubbingAudio(sess, null, 'pause_dubbing');
   if (sess.curSegment) sess.curSegment.played = false;  // 当前段放回，继续时从当前位置重选
   sess.curAudio = null; sess.curSegment = null;
+  sess._webSpeechToken = (sess._webSpeechToken || 0) + 1;
   try { window.speechSynthesis?.cancel(); } catch (_) {}  // 同样要喊停浏览器自带语音兜底
+  sess._webSpeechActive = false;
+  sess._webSpeechStarted = false;
   try { sess.video.playbackRate = 1.0; } catch (_) {}   // 撤销档3慢放
   try { sess.video.volume = 1.0; } catch (_) {}          // 恢复原音
   sess.lastSubText = null;
@@ -8323,6 +8327,7 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
   // 该标记只保护归零启动/归零 seek；中后段继续沿用“不断视频、缺句后补”。
   sess._startupGatePending = false;
   sess._webSpeechActive = false;
+  sess._webSpeechStarted = false;
   sess._recordingSegmentStarted = false;
   function fail(reason, err) {
     console.error('[配音插件]', reason, err || '');
@@ -8654,7 +8659,13 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
         sess.curAudio = null; sess.curSegment = null;
       }
       stopOtherDubbingAudio(sess, null, 'seeking');
+      if (sess._webSpeechActive && sess.curSegment) sess.curSegment.played = false;
+      sess._webSpeechToken = (sess._webSpeechToken || 0) + 1;
       try { window.speechSynthesis?.cancel(); } catch (_) {}  // 跳转了，旧位置的兜底语音不能再念
+      sess._webSpeechActive = false;
+      sess._webSpeechStarted = false;
+      sess.curSegment = null;
+      hideDubSubtitle(sess);
       setVideoRate(sess, defaultVideoRate(sess));  // 防御性复位到默认速率
       sess.bufferMissCount = 0;
       sess._synthMiss = 0;        // 重置合成宽限计数（跳转后重新计）
@@ -8771,8 +8782,13 @@ async function startDubbing(sess, btn, getRawSegments, videoId, title) {
       }
       // 视频暂停，朗读必须跟着停——包括云端TTS失败时退到的浏览器自带语音
       // （speakWithWebSpeech 是独立播放的，不会跟着 curAudio 一起暂停，得单独喊停）。
+      if (sess._webSpeechActive && sess.curSegment) sess.curSegment.played = false;
+      sess._webSpeechToken = (sess._webSpeechToken || 0) + 1;
       try { window.speechSynthesis?.cancel(); } catch (_) {}
       sess._webSpeechActive = false;
+      sess._webSpeechStarted = false;
+      sess.curSegment = null;
+      hideDubSubtitle(sess);
       // 防御：若暂停时正处于变速状态，恢复默认速率，避免续播后卡在错误速度
       try { sess.video.playbackRate = defaultVideoRate(sess); } catch (_) {}
     };
